@@ -1,0 +1,11 @@
+[[wol]]
+name = "tv"
+mac = "B0:37:95:C5:60:BE"
+source_if = "en0"
+target_if = "lo0"
+
+[[wol]]
+name = "tv2"
+mac = "B0:37:95:C5:60:BE"
+source_if = "en0"
+target_if = "lo0"

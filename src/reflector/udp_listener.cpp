@@ -1,0 +1,24 @@
+#include "udp_listener.h"
+
+namespace reflector {
+
+UdpListener::UdpListener(const Options& options) {
+    if (!options.interface.empty() && !socket_.SetInterface(options.interface)) {
+        logger_.Error("Cannot create UDP listener on interface \"{}\"", options.interface);
+        socket_.Close();
+        return;
+    }
+    if (!socket_.SetReuseAddr(true)) {
+        logger_.Error("Cannot create UDP listener on interface \"{}\": SO_REUSEADDR setup failed", options.interface);
+        socket_.Close();
+        return;
+    }
+    if (!socket_.Bind(options.local_ip, options.local_port)) {
+        logger_.Error("Cannot create UDP listener on interface \"{}\" bound to {}:{}",
+            options.interface, options.local_ip, options.local_port);
+        socket_.Close();
+        return;
+    }
+}
+
+} // namespace reflector
