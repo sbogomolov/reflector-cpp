@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(reflector VERSION 0.1.0 LANGUAGES CXX)
-enable_testing()
+include(CTest)
 
 if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}. Only Linux and macOS are supported.")
@@ -43,21 +43,6 @@ FetchContent_Declare(tomlplusplus
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
-include(FetchContent)
-FetchContent_Declare(googletest
-    GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.17.0
-    GIT_SHALLOW FALSE  # ensure submodules are checked out
-)
-FetchContent_MakeAvailable(googletest)
-
-# Workaround, see: https://github.com/google/googletest/issues/4762
-# TODO: remove when googletest is updated
-if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-        AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "21")
-    target_compile_options(gtest PUBLIC -Wno-character-conversion)
-endif()
-
 include_directories(
     ${CMAKE_SOURCE_DIR}/src)
 
@@ -66,4 +51,22 @@ target_link_libraries(reflector_app PRIVATE reflector)
 set_property(TARGET reflector_app PROPERTY OUTPUT_NAME reflector)
 
 add_subdirectory(src)
-add_subdirectory(tests)
+
+if(BUILD_TESTING)
+    include(FetchContent)
+    FetchContent_Declare(googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.17.0
+        GIT_SHALLOW FALSE  # ensure submodules are checked out
+    )
+    FetchContent_MakeAvailable(googletest)
+
+    # Workaround, see: https://github.com/google/googletest/issues/4762
+    # TODO: remove when googletest is updated
+    if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+            AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "21")
+        target_compile_options(gtest PUBLIC -Wno-character-conversion)
+    endif()
+
+    add_subdirectory(tests)
+endif()

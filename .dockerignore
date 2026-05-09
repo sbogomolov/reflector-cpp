@@ -1,0 +1,13 @@
+build/
+.cache/
+.claude/
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+docker_build.sh
+README.md
+TODO.md
+config.toml
+cmake_gen.sh
+tests/
