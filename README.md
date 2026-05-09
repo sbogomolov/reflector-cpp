@@ -1,6 +1,6 @@
 # reflector
 
-Reflects Wake-on-LAN magic packets received on one network interface onto another as a directed broadcast. Useful when the host that sends WoL packets and the host you want to wake live on different L2 segments — for example, a router bridging a wired LAN to a Wi-Fi network where directed broadcasts are not forwarded.
+Reflects Wake-on-LAN magic packets received on one network interface onto another as a limited broadcast (`255.255.255.255`). Useful when the host that sends WoL packets and the host you want to wake live on different L2 segments — for example, a router bridging a wired LAN to a Wi-Fi network where broadcasts are not forwarded.
 
 ## Platform support
 
@@ -48,8 +48,8 @@ macOS uses `IP_BOUND_IF`, which has no equivalent privilege requirement.
 
 ## Configuration
 
-`config.toml` contains one or more `[[wol]]` entries, plus optional top-level
-settings:
+`config.toml` contains optional top-level settings plus at least one reflector
+entry. The current build supports `[[wol]]` entries:
 
 ```toml
 log_level = "info"             # optional; one of debug | info | warning | error (default: info)

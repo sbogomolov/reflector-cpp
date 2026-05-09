@@ -248,6 +248,10 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
         }
     }
 
+    if (config.ReflectorCount() == 0) {
+        return std::unexpected(Error{"configuration must contain at least one reflector"});
+    }
+
     return config;
 }
 

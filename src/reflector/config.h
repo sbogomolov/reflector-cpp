@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "mac_address.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -33,6 +34,8 @@ public:
 
 private:
     Config() noexcept = default;
+    [[nodiscard]] size_t ReflectorCount() const noexcept { return wol_configs_.size(); }
+
     std::vector<WolConfig> wol_configs_;
     LogLevel log_level_ = LogLevel::Info;
 };

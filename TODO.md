@@ -1,5 +1,4 @@
 # TODO
 
-- Consider having one callback per socket in Dispatcher.
-- Consider not registering intermediate callbacks and register all callbacks directly with Dispatcher.
 - Use async sockets.
+- Do not allocate a string in Logger when a static string is used for the name.

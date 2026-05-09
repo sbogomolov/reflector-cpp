@@ -23,6 +23,21 @@ std::filesystem::path MakeTempConfigPath(std::string_view test_name) {
     return std::filesystem::temp_directory_path() / filename;
 }
 
+std::string TomlWithLogLevel(std::string_view log_level) {
+    std::string toml;
+    toml += "log_level = \"";
+    toml += log_level;
+    toml += R"("
+
+[[wol]]
+name = "tv"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+)";
+    return toml;
+}
+
 } // namespace
 
 TEST(ConfigTest, ParsesDefaultPorts) {
@@ -177,10 +192,14 @@ TEST(ConfigTest, RejectsWolObject) {
     ASSERT_FALSE(config.has_value());
 }
 
-TEST(ConfigTest, AcceptsEmptyWolArray) {
+TEST(ConfigTest, RejectsEmptyWolArrayAsNoReflectors) {
     const auto config = Config::FromString("wol = []\n");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_TRUE(config->WolConfigs().empty());
+    ASSERT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, RejectsConfigWithNoReflectors) {
+    const auto config = Config::FromString("log_level = \"info\"\n");
+    ASSERT_FALSE(config.has_value());
 }
 
 TEST(ConfigTest, RejectsWolScalar) {
@@ -587,31 +606,31 @@ target_if = "eth1"
 }
 
 TEST(ConfigTest, ParsesLogLevelDebug) {
-    const auto config = Config::FromString("log_level = \"debug\"\n");
+    const auto config = Config::FromString(TomlWithLogLevel("debug"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
 }
 
 TEST(ConfigTest, ParsesLogLevelInfo) {
-    const auto config = Config::FromString("log_level = \"info\"\n");
+    const auto config = Config::FromString(TomlWithLogLevel("info"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Info);
 }
 
 TEST(ConfigTest, ParsesLogLevelWarning) {
-    const auto config = Config::FromString("log_level = \"warning\"\n");
+    const auto config = Config::FromString(TomlWithLogLevel("warning"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
 }
 
 TEST(ConfigTest, ParsesLogLevelError) {
-    const auto config = Config::FromString("log_level = \"error\"\n");
+    const auto config = Config::FromString(TomlWithLogLevel("error"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Error);
 }
 
 TEST(ConfigTest, ParsesLogLevelCaseInsensitive) {
-    const auto config = Config::FromString("log_level = \"DEBUG\"\n");
+    const auto config = Config::FromString(TomlWithLogLevel("DEBUG"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
 }
