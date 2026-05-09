@@ -21,7 +21,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_FLAGS "-Werror -Wall -Wextra -Wpedantic")
 set(CMAKE_CXX_FLAGS_DEBUG "-ggdb3")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=auto")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(_reflector_sanitize_default ON)
