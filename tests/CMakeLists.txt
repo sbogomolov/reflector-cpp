@@ -7,6 +7,7 @@ target_sources(reflector_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/logger_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_listener_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_sender_test.cpp

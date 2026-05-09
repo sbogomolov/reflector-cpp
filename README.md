@@ -48,9 +48,12 @@ macOS uses `IP_BOUND_IF`, which has no equivalent privilege requirement.
 
 ## Configuration
 
-`config.toml` contains one or more `[[wol]]` entries:
+`config.toml` contains one or more `[[wol]]` entries, plus optional top-level
+settings:
 
 ```toml
+log_level = "info"             # optional; one of debug | info | warning | error (default: info)
+
 [[wol]]
 name      = "tv"               # human-readable label, used in logs
 mac       = "B0:37:95:C5:60:BE" # MAC address of the host to wake

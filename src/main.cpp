@@ -34,6 +34,9 @@ int Run(int argc, char* argv[]) {
         return 1;
     }
 
+    logger.Info("Setting minimum log level to {}", config->MinLogLevel());
+    reflector::Logger::SetMinLevel(config->MinLogLevel());
+
     logger.Debug("Config: {}", *config);
 
     reflector::Dispatcher dispatcher;

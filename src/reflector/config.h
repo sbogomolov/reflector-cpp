@@ -1,6 +1,7 @@
 #pragma once
 
 #include "error.h"
+#include "logger.h"
 #include "mac_address.h"
 
 #include <cstdint>
@@ -28,10 +29,12 @@ public:
     [[nodiscard]] static std::expected<Config, Error> FromFile(const char* path);
     [[nodiscard]] static std::expected<Config, Error> FromString(std::string_view str);
     [[nodiscard]] const std::vector<WolConfig>& WolConfigs() const noexcept { return wol_configs_; }
+    [[nodiscard]] LogLevel MinLogLevel() const noexcept { return log_level_; }
 
 private:
     Config() noexcept = default;
     std::vector<WolConfig> wol_configs_;
+    LogLevel log_level_ = LogLevel::Info;
 };
 
 } // namespace reflector
@@ -87,7 +90,7 @@ struct std::formatter<reflector::Config, char>
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::Config& c, FmtContext& ctx) const
     {
-        std::format_to(ctx.out(), "{{wol: [");
+        std::format_to(ctx.out(), "{{log_level: {}, wol: [", c.MinLogLevel());
         bool first = true;
         for (const auto& wol_config : c.WolConfigs()) {
             if (first) {

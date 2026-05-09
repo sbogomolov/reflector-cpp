@@ -1,4 +1,5 @@
 #include "reflector/config.h"
+#include "reflector/logger.h"
 #include "reflector/mac_address.h"
 
 #include <gtest/gtest.h>
@@ -569,4 +570,58 @@ target_if = "lo0"
 
     const auto config = Config::FromString(toml);
     ASSERT_TRUE(config.has_value()) << config.error().Message();
+}
+
+TEST(ConfigTest, LogLevelDefaultsToInfo) {
+    std::string toml = R"(
+[[wol]]
+name = "tv"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Info);
+}
+
+TEST(ConfigTest, ParsesLogLevelDebug) {
+    const auto config = Config::FromString("log_level = \"debug\"\n");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
+}
+
+TEST(ConfigTest, ParsesLogLevelInfo) {
+    const auto config = Config::FromString("log_level = \"info\"\n");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Info);
+}
+
+TEST(ConfigTest, ParsesLogLevelWarning) {
+    const auto config = Config::FromString("log_level = \"warning\"\n");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+}
+
+TEST(ConfigTest, ParsesLogLevelError) {
+    const auto config = Config::FromString("log_level = \"error\"\n");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Error);
+}
+
+TEST(ConfigTest, ParsesLogLevelCaseInsensitive) {
+    const auto config = Config::FromString("log_level = \"DEBUG\"\n");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
+}
+
+TEST(ConfigTest, RejectsUnknownLogLevel) {
+    const auto config = Config::FromString("log_level = \"trace\"\n");
+    ASSERT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, RejectsNonStringLogLevel) {
+    const auto config = Config::FromString("log_level = 7\n");
+    ASSERT_FALSE(config.has_value());
 }

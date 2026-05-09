@@ -52,8 +52,14 @@ public:
 
     void SetName(std::string_view name) { name_ = name; }
 
+    static void SetMinLevel(LogLevel level) noexcept { min_level_ = level; }
+    [[nodiscard]] static LogLevel MinLevel() noexcept { return min_level_; }
+
     template <typename... Args>
     void Log(LogLevel level, detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
+        if (level < min_level_) {
+            return;
+        }
         try {
             // Clang 17 does not support std::chrono::current_zone(). Maybe next time.
             const auto time = std::time({});
@@ -89,6 +95,8 @@ public:
     }
 
 private:
+    inline static LogLevel min_level_ = LogLevel::Info;
+
     std::string name_;
 };
 

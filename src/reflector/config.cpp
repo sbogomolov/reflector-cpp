@@ -4,11 +4,14 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <iterator>
 #include <optional>
+#include <string>
 #include <system_error>
 
 namespace {
@@ -25,6 +28,17 @@ std::expected<std::string_view, Error> ReadStringField(const toml::node& field_n
         return std::unexpected(Error{"wol {} is not configured", field_name});
     }
     return *field_value;
+}
+
+std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
+    std::string lower;
+    lower.reserve(s.size());
+    std::ranges::transform(s, std::back_inserter(lower), [](unsigned char c) { return std::tolower(c); });
+    if (lower == "debug") return LogLevel::Debug;
+    if (lower == "info") return LogLevel::Info;
+    if (lower == "warning") return LogLevel::Warning;
+    if (lower == "error") return LogLevel::Error;
+    return std::unexpected(Error{"log_level must be one of: debug, info, warning, error; got \"{}\"", s});
 }
 
 std::expected<std::vector<uint16_t>, Error> ReadPorts(const toml::node& ports_node) {
@@ -219,6 +233,16 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
                 return std::unexpected(Error{"cannot read wol configuration: {}", wol_configs.error().Message()});
             }
             config.wol_configs_ = std::move(*wol_configs);
+        } else if (section_name == "log_level") {
+            const auto field_value = value.value<std::string_view>();
+            if (!field_value.has_value()) {
+                return std::unexpected(Error{"log_level must be a string"});
+            }
+            auto level = LogLevelFromString(*field_value);
+            if (!level.has_value()) {
+                return std::unexpected(std::move(level).error());
+            }
+            config.log_level_ = *level;
         } else {
             return std::unexpected(Error{"unexpected configuration section: {}", section_name});
         }
