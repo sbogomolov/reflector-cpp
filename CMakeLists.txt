@@ -15,13 +15,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSIO
     message(FATAL_ERROR "AppleClang ${CMAKE_CXX_COMPILER_VERSION} is too old; need AppleClang 16 (Xcode 16) or newer.")
 endif()
 
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-set(CMAKE_CXX_FLAGS "-Werror -Wall -Wextra -Wpedantic")
-set(CMAKE_CXX_FLAGS_DEBUG "-ggdb3")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -flto=auto")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(_reflector_sanitize_default ON)
@@ -31,10 +25,45 @@ endif()
 set(REFLECTOR_SANITIZE ${_reflector_sanitize_default} CACHE BOOL
     "Enable AddressSanitizer + UndefinedBehaviorSanitizer")
 unset(_reflector_sanitize_default)
-if(REFLECTOR_SANITIZE)
-    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
-    add_link_options(-fsanitize=address,undefined)
+
+set(_reflector_release_compile_options)
+if(NOT CMAKE_CXX_FLAGS_RELEASE MATCHES "(^|[ \t])-O3($|[ \t])")
+    list(APPEND _reflector_release_compile_options $<$<CONFIG:Release>:-O3>)
 endif()
+
+include(CheckIPOSupported)
+check_ipo_supported(RESULT _reflector_ipo_supported OUTPUT _reflector_ipo_error)
+if(NOT _reflector_ipo_supported AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(WARNING "IPO/LTO is not supported by this toolchain: ${_reflector_ipo_error}")
+endif()
+
+function(reflector_configure_project_target target)
+    set_target_properties(${target} PROPERTIES
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    target_compile_options(${target} PRIVATE
+        -Werror
+        -Wall
+        -Wextra
+        -Wpedantic
+        $<$<CONFIG:Debug>:-ggdb3>
+        ${_reflector_release_compile_options}
+    )
+    if(REFLECTOR_SANITIZE)
+        target_compile_options(${target} PRIVATE
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+        )
+        target_link_options(${target} PRIVATE
+            -fsanitize=address,undefined
+        )
+    endif()
+    if(_reflector_ipo_supported)
+        set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+endfunction()
 
 include(FetchContent)
 FetchContent_Declare(tomlplusplus
@@ -43,12 +72,10 @@ FetchContent_Declare(tomlplusplus
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
-include_directories(
-    ${CMAKE_SOURCE_DIR}/src)
-
 add_executable(reflector_app)
-target_link_libraries(reflector_app PRIVATE reflector)
 set_property(TARGET reflector_app PROPERTY OUTPUT_NAME reflector)
+reflector_configure_project_target(reflector_app)
+target_link_libraries(reflector_app PRIVATE reflector)
 
 add_subdirectory(src)
 
@@ -60,13 +87,6 @@ if(BUILD_TESTING)
         GIT_SHALLOW FALSE  # ensure submodules are checked out
     )
     FetchContent_MakeAvailable(googletest)
-
-    # Workaround, see: https://github.com/google/googletest/issues/4762
-    # TODO: remove when googletest is updated
-    if((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-            AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "21")
-        target_compile_options(gtest PUBLIC -Wno-character-conversion)
-    endif()
 
     add_subdirectory(tests)
 endif()

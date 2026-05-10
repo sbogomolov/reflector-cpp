@@ -1,7 +1,4 @@
-add_executable(reflector_test)
-target_link_libraries(reflector_test PRIVATE reflector GTest::gtest_main)
-
-target_sources(reflector_test PRIVATE
+add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/config_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/delegate_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher_test.cpp
@@ -15,6 +12,8 @@ target_sources(reflector_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/wol_listener_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/wol_reflector_test.cpp
 )
+reflector_configure_project_target(reflector_test)
+target_link_libraries(reflector_test PRIVATE reflector GTest::gtest_main)
 
 include(GoogleTest)
 gtest_discover_tests(reflector_test)
