@@ -27,7 +27,6 @@ RUN --mount=type=cache,target=/src/build/_deps,sharing=locked \
         -D CMAKE_BUILD_TYPE=Release \
         -D BUILD_TESTING=OFF \
         -D REFLECTOR_SANITIZE=OFF \
-        -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     && cmake --build build --target reflector_app
 
 FROM build-env AS test
@@ -39,7 +38,6 @@ RUN --mount=type=cache,target=/src/build-test/_deps,sharing=locked \
         -D BUILD_TESTING=ON \
         -D REFLECTOR_ENABLE_E2E_TESTS=OFF \
         -D REFLECTOR_SANITIZE=OFF \
-        -D CMAKE_CXX_COMPILER_LAUNCHER=ccache \
     && cmake --build build-test --target reflector_test \
     && ctest --test-dir build-test -L unit --output-on-failure
 

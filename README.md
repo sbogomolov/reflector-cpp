@@ -27,6 +27,8 @@ cmake --build build      # produces build/reflector and build/tests/reflector_te
 Debug builds enable AddressSanitizer + UndefinedBehaviorSanitizer by default. Pass `-DREFLECTOR_SANITIZE=OFF` to opt out.
 Release builds use `-O3` and enable IPO/LTO when the toolchain supports it.
 
+If `ccache` is installed, CMake uses it automatically as the C++ compiler launcher. Disable this with `-DREFLECTOR_ENABLE_CCACHE=OFF`, or set `CMAKE_CXX_COMPILER_LAUNCHER` explicitly to use another launcher.
+
 Dependencies (`tomlplusplus`, `googletest`) are fetched via `FetchContent` — no system packages required.
 
 ### Docker build
