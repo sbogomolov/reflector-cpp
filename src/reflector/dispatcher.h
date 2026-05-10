@@ -7,6 +7,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <csignal>
 #include <cstdint>
 #include <optional>
@@ -52,6 +53,7 @@ private:
     friend class WolReflectorTest;
 
     static constexpr size_t RECEIVE_BUFFER_SIZE = 4096;
+    static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
     struct RegistrationEntry {
         RegistrationId id;
@@ -64,6 +66,7 @@ private:
 
     [[nodiscard]] bool AddReadEvent(int fd) noexcept;
     [[nodiscard]] bool RemoveReadEventIfUnused(int fd) noexcept;
+    [[nodiscard]] bool DrainReadableFd(int fd) noexcept;
     bool Unregister(RegistrationId id) noexcept;
     [[nodiscard]] std::optional<Packet> Receive(int fd) noexcept;
     void DispatchPacket(int fd, const Packet& packet) const;

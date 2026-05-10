@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+
 #include <array>
 #include <cstddef>
 #include <utility>
@@ -12,6 +14,14 @@ TEST(UdpSocketTest, DefaultConstructsValidSocket) {
     UdpSocket sock;
     EXPECT_TRUE(sock.IsValid());
     EXPECT_GE(sock.Fd(), 0);
+}
+
+TEST(UdpSocketTest, DefaultConstructsNonBlockingSocket) {
+    UdpSocket sock;
+
+    const auto flags = fcntl(sock.Fd(), F_GETFL, 0);
+    ASSERT_GE(flags, 0);
+    EXPECT_NE(flags & O_NONBLOCK, 0);
 }
 
 TEST(UdpSocketTest, MoveConstructTransfersOwnership) {

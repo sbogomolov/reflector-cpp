@@ -177,4 +177,39 @@ TEST_F(DispatcherTest, PollOnceDispatchesPacket) {
     EXPECT_EQ(recorder.source_ip, IpAddress::Loopback());
 }
 
+TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
+    UdpSocket listener_socket;
+    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
+    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
+
+    PacketCounter counter;
+    const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+
+    EXPECT_FALSE(dispatcher.PollOnce(std::chrono::milliseconds{0}));
+    EXPECT_EQ(counter.count, 0);
+}
+
+TEST_F(DispatcherTest, PollOnceDispatchesQueuedPacketBurst) {
+    UdpSocket listener_socket;
+    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
+    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
+    const auto listener_port = BoundPort(listener_socket);
+    ASSERT_NE(listener_port, 0);
+
+    PacketCounter counter;
+    const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+
+    UdpSocket sender_socket;
+    const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
+    constexpr int packet_count = 3;
+    for (int i = 0; i < packet_count; ++i) {
+        ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+    }
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(counter.count, packet_count);
+}
+
 } // namespace reflector

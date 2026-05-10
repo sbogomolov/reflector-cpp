@@ -33,6 +33,7 @@ public:
     [[nodiscard]] bool SendTo(std::span<const std::byte> payload, IpAddress address, uint16_t port) noexcept;
 
 private:
+    [[nodiscard]] bool SetNonBlocking() noexcept;
     void UpdateName();
 
     std::string name_;

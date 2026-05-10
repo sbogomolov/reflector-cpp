@@ -1,6 +1,8 @@
 #include "error.h"
 #include "udp_socket.h"
 
+#include <cerrno>
+#include <fcntl.h>
 #include <format>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -16,6 +18,11 @@ UdpSocket::UdpSocket()
     socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_ < 0) {
         logger_.Error("Cannot create socket: {}", Error::FromErrno());
+        return;
+    }
+
+    if (!SetNonBlocking()) {
+        Close();
     }
 }
 
@@ -54,6 +61,25 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
     port_ = std::exchange(other.port_, 0);
 
     return *this;
+}
+
+bool UdpSocket::SetNonBlocking() noexcept {
+    const auto flags = fcntl(socket_, F_GETFL, 0);
+    if (flags < 0) {
+        logger_.Error("Cannot get socket flags: {}", Error::FromErrno());
+        return false;
+    }
+
+    if ((flags & O_NONBLOCK) != 0) {
+        return true;
+    }
+
+    if (fcntl(socket_, F_SETFL, flags | O_NONBLOCK) != 0) {
+        logger_.Error("Cannot make socket nonblocking: {}", Error::FromErrno());
+        return false;
+    }
+
+    return true;
 }
 
 void UdpSocket::UpdateName() {
@@ -167,12 +193,15 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, IpAddress address, ui
     destination_address.sin_port = htons(port);
     destination_address.sin_addr.s_addr = address.InAddr();
 
-    const auto bytes_sent = sendto(socket_,
-        payload.data(),
-        payload.size(),
-        0,
-        reinterpret_cast<sockaddr*>(&destination_address),
-        sizeof(destination_address));
+    ssize_t bytes_sent;
+    do {
+        bytes_sent = sendto(socket_,
+            payload.data(),
+            payload.size(),
+            0,
+            reinterpret_cast<sockaddr*>(&destination_address),
+            sizeof(destination_address));
+    } while (bytes_sent < 0 && errno == EINTR);
     if (bytes_sent < 0) {
         logger_.Error("Cannot send UDP packet to {}:{}: {}", address, port, Error::FromErrno());
         return false;

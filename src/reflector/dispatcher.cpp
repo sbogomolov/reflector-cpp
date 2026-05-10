@@ -207,14 +207,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     const auto fd = event.data.fd;
 #endif
 
-    auto packet = Receive(fd);
-    if (!packet.has_value()) {
-        logger_.Error("Cannot dispatch packet for fd {}: receive failed", fd);
-        return false;
-    }
-
-    DispatchPacket(fd, *packet);
-    return true;
+    return DrainReadableFd(fd);
 }
 
 bool Dispatcher::AddReadEvent(int fd) noexcept {
@@ -278,6 +271,21 @@ bool Dispatcher::RemoveReadEventIfUnused(int fd) noexcept {
     return true;
 }
 
+bool Dispatcher::DrainReadableFd(int fd) noexcept {
+    bool dispatched_any = false;
+    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
+        const auto packet = Receive(fd);
+        if (!packet) {
+            return dispatched_any;
+        }
+
+        DispatchPacket(fd, *packet);
+        dispatched_any = true;
+    }
+
+    return dispatched_any;
+}
+
 std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
     sockaddr_in source_address{};
     socklen_t source_address_size = sizeof(source_address);
@@ -292,11 +300,15 @@ std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
             &source_address_size);
     } while (bytes_received < 0 && errno == EINTR);
     if (bytes_received < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return std::nullopt;
+        }
+
         logger_.Error("Cannot receive packet from fd {}: {}", fd, Error::FromErrno());
         return std::nullopt;
     }
 
-    auto packet = Packet{
+    Packet packet{
         .header = PacketHeader{
             .source_ip = IpAddress::FromInAddr(source_address.sin_addr.s_addr),
             .source_port = ntohs(source_address.sin_port),
