@@ -25,6 +25,7 @@ cmake --build build      # produces build/reflector and build/tests/reflector_te
 ```
 
 Debug builds enable AddressSanitizer + UndefinedBehaviorSanitizer by default. Pass `-DREFLECTOR_SANITIZE=OFF` to opt out.
+Release builds use `-O3` and enable IPO/LTO when the toolchain supports it.
 
 Dependencies (`tomlplusplus`, `googletest`) are fetched via `FetchContent` — no system packages required.
 
