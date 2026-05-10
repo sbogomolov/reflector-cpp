@@ -16,4 +16,6 @@ reflector_configure_project_target(reflector_test)
 target_link_libraries(reflector_test PRIVATE reflector GTest::gtest_main)
 
 include(GoogleTest)
-gtest_discover_tests(reflector_test)
+gtest_discover_tests(reflector_test
+    PROPERTIES LABELS unit
+)

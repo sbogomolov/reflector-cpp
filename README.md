@@ -29,6 +29,15 @@ Release builds use `-O3` and enable IPO/LTO when the toolchain supports it.
 
 Dependencies (`tomlplusplus`, `googletest`) are fetched via `FetchContent` — no system packages required.
 
+### Docker build
+
+```sh
+./docker_build.sh
+docker build --target test .
+```
+
+The runtime image uses pinned Debian/distroless base image digests. The `test` target builds and runs the unit suite inside the Debian build environment without changing the final production image.
+
 ## Run
 
 ```sh
@@ -70,9 +79,38 @@ Each entry installs a listener on `source_if` for the listed UDP ports, matches 
 ```sh
 cmake --build build
 ctest --test-dir build --output-on-failure
+ctest --test-dir build -L unit --output-on-failure
 ```
 
 `--output-on-failure` prints the full test log for any failing test (ctest hides output for passing tests by default). Several tests open loopback UDP sockets and exchange real packets, so they need to run outside any sandbox that blocks local networking.
+
+### Docker e2e tests
+
+The Docker-backed e2e suite is opt-in because it builds/runs containers and creates temporary Docker networks:
+
+```sh
+python3 e2e/run.py
+```
+
+To register it with CTest:
+
+```sh
+cmake -S . -B build -DREFLECTOR_ENABLE_E2E_TESTS=ON
+ctest --test-dir build -L e2e --output-on-failure
+```
+
+The runner builds `reflector:e2e` by default, uses `python:3.13-alpine` for UDP probe containers, and leaves Docker resources behind on failure when passed `--keep-on-failure`.
+
+### Docker CTest targets
+
+The Docker build test is also opt-in:
+
+```sh
+cmake -S . -B build -DREFLECTOR_ENABLE_DOCKER_TESTS=ON
+ctest --test-dir build -L docker --output-on-failure
+```
+
+The `docker` label selects tests that require Docker. The e2e test keeps both `e2e` and `docker` labels, so `-L e2e` selects only e2e coverage while `-L docker` selects all Docker-dependent coverage.
 
 ## License
 

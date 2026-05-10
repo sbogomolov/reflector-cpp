@@ -26,6 +26,9 @@ set(REFLECTOR_SANITIZE ${_reflector_sanitize_default} CACHE BOOL
     "Enable AddressSanitizer + UndefinedBehaviorSanitizer")
 unset(_reflector_sanitize_default)
 
+option(REFLECTOR_ENABLE_E2E_TESTS "Enable Docker-backed end-to-end tests" OFF)
+option(REFLECTOR_ENABLE_DOCKER_TESTS "Enable Docker-backed build tests" OFF)
+
 set(_reflector_release_compile_options)
 if(NOT CMAKE_CXX_FLAGS_RELEASE MATCHES "(^|[ \t])-O3($|[ \t])")
     list(APPEND _reflector_release_compile_options $<$<CONFIG:Release>:-O3>)
@@ -89,4 +92,34 @@ if(BUILD_TESTING)
     FetchContent_MakeAvailable(googletest)
 
     add_subdirectory(tests)
+
+    if(REFLECTOR_ENABLE_DOCKER_TESTS)
+        find_program(DOCKER_EXECUTABLE docker)
+        if(NOT DOCKER_EXECUTABLE)
+            message(FATAL_ERROR "REFLECTOR_ENABLE_DOCKER_TESTS requires the docker executable")
+        endif()
+
+        add_test(
+            NAME ReflectorDocker.BuildTestTarget
+            COMMAND ${DOCKER_EXECUTABLE} build --target test .
+        )
+        set_tests_properties(ReflectorDocker.BuildTestTarget PROPERTIES
+            LABELS "docker"
+            TIMEOUT 600
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endif()
+
+    if(REFLECTOR_ENABLE_E2E_TESTS)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        add_test(
+            NAME ReflectorE2E.WolReflection
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/e2e/run.py
+        )
+        set_tests_properties(ReflectorE2E.WolReflection PROPERTIES
+            LABELS "e2e;docker"
+            TIMEOUT 180
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endif()
 endif()
