@@ -9,7 +9,7 @@ WolListener::Registration::Registration(
     WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept
         : listener_{&listener}, dispatcher_reg_{std::move(dispatcher_reg)}, port_{port} {}
 
-WolListener::Registration::~Registration() {
+WolListener::Registration::~Registration() noexcept {
     Reset();
 }
 
@@ -47,7 +47,7 @@ bool WolListener::Registration::Reset() noexcept {
 WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface)
         : dispatcher_{&dispatcher}, interface_{interface} {}
 
-WolListener::~WolListener() {
+WolListener::~WolListener() noexcept {
     if (!listeners_.empty()) {
         logger_.Error("Destroying wol listener on interface \"{}\" with {} UDP port listener(s) still active",
             interface_, listeners_.size());

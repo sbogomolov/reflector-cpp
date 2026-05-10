@@ -19,7 +19,7 @@ public:
     class Registration : NoCopy {
     public:
         Registration() noexcept = default;
-        ~Registration();
+        ~Registration() noexcept;
 
         Registration(Registration&& other) noexcept;
         Registration& operator=(Registration&& other) noexcept;
@@ -38,7 +38,7 @@ public:
     };
 
     WolListener(Dispatcher& dispatcher, std::string_view interface);
-    ~WolListener();
+    ~WolListener() noexcept;
 
     [[nodiscard]] Registration Register(uint16_t port, const PacketCallback& callback);
 

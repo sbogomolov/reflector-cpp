@@ -27,7 +27,7 @@ WolReflector::WolReflector(WolListener& listener, UdpSender& sender, const WolCo
     Initialize(config);
 }
 
-WolReflector::~WolReflector() {
+WolReflector::~WolReflector() noexcept {
     Reset();
 }
 
@@ -109,7 +109,7 @@ void WolReflector::HandlePacket(const Packet& packet, uint16_t port) noexcept {
         packet.header.source_ip, packet.header.source_port, sender_->BroadcastAddress(), port);
 }
 
-void WolReflector::Reset() {
+void WolReflector::Reset() noexcept {
     registrations_.clear();
     port_handlers_.clear();
     listener_ = nullptr;

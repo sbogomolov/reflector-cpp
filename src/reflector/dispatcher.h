@@ -22,7 +22,7 @@ public:
     class Registration : NoCopy {
     public:
         Registration() noexcept = default;
-        ~Registration();
+        ~Registration() noexcept;
 
         Registration(Registration&& other) noexcept;
         Registration& operator=(Registration&& other) noexcept;
@@ -40,7 +40,7 @@ public:
     };
 
     Dispatcher();
-    ~Dispatcher();
+    ~Dispatcher() noexcept;
 
     [[nodiscard]] Registration Register(const UdpSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 

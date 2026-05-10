@@ -26,7 +26,7 @@ UdpSocket::UdpSocket()
     }
 }
 
-UdpSocket::~UdpSocket() {
+UdpSocket::~UdpSocket() noexcept {
     Close();
 }
 

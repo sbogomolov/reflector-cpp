@@ -15,7 +15,7 @@ namespace reflector {
 class UdpSocket : NoCopy {
 public:
     UdpSocket();
-    ~UdpSocket();
+    ~UdpSocket() noexcept;
 
     UdpSocket(UdpSocket&& other) noexcept;
     UdpSocket& operator=(UdpSocket&& other) noexcept;

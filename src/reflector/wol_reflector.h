@@ -21,7 +21,7 @@ class WolReflector : NoMove {
 public:
     WolReflector(WolListener& listener, const WolConfig& config);
     WolReflector(WolListener& listener, UdpSender& sender, const WolConfig& config);
-    ~WolReflector();
+    ~WolReflector() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
@@ -43,7 +43,7 @@ private:
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     void HandlePacket(const Packet& packet, uint16_t port) noexcept;
-    void Reset();
+    void Reset() noexcept;
 
     Logger logger_{"WolReflector"};
     WolListener* listener_;

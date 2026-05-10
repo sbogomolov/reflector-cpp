@@ -51,7 +51,7 @@ namespace reflector {
 Dispatcher::Registration::Registration(Dispatcher& dispatcher, RegistrationId id) noexcept
         : dispatcher_{&dispatcher}, id_{id} {}
 
-Dispatcher::Registration::~Registration() {
+Dispatcher::Registration::~Registration() noexcept {
     Reset();
 }
 
@@ -94,7 +94,7 @@ Dispatcher::Dispatcher() {
     }
 }
 
-Dispatcher::~Dispatcher() {
+Dispatcher::~Dispatcher() noexcept {
     if (!registrations_.empty()) {
         logger_.Error("Destroying dispatcher with {} packet callback registration(s) still active", registrations_.size());
     }
