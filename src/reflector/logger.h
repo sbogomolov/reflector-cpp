@@ -2,6 +2,7 @@
 
 #include "reflector/util/no_copy.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -34,6 +35,15 @@ constexpr const char* Basename(const char* path) noexcept {
     return base;
 }
 
+template <size_t N>
+constexpr size_t StaticStringLength(const char (&s)[N]) noexcept {
+    if constexpr (N == 0) {
+        return 0;
+    } else {
+        return s[N - 1] == '\0' ? N - 1 : N;
+    }
+}
+
 template <typename... Args>
 struct LogFmt {
     std::format_string<Args...> fmt;
@@ -48,9 +58,42 @@ struct LogFmt {
 
 class Logger : NoCopy {
 public:
-    explicit Logger(std::string_view name) : name_{name} {}
+    explicit Logger(std::string_view name) : owned_name_{name}, name_{owned_name_}, owns_name_{true} {}
 
-    void SetName(std::string_view name) { name_ = name; }
+    template <size_t N>
+    explicit Logger(const char (&name)[N]) noexcept : name_{name, detail::StaticStringLength(name)} {}
+
+    Logger(Logger&& other) noexcept
+            : owned_name_{std::move(other.owned_name_)}
+            , name_{other.owns_name_ ? std::string_view{owned_name_} : other.name_}
+            , owns_name_{other.owns_name_} {
+        other.ResetName();
+    }
+
+    Logger& operator=(Logger&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+
+        owned_name_ = std::move(other.owned_name_);
+        owns_name_ = other.owns_name_;
+        name_ = owns_name_ ? std::string_view{owned_name_} : other.name_;
+        other.ResetName();
+        return *this;
+    }
+
+    void SetName(std::string_view name) {
+        owned_name_ = name;
+        name_ = owned_name_;
+        owns_name_ = true;
+    }
+
+    template <size_t N>
+    void SetName(const char (&name)[N]) noexcept {
+        owned_name_.clear();
+        name_ = std::string_view{name, detail::StaticStringLength(name)};
+        owns_name_ = false;
+    }
 
     static void SetMinLevel(LogLevel level) noexcept { min_level_ = level; }
     [[nodiscard]] static LogLevel MinLevel() noexcept { return min_level_; }
@@ -95,9 +138,17 @@ public:
     }
 
 private:
+    void ResetName() noexcept {
+        owned_name_.clear();
+        name_ = {};
+        owns_name_ = false;
+    }
+
     inline static LogLevel min_level_ = LogLevel::Info;
 
-    std::string name_;
+    std::string owned_name_;
+    std::string_view name_;
+    bool owns_name_ = false;
 };
 
 } // namespace reflector
