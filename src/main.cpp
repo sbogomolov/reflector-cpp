@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 namespace {
 volatile std::sig_atomic_t g_stop_requested = 0;
 
@@ -20,7 +22,16 @@ void SignalHandler(int) {
     g_stop_requested = 1;
 }
 
+void ConfigureStdoutBuffering() noexcept {
+    if (!isatty(fileno(stdout))) {
+        // Docker and service managers capture stdout through a pipe; line buffering keeps log lines visible before shutdown.
+        std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    }
+}
+
 int Run(int argc, char* argv[]) {
+    ConfigureStdoutBuffering();
+
     reflector::Logger logger("main");
     if (argc > 2) {
         logger.Error("Usage: {} [config.toml]", argv[0]);
