@@ -274,6 +274,16 @@ ports = [{CONFIGURED_PORT}]
         if exit_code != "0":
             raise RuntimeError(f"receiver failed with exit code {exit_code}")
 
+    def print_reflector_logs(self) -> None:
+        logs = docker(["logs", self.reflector_container], check=False)
+        print(f"--- reflector logs: {self.case.name} ---", flush=True)
+        if logs.stdout:
+            print(logs.stdout, end="", flush=True)
+        if logs.stderr:
+            print(logs.stderr, end="", file=sys.stderr, flush=True)
+        if not logs.stdout and not logs.stderr:
+            print("<empty>", flush=True)
+
     def print_diagnostics(self) -> None:
         print(f"\n--- diagnostics for {self.case.name} ({self.prefix}) ---", file=sys.stderr, flush=True)
         for container in [self.reflector_container, self.receiver_container, self.sender_container]:
@@ -304,6 +314,9 @@ ports = [{CONFIGURED_PORT}]
         self.run_sender()
         self.wait_for_result()
         print(f"PASS {self.case.name}", flush=True)
+        if self.args.show_reflector_logs:
+            time.sleep(0.5)
+            self.print_reflector_logs()
 
 
 def build_reflector_image(image: str) -> None:
@@ -329,6 +342,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true", help="use --image without building it first")
     parser.add_argument("--helper-image", default=DEFAULT_HELPER_IMAGE, help="Python image used for UDP probes")
     parser.add_argument("--keep-on-failure", action="store_true", help="leave Docker resources behind after a failure")
+    parser.add_argument("--show-reflector-logs", action="store_true", help="print reflector container logs after each passing case")
     parser.add_argument(
         "--case",
         action="append",

@@ -106,7 +106,7 @@ cmake -S . -B build -DREFLECTOR_ENABLE_E2E_TESTS=ON
 ctest --test-dir build -L e2e --output-on-failure
 ```
 
-The runner builds `reflector:e2e` by default, uses `python:3.13-alpine` for UDP probe containers, and leaves Docker resources behind on failure when passed `--keep-on-failure`.
+The runner builds `reflector:e2e` by default, uses `python:3.13-alpine` for UDP probe containers, can print reflector logs with `--show-reflector-logs`, and leaves Docker resources behind on failure when passed `--keep-on-failure`.
 
 ### Docker CTest targets
 
