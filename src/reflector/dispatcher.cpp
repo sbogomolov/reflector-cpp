@@ -199,12 +199,12 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count == 0) {
         return false;
     }
-    if ((event.events & (EPOLLERR | EPOLLHUP)) != 0 && (event.events & EPOLLIN) == 0) {
-        logger_.Error("Dispatcher read event failed for fd {} (events: {:#x})", event.data.fd, event.events);
+    const auto fd = event.data.fd;
+    const auto events = event.events;
+    if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
+        logger_.Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
         return false;
     }
-
-    const auto fd = event.data.fd;
 #endif
 
     return DrainReadableFd(fd);
