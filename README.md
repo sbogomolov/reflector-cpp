@@ -6,6 +6,10 @@ Reflects Wake-on-LAN magic packets received on one network interface onto anothe
 
 Linux and macOS. Tested on macOS; Linux build is gated on the toolchain checks below but has not been exercised in CI yet.
 
+## TODO
+
+- Add GitHub Actions CI for unit tests on Linux and macOS. Keep Docker-backed tests as separate opt-in or Linux-only jobs so they do not slow down the default path or consume unnecessary hosted-runner minutes.
+
 ## Build
 
 Prerequisites:
@@ -35,10 +39,11 @@ Dependencies (`tomlplusplus`, `googletest`) are fetched via `FetchContent` — n
 
 ```sh
 ./docker_build.sh
+./docker_build.sh --push
 docker build --target test .
 ```
 
-The runtime image uses pinned Debian/distroless base image digests. The `test` target builds and runs the unit suite inside the Debian build environment without changing the final production image.
+The runtime image uses pinned Debian/distroless base image digests. The default Docker build keeps the local workflow simple by building only the native platform. The `--push` mode uses `docker buildx` to publish `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64` and `linux/arm64`; override the destination with `--image`, or override architectures with `--platforms` only for unusual deployment targets. The `test` target builds and runs the unit suite inside the Debian build environment without changing the final production image.
 
 ## Run
 
