@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            platform: linux
+            cc: gcc-14
+            cxx: g++-14
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            cc: gcc-14
+            cxx: g++-14
+          - name: macos-arm64
+            runner: macos-15
+            platform: macos
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache \
+            cmake \
+            g++-14 \
+            gcc-14 \
+            ninja-build
+
+      - name: Install macOS dependencies
+        if: matrix.platform == 'macos'
+        run: |
+          brew list ccache >/dev/null 2>&1 || brew install ccache
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Show toolchain
+        run: |
+          cmake --version
+          ninja --version
+          "${CXX}" --version
+        env:
+          CXX: ${{ matrix.cxx }}
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D REFLECTOR_ENABLE_DOCKER_TESTS=OFF \
+            -D REFLECTOR_ENABLE_E2E_TESTS=OFF
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Run unit tests
+        run: ctest --test-dir build -L unit --output-on-failure

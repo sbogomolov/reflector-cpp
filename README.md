@@ -4,11 +4,7 @@ Reflects Wake-on-LAN magic packets received on one network interface onto anothe
 
 ## Platform support
 
-Linux and macOS. Tested on macOS; Linux build is gated on the toolchain checks below but has not been exercised in CI yet.
-
-## TODO
-
-- Add GitHub Actions CI for unit tests on Linux and macOS. Keep Docker-backed tests as separate opt-in or Linux-only jobs so they do not slow down the default path or consume unnecessary hosted-runner minutes.
+Linux and macOS. GitHub Actions is configured to run the unit suite on Ubuntu 24.04 x64, Ubuntu 24.04 arm64, and macOS 15.
 
 ## Build
 
