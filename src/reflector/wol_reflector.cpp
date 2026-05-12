@@ -8,23 +8,23 @@
 namespace reflector {
 
 WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
-        : logger_{"WolReflector:" + config.name}, listener_{&listener} {
+        : logger_{"WolReflector:" + config.name} {
     if (!ValidateConfig(config)) {
         return;
     }
 
     owned_sender_.emplace(config.target_if);
     sender_ = &*owned_sender_;
-    Initialize(config);
+    Initialize(listener, config);
 }
 
 WolReflector::WolReflector(WolListener& listener, UdpSender& sender, const WolConfig& config)
-        : logger_{"WolReflector:" + config.name}, listener_{&listener}, sender_{&sender} {
+        : logger_{"WolReflector:" + config.name}, sender_{&sender} {
     if (!ValidateConfig(config)) {
         return;
     }
 
-    Initialize(config);
+    Initialize(listener, config);
 }
 
 WolReflector::~WolReflector() noexcept {
@@ -39,7 +39,7 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
     return true;
 }
 
-void WolReflector::Initialize(const WolConfig& config) {
+void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
     if (!sender_ || !sender_->IsValid()) {
         logger_.Error("Cannot create wol reflector \"{}\": sender setup failed", config.name);
         return;
@@ -52,7 +52,7 @@ void WolReflector::Initialize(const WolConfig& config) {
     for (const auto port : config.ports) {
         auto& port_handler = port_handlers_.emplace_back(this, port);
         const auto callback = CreateDelegate<&PortHandler::OnPacket>(&port_handler);
-        auto registration = listener_->Register(port, callback);
+        auto registration = listener.Register(port, callback);
         if (!registration.IsValid()) {
             logger_.Error("Cannot create wol reflector \"{}\": registration failed for port {}",
                 config.name, port);
@@ -112,7 +112,6 @@ void WolReflector::HandlePacket(const Packet& packet, uint16_t port) noexcept {
 void WolReflector::Reset() noexcept {
     registrations_.clear();
     port_handlers_.clear();
-    listener_ = nullptr;
 }
 
 } // namespace reflector

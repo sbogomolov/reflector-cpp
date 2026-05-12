@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string>
 #include <string_view>
 
 namespace reflector {
@@ -20,8 +19,8 @@ public:
     UdpSocket(UdpSocket&& other) noexcept;
     UdpSocket& operator=(UdpSocket&& other) noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept { return socket_ >= 0; }
-    [[nodiscard]] int Fd() const noexcept { return socket_; }
+    [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
+    [[nodiscard]] int Fd() const noexcept { return fd_; }
 
     void Close() noexcept;
 
@@ -36,10 +35,7 @@ private:
     [[nodiscard]] bool SetNonBlocking() noexcept;
 
     Logger logger_{"UdpSocket"};
-    std::string interface_;
-    IpAddress address_ = IpAddress::Any();
-    int socket_ = -1;
-    uint16_t port_ = 0;
+    int fd_ = -1;
 };
 
 } // namespace reflector

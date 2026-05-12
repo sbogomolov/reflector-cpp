@@ -39,14 +39,13 @@ private:
     };
 
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
-    void Initialize(const WolConfig& config);
+    void Initialize(WolListener& listener, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     void HandlePacket(const Packet& packet, uint16_t port) noexcept;
     void Reset() noexcept;
 
     Logger logger_;
-    WolListener* listener_;
     std::optional<UdpSender> owned_sender_;
     UdpSender* sender_ = nullptr;
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
