@@ -3,6 +3,8 @@
 #include "packet.h"
 #include "udp_socket.h"
 #include "util/no_copy.h"
+#include "util/no_move.h"
+#include "util/shared_ptr_unsynchronized.h"
 
 #include <array>
 #include <chrono>
@@ -14,10 +16,14 @@
 
 namespace reflector {
 
-class Dispatcher : NoCopy {
+class Dispatcher : NoMove {
+private:
+    struct DispatcherState;
+
 public:
     using RegistrationId = uint64_t;
 
+public:
     class Registration : NoCopy {
     public:
         Registration() noexcept = default;
@@ -26,15 +32,15 @@ public:
         Registration(Registration&& other) noexcept;
         Registration& operator=(Registration&& other) noexcept;
 
-        [[nodiscard]] bool IsValid() const noexcept { return dispatcher_ != nullptr && id_ != 0; }
+        [[nodiscard]] bool IsValid() const noexcept;
         bool Reset() noexcept;
 
     private:
         friend class Dispatcher;
 
-        Registration(Dispatcher& dispatcher, RegistrationId id) noexcept;
+        Registration(WeakPtrUnsynchronized<DispatcherState> dispatcher_state, RegistrationId id) noexcept;
 
-        Dispatcher* dispatcher_ = nullptr;
+        WeakPtrUnsynchronized<DispatcherState> dispatcher_state_;
         RegistrationId id_ = 0;
     };
 
@@ -76,6 +82,7 @@ private:
     std::vector<RegistrationEntry> registrations_;
     // Reused across calls; Packet::payload spans into this and is only valid during dispatch.
     std::array<std::byte, RECEIVE_BUFFER_SIZE> receive_buffer_{};
+    SharedPtrUnsynchronized<DispatcherState> dispatcher_state_;
     RegistrationId next_registration_id_ = 1;
     int event_fd_ = -1;
 };

@@ -9,6 +9,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace reflector {
@@ -19,11 +20,19 @@ protected:
     WolListener listener{dispatcher, ""};
 
     size_t DispatcherRegistrationCount() const {
-        return dispatcher.RegistrationCount();
+        return DispatcherRegistrationCount(dispatcher);
+    }
+
+    size_t DispatcherRegistrationCount(const Dispatcher& inspected_dispatcher) const {
+        return inspected_dispatcher.RegistrationCount();
     }
 
     size_t ListenerCount() const {
-        return listener.ListenerCount();
+        return ListenerCount(listener);
+    }
+
+    size_t ListenerCount(const WolListener& inspected_listener) const {
+        return inspected_listener.ListenerCount();
     }
 };
 
@@ -48,6 +57,44 @@ TEST_F(WolListenerTest, UnregisterRemovesUnusedListener) {
 
     EXPECT_EQ(ListenerCount(), 0);
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
+}
+
+TEST_F(WolListenerTest, RegistrationInvalidAfterListenerDestroyed) {
+    WolListener::Registration registration;
+    PacketCounter counter;
+
+    {
+        WolListener scoped_listener{dispatcher, ""};
+        registration = scoped_listener.Register(FreeLoopbackPort(), CreateDelegate<&PacketCounter::OnPacket>(&counter));
+        ASSERT_TRUE(registration.IsValid());
+        EXPECT_EQ(DispatcherRegistrationCount(), 1);
+    }
+
+    EXPECT_EQ(DispatcherRegistrationCount(), 0);
+    EXPECT_FALSE(registration.IsValid());
+    EXPECT_FALSE(registration.Reset());
+}
+
+TEST_F(WolListenerTest, RegistrationInvalidAfterDispatcherDestroyedBeforeListener) {
+    WolListener::Registration registration;
+    PacketCounter counter;
+    std::unique_ptr<WolListener> scoped_listener;
+
+    {
+        Dispatcher scoped_dispatcher;
+        scoped_listener = std::make_unique<WolListener>(scoped_dispatcher, "");
+        registration = scoped_listener->Register(FreeLoopbackPort(), CreateDelegate<&PacketCounter::OnPacket>(&counter));
+        ASSERT_TRUE(registration.IsValid());
+        EXPECT_EQ(DispatcherRegistrationCount(scoped_dispatcher), 1);
+        EXPECT_EQ(ListenerCount(*scoped_listener), 1);
+    }
+
+    EXPECT_FALSE(registration.IsValid());
+    EXPECT_TRUE(registration.Reset());
+    EXPECT_EQ(ListenerCount(*scoped_listener), 0);
+
+    scoped_listener.reset();
+    EXPECT_FALSE(registration.Reset());
 }
 
 TEST_F(WolListenerTest, RegistrationsShareUdpListener) {

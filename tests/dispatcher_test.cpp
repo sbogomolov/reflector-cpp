@@ -136,6 +136,21 @@ TEST_F(DispatcherTest, UnregisterRemovesCallback) {
     EXPECT_EQ(counter.count, 0);
 }
 
+TEST(DispatcherRegistrationLifetimeTest, RegistrationInvalidAfterDispatcherDestroyed) {
+    Dispatcher::Registration registration;
+    UdpSocket socket;
+    PacketCounter counter;
+
+    {
+        Dispatcher dispatcher;
+        registration = dispatcher.Register(socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
+        ASSERT_TRUE(registration.IsValid());
+    }
+
+    EXPECT_FALSE(registration.IsValid());
+    EXPECT_FALSE(registration.Reset());
+}
+
 TEST_F(DispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
     UdpSocket socket;
     UnregisteringPacketCounter first;

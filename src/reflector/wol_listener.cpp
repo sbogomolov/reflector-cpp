@@ -16,18 +16,24 @@ Logger& GetLogger() noexcept {
 
 } // namespace
 
-WolListener::Registration::Registration(
-    WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept
-        : listener_{&listener}, dispatcher_reg_{std::move(dispatcher_reg)}, port_{port} {}
+struct WolListener::RegistrationEntry {
+    RegistrationEntry(WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept
+            : listener{&listener}, dispatcher_reg{std::move(dispatcher_reg)}, port{port} {}
+
+    WolListener* listener;
+    Dispatcher::Registration dispatcher_reg;
+    uint16_t port;
+};
+
+WolListener::Registration::Registration(WeakPtrUnsynchronized<RegistrationEntry> registration_entry) noexcept
+        : registration_entry_{std::move(registration_entry)} {}
 
 WolListener::Registration::~Registration() noexcept {
     Reset();
 }
 
 WolListener::Registration::Registration(Registration&& other) noexcept
-        : listener_{std::exchange(other.listener_, nullptr)}
-        , dispatcher_reg_{std::move(other.dispatcher_reg_)}
-        , port_{std::exchange(other.port_, 0)} {}
+        : registration_entry_{std::move(other.registration_entry_)} {}
 
 WolListener::Registration& WolListener::Registration::operator=(Registration&& other) noexcept {
     if (this == &other) {
@@ -35,30 +41,38 @@ WolListener::Registration& WolListener::Registration::operator=(Registration&& o
     }
 
     Reset();
-    listener_ = std::exchange(other.listener_, nullptr);
-    dispatcher_reg_ = std::move(other.dispatcher_reg_);
-    port_ = std::exchange(other.port_, 0);
+    registration_entry_ = std::move(other.registration_entry_);
     return *this;
 }
 
+bool WolListener::Registration::IsValid() const noexcept {
+    const auto registration = registration_entry_.lock();
+    return registration && registration->dispatcher_reg.IsValid();
+}
+
 bool WolListener::Registration::Reset() noexcept {
-    if (listener_ == nullptr) {
+    const auto registration = registration_entry_.lock();
+    if (!registration) {
+        registration_entry_.reset();
         return false;
     }
 
-    // Tear down the dispatcher registration before releasing the port: the last release may
-    // destroy the underlying UdpListener, and the dispatcher must not still hold its fd.
-    dispatcher_reg_.Reset();
-    auto* listener = std::exchange(listener_, nullptr);
-    const auto port = std::exchange(port_, 0);
-    listener->ReleasePort(port);
-    return true;
+    registration_entry_.reset();
+    return registration->listener->Unregister(registration);
 }
 
 WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface)
         : dispatcher_{&dispatcher}, interface_{interface} {}
 
 WolListener::~WolListener() noexcept {
+    if (!registrations_.empty()) {
+        GetLogger().Error("Destroying wol listener on interface \"{}\" with {} callback registration(s) still active",
+            interface_, registrations_.size());
+    }
+    while (!registrations_.empty()) {
+        Unregister(registrations_.back());
+    }
+
     if (!listeners_.empty()) {
         GetLogger().Error("Destroying wol listener on interface \"{}\" with {} UDP port listener(s) still active",
             interface_, listeners_.size());
@@ -87,7 +101,11 @@ WolListener::Registration WolListener::Register(uint16_t port, const PacketCallb
     }
 
     GetLogger().Debug("Registered wol callback on interface \"{}\" port {}", interface_, port);
-    return Registration{*this, std::move(dispatcher_reg), port};
+    auto registration_entry = SharedPtrUnsynchronized<RegistrationEntry>{
+        new RegistrationEntry{*this, std::move(dispatcher_reg), port}};
+    Registration registration{registration_entry};
+    registrations_.push_back(std::move(registration_entry));
+    return registration;
 }
 
 WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
@@ -133,6 +151,26 @@ void WolListener::ReleasePort(uint16_t port) noexcept {
 
     GetLogger().Debug("Removing UDP listener on interface \"{}\" port {}", interface_, port);
     listeners_.erase(it);
+}
+
+bool WolListener::Unregister(const SharedPtrUnsynchronized<RegistrationEntry>& registration) noexcept {
+    if (!registration) {
+        return false;
+    }
+
+    const auto it = std::ranges::find(registrations_, registration);
+    if (it == registrations_.end()) {
+        GetLogger().Warning("Cannot unregister wol callback on interface \"{}\" port {}: not found",
+            interface_, registration->port);
+        return false;
+    }
+
+    // Tear down the dispatcher registration before releasing the port: the last release may
+    // destroy the underlying UdpListener, and the dispatcher must not still hold its fd.
+    registration->dispatcher_reg.Reset();
+    registrations_.erase(it);
+    ReleasePort(registration->port);
+    return true;
 }
 
 } // namespace reflector

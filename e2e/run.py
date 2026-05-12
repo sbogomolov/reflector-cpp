@@ -229,6 +229,7 @@ class DockerE2E:
         self.wait_for_container_log(self.receiver_container, RECEIVER_READY_LOG, "receiver")
 
     def run_sender(self) -> None:
+        # TODO: Investigate intermittent Docker bridge delivery misses for 255.255.255.255.
         docker(
             [
                 "run",

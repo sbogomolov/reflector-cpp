@@ -4,6 +4,7 @@
 #include "udp_listener.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
+#include "util/shared_ptr_unsynchronized.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,9 @@
 namespace reflector {
 
 class WolListener : NoMove {
+private:
+    struct RegistrationEntry;
+
 public:
     class Registration : NoCopy {
     public:
@@ -23,17 +27,15 @@ public:
         Registration(Registration&& other) noexcept;
         Registration& operator=(Registration&& other) noexcept;
 
-        [[nodiscard]] bool IsValid() const noexcept { return listener_ != nullptr && dispatcher_reg_.IsValid(); }
+        [[nodiscard]] bool IsValid() const noexcept;
         bool Reset() noexcept;
 
     private:
         friend class WolListener;
 
-        Registration(WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept;
+        explicit Registration(WeakPtrUnsynchronized<RegistrationEntry> registration_entry) noexcept;
 
-        WolListener* listener_ = nullptr;
-        Dispatcher::Registration dispatcher_reg_;
-        uint16_t port_ = 0;
+        WeakPtrUnsynchronized<RegistrationEntry> registration_entry_;
     };
 
     WolListener(Dispatcher& dispatcher, std::string_view interface);
@@ -53,11 +55,13 @@ private:
 
     [[nodiscard]] PortListener* AcquirePort(uint16_t port);
     void ReleasePort(uint16_t port) noexcept;
+    bool Unregister(const SharedPtrUnsynchronized<RegistrationEntry>& registration) noexcept;
     [[nodiscard]] size_t ListenerCount() const noexcept { return listeners_.size(); }
 
     Dispatcher* dispatcher_;
     std::string interface_;
     std::vector<PortListener> listeners_;
+    std::vector<SharedPtrUnsynchronized<RegistrationEntry>> registrations_;
 };
 
 } // namespace reflector

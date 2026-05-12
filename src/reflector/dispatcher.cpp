@@ -54,15 +54,22 @@ Logger& GetLogger() noexcept {
 
 namespace reflector {
 
-Dispatcher::Registration::Registration(Dispatcher& dispatcher, RegistrationId id) noexcept
-        : dispatcher_{&dispatcher}, id_{id} {}
+struct Dispatcher::DispatcherState {
+    explicit DispatcherState(Dispatcher& dispatcher) noexcept
+            : dispatcher{&dispatcher} {}
+
+    Dispatcher* dispatcher;
+};
+
+Dispatcher::Registration::Registration(WeakPtrUnsynchronized<DispatcherState> dispatcher_state, RegistrationId id) noexcept
+        : dispatcher_state_{std::move(dispatcher_state)}, id_{id} {}
 
 Dispatcher::Registration::~Registration() noexcept {
     Reset();
 }
 
 Dispatcher::Registration::Registration(Registration&& other) noexcept
-        : dispatcher_{std::exchange(other.dispatcher_, nullptr)}
+        : dispatcher_state_{std::move(other.dispatcher_state_)}
         , id_{std::exchange(other.id_, 0)} {}
 
 Dispatcher::Registration& Dispatcher::Registration::operator=(Registration&& other) noexcept {
@@ -71,22 +78,31 @@ Dispatcher::Registration& Dispatcher::Registration::operator=(Registration&& oth
     }
 
     Reset();
-    dispatcher_ = std::exchange(other.dispatcher_, nullptr);
+    dispatcher_state_ = std::move(other.dispatcher_state_);
     id_ = std::exchange(other.id_, 0);
     return *this;
 }
 
+bool Dispatcher::Registration::IsValid() const noexcept {
+    const auto dispatcher_state = dispatcher_state_.lock();
+    return id_ != 0 && dispatcher_state;
+}
+
 bool Dispatcher::Registration::Reset() noexcept {
-    if (!IsValid()) {
+    const auto dispatcher_state = dispatcher_state_.lock();
+    if (id_ == 0 || !dispatcher_state) {
+        dispatcher_state_.reset();
+        id_ = 0;
         return false;
     }
 
-    auto* dispatcher = std::exchange(dispatcher_, nullptr);
     const auto id = std::exchange(id_, 0);
-    return dispatcher->Unregister(id);
+    dispatcher_state_.reset();
+    return dispatcher_state->dispatcher->Unregister(id);
 }
 
-Dispatcher::Dispatcher() {
+Dispatcher::Dispatcher()
+        : dispatcher_state_{new DispatcherState{*this}} {
 #if defined(__APPLE__)
     event_fd_ = kqueue();
 #elif defined(__linux__)
@@ -104,6 +120,8 @@ Dispatcher::~Dispatcher() noexcept {
     if (!registrations_.empty()) {
         GetLogger().Error("Destroying dispatcher with {} packet callback registration(s) still active", registrations_.size());
     }
+    dispatcher_state_.reset();
+    registrations_.clear();
 
     if (event_fd_ >= 0) {
         GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_);
@@ -133,7 +151,7 @@ Dispatcher::Registration Dispatcher::Register(
         .callback = callback,
     });
     GetLogger().Debug("Registered packet callback {} for fd {}", id, fd);
-    return Registration{*this, id};
+    return Registration{dispatcher_state_, id};
 }
 
 bool Dispatcher::Unregister(RegistrationId id) noexcept {
