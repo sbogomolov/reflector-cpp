@@ -10,7 +10,7 @@ Linux and macOS. GitHub Actions is configured to run the unit suite on Ubuntu 24
 
 Prerequisites:
 
-- CMake ≥ 3.14, Ninja
+- CMake ≥ 3.20, Ninja
 - A C++23 toolchain. The standard library bits used here (`std::println`, `std::expected`, `std::format`) require:
   - GCC ≥ 14, or
   - Clang ≥ 18 (with libc++ or libstdc++ from GCC 14+), or
