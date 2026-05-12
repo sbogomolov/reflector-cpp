@@ -7,7 +7,6 @@ import binascii
 import socket
 import sys
 import time
-from pathlib import Path
 
 
 def parse_mac(value: str) -> bytes:
@@ -35,19 +34,22 @@ def packet_hex(payload: bytes) -> str:
     return binascii.hexlify(payload).decode("ascii")
 
 
-def write_ready_file(path: str | None) -> None:
-    if path is None:
+def bind_to_interface(sock: socket.socket, interface: str | None) -> None:
+    if interface is None:
         return
 
-    ready_path = Path(path)
-    ready_path.parent.mkdir(parents=True, exist_ok=True)
-    ready_path.write_text("ready\n", encoding="utf-8")
+    if not hasattr(socket, "SO_BINDTODEVICE"):
+        raise RuntimeError("SO_BINDTODEVICE is not available on this platform")
+
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, interface.encode("utf-8") + b"\0")
+    print(f"socket bound to interface {interface}", flush=True)
 
 
 def send(args: argparse.Namespace) -> int:
     payload = magic_packet(args.mac)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
+        bind_to_interface(sock, args.interface)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.sendto(payload, (args.address, args.port))
 
@@ -61,9 +63,9 @@ def receive(args: argparse.Namespace) -> int:
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        bind_to_interface(sock, args.interface)
         sock.bind(("0.0.0.0", args.port))
-        write_ready_file(args.ready_file)
-        print(f"listening on UDP port {args.port}", flush=True)
+        print(f"receiver ready: UDP socket bound on port {args.port}", flush=True)
 
         while True:
             remaining = deadline - time.monotonic()
@@ -104,12 +106,13 @@ def main() -> int:
     send_parser.add_argument("--mac", required=True, help="target MAC address")
     send_parser.add_argument("--port", required=True, type=int, help="destination UDP port")
     send_parser.add_argument("--address", default="255.255.255.255", help="destination IP address")
+    send_parser.add_argument("--interface", help="interface to bind the sending socket to")
     send_parser.set_defaults(func=send)
 
     receive_parser = subparsers.add_parser("receive", help="receive or reject UDP packets")
     receive_parser.add_argument("--port", required=True, type=int, help="UDP port to bind")
     receive_parser.add_argument("--timeout", required=True, type=float, help="seconds to wait")
-    receive_parser.add_argument("--ready-file", help="path to write once the UDP socket is bound")
+    receive_parser.add_argument("--interface", help="interface to bind the receiving socket to")
 
     expectation = receive_parser.add_mutually_exclusive_group(required=True)
     expectation.add_argument("--expect-mac", help="MAC address whose magic packet must be received")

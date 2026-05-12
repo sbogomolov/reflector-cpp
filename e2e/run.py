@@ -7,7 +7,6 @@ import dataclasses
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +21,9 @@ CONFIGURED_MAC = "02:42:ac:11:00:09"
 WRONG_MAC = "02:42:ac:11:00:0a"
 CONFIGURED_PORT = 40009
 UNCONFIGURED_PORT = 40010
+REFLECTOR_READY_LOG = "Starting dispatcher event loop"
+RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
+PROBE_INTERFACE = "eth0"
 
 
 class CommandError(RuntimeError):
@@ -79,8 +81,10 @@ def run_command(
     cwd: Path = REPO_ROOT,
     check: bool = True,
     capture: bool = True,
+    echo: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    print(f"+ {format_command(command)}", flush=True)
+    if echo:
+        print(f"+ {format_command(command)}", flush=True)
     stdout = subprocess.PIPE if capture else None
     stderr = subprocess.PIPE if capture else None
     result = subprocess.run(command, cwd=cwd, text=True, stdout=stdout, stderr=stderr, check=False)
@@ -89,8 +93,14 @@ def run_command(
     return result
 
 
-def docker(args: list[str], *, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess[str]:
-    return run_command(["docker", *args], check=check, capture=capture)
+def docker(
+    args: list[str],
+    *,
+    check: bool = True,
+    capture: bool = True,
+    echo: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return run_command(["docker", *args], check=check, capture=capture, echo=echo)
 
 
 def require_command(command: str) -> None:
@@ -115,9 +125,7 @@ class DockerE2E:
         self.sender_container = f"{self.prefix}-sender"
         self.containers = [self.sender_container, self.receiver_container, self.reflector_container]
         self.networks = [self.source_network, self.target_network]
-        self.temp_path = Path(tempfile.mkdtemp(prefix=f"{self.prefix}-"))
-        self.config_path = self.temp_path / "config.toml"
-        self.ready_path = self.temp_path / "receiver.ready"
+        self.config_path = E2E_DIR / "config.toml"
 
     def __enter__(self) -> DockerE2E:
         return self
@@ -128,7 +136,6 @@ class DockerE2E:
 
         if exc_type is not None and self.args.keep_on_failure:
             print(f"keeping Docker resources for failed case {self.case.name}: {self.prefix}", flush=True)
-            print(f"state directory: {self.temp_path}", flush=True)
             return False
 
         self.cleanup()
@@ -139,21 +146,6 @@ class DockerE2E:
             docker(["rm", "-f", container], check=False)
         for network in self.networks:
             docker(["network", "rm", network], check=False)
-        shutil.rmtree(self.temp_path, ignore_errors=True)
-
-    def write_config(self) -> None:
-        self.config_path.write_text(
-            f"""log_level = "debug"
-
-[[wol]]
-name = "{self.case.name}"
-mac = "{CONFIGURED_MAC}"
-source_if = "eth0"
-target_if = "eth1"
-ports = [{CONFIGURED_PORT}]
-""",
-            encoding="utf-8",
-        )
 
     def setup_networks(self) -> None:
         docker(["network", "create", "--driver", "bridge", self.source_network])
@@ -179,23 +171,30 @@ ports = [{CONFIGURED_PORT}]
         docker(["start", self.reflector_container])
         self.wait_for_reflector()
 
-    def wait_for_reflector(self) -> None:
+    def wait_for_container_log(self, container: str, marker: str, description: str) -> None:
         deadline = time.monotonic() + 5.0
+        last_state = "unknown"
         while time.monotonic() < deadline:
+            logs = docker(["logs", container], check=False, echo=False)
+            if marker in f"{logs.stdout}{logs.stderr}":
+                return
+
             result = docker(
-                ["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", self.reflector_container],
+                ["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", container],
                 check=False,
+                echo=False,
             )
             if result.returncode == 0:
-                state = result.stdout.strip()
-                if state.startswith("true "):
-                    time.sleep(0.25)
-                    return
-                if state.startswith("false "):
-                    raise RuntimeError(f"reflector exited during startup: {state}")
+                last_state = result.stdout.strip()
+                if last_state.startswith("false "):
+                    raise RuntimeError(f"{description} exited before becoming ready: {last_state}")
+
             time.sleep(0.1)
 
-        raise RuntimeError("timed out waiting for reflector container to start")
+        raise RuntimeError(f"timed out waiting for {description} readiness marker ({marker}); last state: {last_state}")
+
+    def wait_for_reflector(self) -> None:
+        self.wait_for_container_log(self.reflector_container, REFLECTOR_READY_LOG, "reflector")
 
     def start_receiver(self) -> None:
         command = [
@@ -207,8 +206,6 @@ ports = [{CONFIGURED_PORT}]
             self.target_network,
             "--mount",
             f"type=bind,source={E2E_DIR},target=/e2e,readonly",
-            "--mount",
-            f"type=bind,source={self.temp_path},target=/state",
             self.args.helper_image,
             "python3",
             "/e2e/probe.py",
@@ -217,8 +214,8 @@ ports = [{CONFIGURED_PORT}]
             str(self.case.receive_port),
             "--timeout",
             str(self.case.timeout_seconds),
-            "--ready-file",
-            "/state/receiver.ready",
+            "--interface",
+            PROBE_INTERFACE,
         ]
         if self.case.expect_mac is None:
             command.append("--expect-none")
@@ -229,17 +226,7 @@ ports = [{CONFIGURED_PORT}]
         self.wait_for_receiver()
 
     def wait_for_receiver(self) -> None:
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if self.ready_path.exists():
-                return
-
-            result = docker(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", self.receiver_container], check=False)
-            if result.returncode == 0 and result.stdout.strip().startswith("false "):
-                raise RuntimeError(f"receiver exited before becoming ready: {result.stdout.strip()}")
-            time.sleep(0.1)
-
-        raise RuntimeError("timed out waiting for receiver to bind UDP socket")
+        self.wait_for_container_log(self.receiver_container, RECEIVER_READY_LOG, "receiver")
 
     def run_sender(self) -> None:
         docker(
@@ -259,6 +246,8 @@ ports = [{CONFIGURED_PORT}]
                 self.case.send_mac,
                 "--port",
                 str(self.case.send_port),
+                "--interface",
+                PROBE_INTERFACE,
             ]
         )
 
@@ -307,7 +296,6 @@ ports = [{CONFIGURED_PORT}]
 
     def run(self) -> None:
         print(f"\n=== {self.case.name} ===", flush=True)
-        self.write_config()
         self.setup_networks()
         self.start_reflector()
         self.start_receiver()

@@ -1,0 +1,8 @@
+log_level = "debug"
+
+[[wol]]
+name = "e2e"
+mac = "02:42:ac:11:00:09"
+source_if = "eth0"
+target_if = "eth1"
+ports = [40009]
