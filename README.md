@@ -51,10 +51,13 @@ The default config path is `./config.toml`. The process logs to stdout and shuts
 
 ### Linux capabilities
 
-Binding a UDP socket to a specific interface uses `SO_BINDTODEVICE`, which requires `CAP_NET_RAW`. Either run as root, or grant the capability once:
+Binding a UDP socket to a specific interface uses `SO_BINDTODEVICE`, which requires `CAP_NET_RAW`.
+The default WoL ports (`7` and `9`) are privileged ports on Linux, so running with the default
+configuration also requires `CAP_NET_BIND_SERVICE`. Either run as root, choose non-privileged
+ports, or grant the capabilities once:
 
 ```sh
-sudo setcap cap_net_raw=eip ./build/reflector
+sudo setcap cap_net_raw,cap_net_bind_service=eip ./build/reflector
 ```
 
 macOS uses `IP_BOUND_IF`, which has no equivalent privilege requirement.
