@@ -51,7 +51,10 @@ private:
     friend class WolListenerTest;
     friend class WolReflectorTest;
 
-    static constexpr size_t RECEIVE_BUFFER_SIZE = 4096;
+    // Large enough for the maximum normal IPv4/IPv6 UDP payload. UDP datagrams can
+    // exceed link MTU via IP fragmentation, and recvfrom returns the reassembled payload.
+    // IPv6 jumbograms are not supported and would be truncated.
+    static constexpr size_t RECEIVE_BUFFER_SIZE = 64 * 1024;
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
     struct RegistrationEntry {

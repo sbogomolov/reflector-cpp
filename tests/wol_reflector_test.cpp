@@ -150,6 +150,27 @@ TEST_F(WolReflectorTest, ReflectsPacketWithTrailingBytes) {
     EXPECT_EQ(receiver.recorder.payload, payload);
 }
 
+TEST_F(WolReflectorTest, ReflectsLargePacketWithTrailingBytesIntact) {
+    constexpr size_t LARGE_PAYLOAD_SIZE = 8 * 1024;
+    UdpSender sender{"", IpAddress::Loopback()};
+    WolReflector reflector{listener, sender, MakeConfig()};
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver;
+
+    auto payload = MakeMagicPacket(MakeConfig().mac);
+    const auto magic_packet_size = payload.size();
+    payload.resize(LARGE_PAYLOAD_SIZE);
+    for (size_t i = magic_packet_size; i < payload.size(); ++i) {
+        payload[i] = std::byte{static_cast<unsigned char>(i & 0xff)};
+    }
+    Dispatch(reflector, receiver.Port(), MakePacket(payload));
+
+    ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(receiver.recorder.count, 1);
+    EXPECT_EQ(receiver.recorder.payload, payload);
+}
+
 TEST_F(WolReflectorTest, IgnoresShortPacket) {
     UdpSender sender{"", IpAddress::Loopback()};
     WolReflector reflector{listener, sender, MakeConfig()};

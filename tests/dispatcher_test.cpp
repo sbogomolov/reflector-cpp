@@ -9,6 +9,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <utility>
 #include <vector>
 
@@ -174,6 +175,32 @@ TEST_F(DispatcherTest, PollOnceDispatchesPacket) {
     EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
     EXPECT_EQ(recorder.count, 1);
     EXPECT_EQ(recorder.payload, std::vector<std::byte>(payload.begin(), payload.end()));
+    EXPECT_EQ(recorder.source_ip, IpAddress::Loopback());
+}
+
+TEST_F(DispatcherTest, PollOnceDispatchesLargePacket) {
+    constexpr size_t LARGE_PAYLOAD_SIZE = 8 * 1024;
+    UdpSocket listener_socket;
+    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
+    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
+    const auto listener_port = BoundPort(listener_socket);
+    ASSERT_NE(listener_port, 0);
+
+    PacketRecorder recorder;
+    const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
+    ASSERT_TRUE(registration.IsValid());
+
+    std::vector<std::byte> payload(LARGE_PAYLOAD_SIZE);
+    for (size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = std::byte{static_cast<unsigned char>(i & 0xff)};
+    }
+
+    UdpSocket sender_socket;
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(recorder.count, 1);
+    EXPECT_EQ(recorder.payload, payload);
     EXPECT_EQ(recorder.source_ip, IpAddress::Loopback());
 }
 
