@@ -45,7 +45,7 @@ private:
     void HandlePacket(const Packet& packet, uint16_t port) noexcept;
     void Reset() noexcept;
 
-    Logger logger_{"WolReflector"};
+    Logger logger_;
     WolListener* listener_;
     std::optional<UdpSender> owned_sender_;
     UdpSender* sender_ = nullptr;

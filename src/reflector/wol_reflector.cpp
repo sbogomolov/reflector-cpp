@@ -8,7 +8,7 @@
 namespace reflector {
 
 WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
-        : listener_{&listener} {
+        : logger_{"WolReflector:" + config.name}, listener_{&listener} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -19,7 +19,7 @@ WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
 }
 
 WolReflector::WolReflector(WolListener& listener, UdpSender& sender, const WolConfig& config)
-        : listener_{&listener}, sender_{&sender} {
+        : logger_{"WolReflector:" + config.name}, listener_{&listener}, sender_{&sender} {
     if (!ValidateConfig(config)) {
         return;
     }
