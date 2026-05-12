@@ -1,6 +1,5 @@
 #pragma once
 
-#include "logger.h"
 #include "udp_socket.h"
 #include "util/no_copy.h"
 
@@ -22,7 +21,6 @@ public:
     [[nodiscard]] bool SendBroadcast(std::span<const std::byte> payload, uint16_t port) noexcept;
 
 private:
-    Logger logger_{"UdpSender"};
     UdpSocket socket_;
     std::string interface_;
     IpAddress broadcast_address_;

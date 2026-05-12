@@ -1,6 +1,5 @@
 #pragma once
 
-#include "logger.h"
 #include "packet.h"
 #include "udp_socket.h"
 #include "util/no_copy.h"
@@ -71,7 +70,6 @@ private:
     [[nodiscard]] std::optional<Packet> Receive(int fd) noexcept;
     void DispatchPacket(int fd, const Packet& packet) const;
 
-    Logger logger_{"Dispatcher"};
     std::vector<RegistrationEntry> registrations_;
     // Reused across calls; Packet::payload spans into this and is only valid during dispatch.
     std::array<std::byte, RECEIVE_BUFFER_SIZE> receive_buffer_{};

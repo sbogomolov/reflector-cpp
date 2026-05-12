@@ -1,7 +1,5 @@
 #pragma once
 
-#include "reflector/logger.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -33,8 +31,6 @@ public:
 
 private:
     explicit constexpr IpAddress(uint32_t address) noexcept : address_{address} {}
-
-    static inline Logger logger_{"IpAddress"};
 
     // Stored in network byte order.
     uint32_t address_ = 0;

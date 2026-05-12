@@ -1,11 +1,21 @@
 #include "ip_address.h"
 
 #include "reflector/error.h"
+#include "reflector/logger.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
 namespace reflector {
+
+namespace {
+
+Logger& GetLogger() noexcept {
+    static Logger logger{"IpAddress"};
+    return logger;
+}
+
+} // namespace
 
 IpAddress IpAddress::Loopback() noexcept {
     return FromBytes(127, 0, 0, 1);
@@ -28,11 +38,11 @@ std::optional<IpAddress> IpAddress::FromString(std::string_view address) {
     const auto address_str = std::string{address};
     const auto parse_result = inet_pton(AF_INET, address_str.c_str(), &parsed);
     if (parse_result == 0) {
-        logger_.Error("Cannot parse IPv4 address \"{}\"", address);
+        GetLogger().Error("Cannot parse IPv4 address \"{}\"", address);
         return std::nullopt;
     }
     if (parse_result < 0) {
-        logger_.Error("Cannot parse IPv4 address \"{}\": {}", address, Error::FromErrno());
+        GetLogger().Error("Cannot parse IPv4 address \"{}\": {}", address, Error::FromErrno());
         return std::nullopt;
     }
 
@@ -46,7 +56,7 @@ std::string IpAddress::ToString() const {
     std::string result;
     result.resize(INET_ADDRSTRLEN);
     if (inet_ntop(AF_INET, &address, result.data(), result.size()) == nullptr) {
-        logger_.Error("Cannot convert IPv4 address to string: {}", Error::FromErrno());
+        GetLogger().Error("Cannot convert IPv4 address to string: {}", Error::FromErrno());
         return {};
     }
 

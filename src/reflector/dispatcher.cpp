@@ -1,6 +1,7 @@
 #include "dispatcher.h"
 
 #include "error.h"
+#include "logger.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -42,6 +43,11 @@ bool Matches(const PacketFilter& filter, const Packet& packet) {
         return false;
     }
     return true;
+}
+
+Logger& GetLogger() noexcept {
+    static Logger logger{"Dispatcher"};
+    return logger;
 }
 
 } // namespace
@@ -88,19 +94,19 @@ Dispatcher::Dispatcher() {
 #endif
 
     if (event_fd_ < 0) {
-        logger_.Error("Cannot create dispatcher event queue: {}", Error::FromErrno());
+        GetLogger().Error("Cannot create dispatcher event queue: {}", Error::FromErrno());
     } else {
-        logger_.Debug("Created dispatcher event queue fd {}", event_fd_);
+        GetLogger().Debug("Created dispatcher event queue fd {}", event_fd_);
     }
 }
 
 Dispatcher::~Dispatcher() noexcept {
     if (!registrations_.empty()) {
-        logger_.Error("Destroying dispatcher with {} packet callback registration(s) still active", registrations_.size());
+        GetLogger().Error("Destroying dispatcher with {} packet callback registration(s) still active", registrations_.size());
     }
 
     if (event_fd_ >= 0) {
-        logger_.Debug("Closing dispatcher event queue fd {}", event_fd_);
+        GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_);
         close(event_fd_);
         event_fd_ = -1;
     }
@@ -109,13 +115,13 @@ Dispatcher::~Dispatcher() noexcept {
 Dispatcher::Registration Dispatcher::Register(
     const UdpSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
-        logger_.Error("Cannot register packet callback: socket is invalid");
+        GetLogger().Error("Cannot register packet callback: socket is invalid");
         return Registration{};
     }
 
     const auto fd = socket.Fd();
     if (!AddReadEvent(fd)) {
-        logger_.Error("Cannot register packet callback: read event registration failed for fd {}", fd);
+        GetLogger().Error("Cannot register packet callback: read event registration failed for fd {}", fd);
         return Registration{};
     }
 
@@ -126,7 +132,7 @@ Dispatcher::Registration Dispatcher::Register(
         .filter = filter,
         .callback = callback,
     });
-    logger_.Debug("Registered packet callback {} for fd {}", id, fd);
+    GetLogger().Debug("Registered packet callback {} for fd {}", id, fd);
     return Registration{*this, id};
 }
 
@@ -135,7 +141,7 @@ bool Dispatcher::Unregister(RegistrationId id) noexcept {
         return registration.id == id;
     });
     if (it == registrations_.end()) {
-        logger_.Warning("Cannot unregister packet callback {}: not found", id);
+        GetLogger().Warning("Cannot unregister packet callback {}: not found", id);
         return false;
     }
 
@@ -143,24 +149,24 @@ bool Dispatcher::Unregister(RegistrationId id) noexcept {
     registrations_.erase(it);
 
     if (fd >= 0 && !RemoveReadEventIfUnused(fd)) {
-        logger_.Error("Cannot remove read event for fd {} after unregistering callback {}", fd, id);
+        GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", fd, id);
     }
 
-    logger_.Debug("Unregistered packet callback {}", id);
+    GetLogger().Debug("Unregistered packet callback {}", id);
     return true;
 }
 
 void Dispatcher::Run(const volatile std::sig_atomic_t& stop_requested) {
-    logger_.Info("Starting dispatcher event loop");
+    GetLogger().Info("Starting dispatcher event loop");
     while (stop_requested == 0) {
         PollOnce(std::chrono::milliseconds{1000});
     }
-    logger_.Info("Stopped dispatcher event loop");
+    GetLogger().Info("Stopped dispatcher event loop");
 }
 
 bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_fd_ < 0) {
-        logger_.Error("Cannot poll dispatcher: event queue is invalid");
+        GetLogger().Error("Cannot poll dispatcher: event queue is invalid");
         return false;
     }
 
@@ -173,14 +179,14 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
             return false;
         }
-        logger_.Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
+        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
         return false;
     }
     if (event_count == 0) {
         return false;
     }
     if ((event.flags & EV_ERROR) != 0) {
-        logger_.Error("Dispatcher read event failed for fd {}: {}", static_cast<int>(event.ident), event.data);
+        GetLogger().Error("Dispatcher read event failed for fd {}: {}", static_cast<int>(event.ident), event.data);
         return false;
     }
 
@@ -193,7 +199,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
             return false;
         }
-        logger_.Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
+        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
         return false;
     }
     if (event_count == 0) {
@@ -202,7 +208,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     const auto fd = event.data.fd;
     const auto events = event.events;
     if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
-        logger_.Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
+        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
         return false;
     }
 #endif
@@ -212,7 +218,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
 
 bool Dispatcher::AddReadEvent(int fd) noexcept {
     if (event_fd_ < 0 || fd < 0) {
-        logger_.Error("Cannot add read event: event queue or fd is invalid");
+        GetLogger().Error("Cannot add read event: event queue or fd is invalid");
         return false;
     }
 
@@ -220,7 +226,7 @@ bool Dispatcher::AddReadEvent(int fd) noexcept {
     struct kevent change{};
     EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
-        logger_.Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #elif defined(__linux__)
@@ -229,15 +235,15 @@ bool Dispatcher::AddReadEvent(int fd) noexcept {
     event.data.fd = fd;
     if (epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0) {
         if (errno == EEXIST) {
-            logger_.Debug("Read event already registered for fd {}", fd);
+            GetLogger().Debug("Read event already registered for fd {}", fd);
             return true;
         }
-        logger_.Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
 
-    logger_.Debug("Registered read event for fd {}", fd);
+    GetLogger().Debug("Registered read event for fd {}", fd);
     return true;
 }
 
@@ -249,7 +255,7 @@ bool Dispatcher::RemoveReadEventIfUnused(int fd) noexcept {
         return true;
     }
     if (event_fd_ < 0) {
-        logger_.Error("Cannot remove read event for fd {}: event queue is invalid", fd);
+        GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
         return false;
     }
 
@@ -257,17 +263,17 @@ bool Dispatcher::RemoveReadEventIfUnused(int fd) noexcept {
     struct kevent change{};
     EV_SET(&change, fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
     if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
-        logger_.Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #elif defined(__linux__)
     if (epoll_ctl(event_fd_, EPOLL_CTL_DEL, fd, nullptr) != 0) {
-        logger_.Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
 
-    logger_.Debug("Removed read event for fd {}", fd);
+    GetLogger().Debug("Removed read event for fd {}", fd);
     return true;
 }
 
@@ -304,7 +310,7 @@ std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
             return std::nullopt;
         }
 
-        logger_.Error("Cannot receive packet from fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot receive packet from fd {}: {}", fd, Error::FromErrno());
         return std::nullopt;
     }
 
@@ -315,7 +321,7 @@ std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
         },
         .payload = std::span<const std::byte>{receive_buffer_.data(), static_cast<size_t>(bytes_received)},
     };
-    logger_.Debug("Received {} bytes from {}:{}", bytes_received, packet.header.source_ip, packet.header.source_port);
+    GetLogger().Debug("Received {} bytes from {}:{}", bytes_received, packet.header.source_ip, packet.header.source_port);
     return packet;
 }
 

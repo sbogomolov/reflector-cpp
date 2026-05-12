@@ -1,6 +1,5 @@
 #pragma once
 
-#include "logger.h"
 #include "udp_socket.h"
 #include "util/no_copy.h"
 
@@ -23,7 +22,6 @@ public:
     [[nodiscard]] const UdpSocket& Socket() const noexcept { return socket_; }
 
 private:
-    Logger logger_{"UdpListener"};
     UdpSocket socket_;
 };
 

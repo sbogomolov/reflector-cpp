@@ -34,10 +34,8 @@ public:
 
 private:
     [[nodiscard]] bool SetNonBlocking() noexcept;
-    void UpdateName();
 
-    std::string name_;
-    Logger logger_;
+    Logger logger_{"UdpSocket"};
     std::string interface_;
     IpAddress address_ = IpAddress::Any();
     int socket_ = -1;

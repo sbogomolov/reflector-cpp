@@ -12,14 +12,15 @@
 
 namespace reflector {
 
-UdpSocket::UdpSocket()
-        : name_{"UDP:::"}, logger_{name_} {
+UdpSocket::UdpSocket() {
     logger_.Debug("Creating socket");
     socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_ < 0) {
         logger_.Error("Cannot create socket: {}", Error::FromErrno());
         return;
     }
+
+    logger_.SetName(std::format("UdpSocket:{}", socket_));
 
     if (!SetNonBlocking()) {
         Close();
@@ -39,8 +40,7 @@ void UdpSocket::Close() noexcept {
 }
 
 UdpSocket::UdpSocket(UdpSocket&& other) noexcept
-        : name_{std::move(other.name_)}
-        , logger_{std::move(other.logger_)}
+        : logger_{std::move(other.logger_)}
         , interface_{std::move(other.interface_)}
         , address_{std::exchange(other.address_, IpAddress::Any())}
         , socket_{std::exchange(other.socket_, -1)}
@@ -53,7 +53,6 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
 
     Close();
 
-    name_ = std::move(other.name_);
     logger_ = std::move(other.logger_);
     interface_ = std::move(other.interface_);
     address_ = std::exchange(other.address_, IpAddress::Any());
@@ -82,11 +81,6 @@ bool UdpSocket::SetNonBlocking() noexcept {
     return true;
 }
 
-void UdpSocket::UpdateName() {
-    name_ = std::format("UDP:{}:{}:{}", interface_, address_, port_);
-    logger_.SetName(name_);
-}
-
 bool UdpSocket::SetInterface(std::string_view interface) {
     if (!IsValid()) {
         logger_.Error("Cannot set interface to \"{}\": socket is invalid", interface);
@@ -95,7 +89,6 @@ bool UdpSocket::SetInterface(std::string_view interface) {
 
     logger_.Info("Setting interface to \"{}\"", interface);
     interface_ = interface;
-    UpdateName();
 
 #if defined(__linux__)
     const auto interface_size = interface_.size() + 1;
@@ -166,7 +159,6 @@ bool UdpSocket::Bind(IpAddress address, uint16_t port) {
     logger_.Info("Binding socket to {}:{}", address, port);
     address_ = address;
     port_ = port;
-    UpdateName();
 
     sockaddr_in socket_address{};
     socket_address.sin_family = AF_INET;

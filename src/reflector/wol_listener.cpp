@@ -1,9 +1,20 @@
 #include "wol_listener.h"
 
+#include "logger.h"
+
 #include <algorithm>
 #include <utility>
 
 namespace reflector {
+
+namespace {
+
+Logger& GetLogger() noexcept {
+    static Logger logger{"WolListener"};
+    return logger;
+}
+
+} // namespace
 
 WolListener::Registration::Registration(
     WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept
@@ -49,33 +60,33 @@ WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface)
 
 WolListener::~WolListener() noexcept {
     if (!listeners_.empty()) {
-        logger_.Error("Destroying wol listener on interface \"{}\" with {} UDP port listener(s) still active",
+        GetLogger().Error("Destroying wol listener on interface \"{}\" with {} UDP port listener(s) still active",
             interface_, listeners_.size());
     }
 }
 
 WolListener::Registration WolListener::Register(uint16_t port, const PacketCallback& callback) {
     if (port == 0) {
-        logger_.Error("Cannot register wol callback on interface \"{}\": port 0 is invalid", interface_);
+        GetLogger().Error("Cannot register wol callback on interface \"{}\": port 0 is invalid", interface_);
         return Registration{};
     }
 
     auto* port_listener = AcquirePort(port);
     if (port_listener == nullptr) {
-        logger_.Error("Cannot register wol callback on interface \"{}\": listener setup failed for port {}",
+        GetLogger().Error("Cannot register wol callback on interface \"{}\": listener setup failed for port {}",
             interface_, port);
         return Registration{};
     }
 
     auto dispatcher_reg = dispatcher_->Register(port_listener->listener.Socket(), PacketFilter{}, callback);
     if (!dispatcher_reg.IsValid()) {
-        logger_.Error("Cannot register wol callback on interface \"{}\" port {}: dispatcher registration failed",
+        GetLogger().Error("Cannot register wol callback on interface \"{}\" port {}: dispatcher registration failed",
             interface_, port);
         ReleasePort(port);
         return Registration{};
     }
 
-    logger_.Debug("Registered wol callback on interface \"{}\" port {}", interface_, port);
+    GetLogger().Debug("Registered wol callback on interface \"{}\" port {}", interface_, port);
     return Registration{*this, std::move(dispatcher_reg), port};
 }
 
@@ -94,7 +105,7 @@ WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
         .local_port = port,
     }};
     if (!listener.IsValid()) {
-        logger_.Error("Cannot create UDP listener on interface \"{}\" port {}", interface_, port);
+        GetLogger().Error("Cannot create UDP listener on interface \"{}\" port {}", interface_, port);
         return nullptr;
     }
 
@@ -103,7 +114,7 @@ WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
         .refcount = 1,
         .port = port,
     });
-    logger_.Debug("Created UDP listener on interface \"{}\" port {}", interface_, port);
+    GetLogger().Debug("Created UDP listener on interface \"{}\" port {}", interface_, port);
     return &listeners_.back();
 }
 
@@ -112,7 +123,7 @@ void WolListener::ReleasePort(uint16_t port) noexcept {
         return entry.port == port;
     });
     if (it == listeners_.end()) {
-        logger_.Warning("Cannot release UDP listener on interface \"{}\" port {}: not found", interface_, port);
+        GetLogger().Warning("Cannot release UDP listener on interface \"{}\" port {}: not found", interface_, port);
         return;
     }
 
@@ -120,7 +131,7 @@ void WolListener::ReleasePort(uint16_t port) noexcept {
         return;
     }
 
-    logger_.Debug("Removing UDP listener on interface \"{}\" port {}", interface_, port);
+    GetLogger().Debug("Removing UDP listener on interface \"{}\" port {}", interface_, port);
     listeners_.erase(it);
 }
 

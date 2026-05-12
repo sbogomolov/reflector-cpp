@@ -1,7 +1,6 @@
 #pragma once
 
 #include "dispatcher.h"
-#include "logger.h"
 #include "udp_listener.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
@@ -56,7 +55,6 @@ private:
     void ReleasePort(uint16_t port) noexcept;
     [[nodiscard]] size_t ListenerCount() const noexcept { return listeners_.size(); }
 
-    Logger logger_{"WolListener"};
     Dispatcher* dispatcher_;
     std::string interface_;
     std::vector<PortListener> listeners_;
