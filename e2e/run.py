@@ -23,6 +23,7 @@ CONFIGURED_PORT = 40009
 UNCONFIGURED_PORT = 40010
 REFLECTOR_READY_LOG = "Starting dispatcher event loop"
 RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
+CONTAINER_READY_TIMEOUT_SECONDS = 15.0
 PROBE_INTERFACE = "eth0"
 
 
@@ -172,7 +173,7 @@ class DockerE2E:
         self.wait_for_reflector()
 
     def wait_for_container_log(self, container: str, marker: str, description: str) -> None:
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + CONTAINER_READY_TIMEOUT_SECONDS
         last_state = "unknown"
         while time.monotonic() < deadline:
             logs = docker(["logs", container], check=False, echo=False)
