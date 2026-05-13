@@ -4,7 +4,11 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
   workflow_dispatch:
 
 permissions:
@@ -80,3 +84,47 @@ jobs:
 
       - name: Run unit tests
         run: ctest --test-dir build -L unit --output-on-failure
+
+  docker-test:
+    name: Docker test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and run unit tests in container
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-e2e:
+    name: Docker e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build reflector image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: reflector:e2e
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run e2e
+        run: python3 e2e/run.py --skip-build
