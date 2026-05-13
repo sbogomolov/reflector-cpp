@@ -57,7 +57,7 @@ std::string IpAddress::ToString() const {
     result.resize(INET_ADDRSTRLEN);
     if (inet_ntop(AF_INET, &address, result.data(), result.size()) == nullptr) {
         GetLogger().Error("Cannot convert IPv4 address to string: {}", Error::FromErrno());
-        return {};
+        return "<invalid_ip>";
     }
 
     result.resize(std::char_traits<char>::length(result.c_str()));
