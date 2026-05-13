@@ -106,8 +106,10 @@ public:
         try {
             // Clang 17 does not support std::chrono::current_zone(). Maybe next time.
             const auto time = std::time({});
+            std::tm tm_buf{};
+            localtime_r(&time, &tm_buf);
             char time_str[sizeof("yyyy-mm-dd hh:mm:ss")];
-            std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&time));
+            std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
             std::println("{} {} [{}] {} ({}:{})",
                 time_str, level, name_,
                 std::format(std::move(fmt.fmt), std::forward<Args>(args)...),
