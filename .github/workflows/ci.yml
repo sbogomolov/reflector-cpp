@@ -110,7 +110,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and run unit tests in container
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           target: ${{ matrix.target }}
@@ -130,7 +130,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build reflector image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           tags: reflector:e2e
