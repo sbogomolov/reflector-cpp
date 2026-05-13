@@ -16,7 +16,8 @@ struct PacketHeader {
 
 struct Packet {
     PacketHeader header;
-    // Valid only for the duration of the dispatching callback; never store this span.
+    // Non-owning view into the dispatcher's reused receive buffer. Valid only for the duration
+    // of the dispatching callback; copy the bytes if you need to retain them.
     std::span<const std::byte> payload;
 };
 
