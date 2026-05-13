@@ -48,6 +48,7 @@ public:
     ~Dispatcher() noexcept;
 
     [[nodiscard]] Registration Register(const UdpSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
+    [[nodiscard]] Registration Register(int fd, const PacketFilter& filter, const PacketCallback& callback);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
     bool PollOnce(std::chrono::milliseconds timeout);

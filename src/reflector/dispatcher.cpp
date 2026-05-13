@@ -136,8 +136,15 @@ Dispatcher::Registration Dispatcher::Register(
         GetLogger().Error("Cannot register packet callback: socket is invalid");
         return Registration{};
     }
+    return Register(socket.Fd(), filter, callback);
+}
 
-    const auto fd = socket.Fd();
+Dispatcher::Registration Dispatcher::Register(
+    int fd, const PacketFilter& filter, const PacketCallback& callback) {
+    if (fd < 0) {
+        GetLogger().Error("Cannot register packet callback: fd {} is invalid", fd);
+        return Registration{};
+    }
     if (!AddReadEvent(fd)) {
         GetLogger().Error("Cannot register packet callback: read event registration failed for fd {}", fd);
         return Registration{};

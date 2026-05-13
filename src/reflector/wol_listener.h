@@ -53,7 +53,7 @@ private:
         uint16_t port;
     };
 
-    [[nodiscard]] PortListener* AcquirePort(uint16_t port);
+    [[nodiscard]] int AcquirePort(uint16_t port);
     void ReleasePort(uint16_t port) noexcept;
     bool Unregister(const SharedPtrUnsynchronized<RegistrationEntry>& registration) noexcept;
     [[nodiscard]] size_t ListenerCount() const noexcept { return listeners_.size(); }

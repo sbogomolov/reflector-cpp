@@ -85,14 +85,14 @@ WolListener::Registration WolListener::Register(uint16_t port, const PacketCallb
         return Registration{};
     }
 
-    auto* port_listener = AcquirePort(port);
-    if (port_listener == nullptr) {
+    const auto fd = AcquirePort(port);
+    if (fd < 0) {
         GetLogger().Error("Cannot register wol callback on interface \"{}\": listener setup failed for port {}",
             interface_, port);
         return Registration{};
     }
 
-    auto dispatcher_reg = dispatcher_->Register(port_listener->listener.Socket(), PacketFilter{}, callback);
+    auto dispatcher_reg = dispatcher_->Register(fd, PacketFilter{}, callback);
     if (!dispatcher_reg.IsValid()) {
         GetLogger().Error("Cannot register wol callback on interface \"{}\" port {}: dispatcher registration failed",
             interface_, port);
@@ -108,13 +108,13 @@ WolListener::Registration WolListener::Register(uint16_t port, const PacketCallb
     return registration;
 }
 
-WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
+int WolListener::AcquirePort(uint16_t port) {
     const auto it = std::ranges::find_if(listeners_, [port](const auto& entry) {
         return entry.port == port;
     });
     if (it != listeners_.end()) {
         ++it->refcount;
-        return &*it;
+        return it->listener.Socket().Fd();
     }
 
     UdpListener listener{UdpListener::Options{
@@ -124,7 +124,7 @@ WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
     }};
     if (!listener.IsValid()) {
         GetLogger().Error("Cannot create UDP listener on interface \"{}\" port {}", interface_, port);
-        return nullptr;
+        return -1;
     }
 
     listeners_.push_back(PortListener{
@@ -133,7 +133,7 @@ WolListener::PortListener* WolListener::AcquirePort(uint16_t port) {
         .port = port,
     });
     GetLogger().Debug("Created UDP listener on interface \"{}\" port {}", interface_, port);
-    return &listeners_.back();
+    return listeners_.back().listener.Socket().Fd();
 }
 
 void WolListener::ReleasePort(uint16_t port) noexcept {
