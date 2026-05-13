@@ -8,6 +8,7 @@
 ## Code style
 
 - Prefer RAII over manual cleanup.
+- Pin Docker base images as `image:tag@sha256:digest` (don't drop the tag).
 
 ## Build
 
