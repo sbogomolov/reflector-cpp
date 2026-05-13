@@ -7,7 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
-#include <string_view>
+#include <string>
 
 namespace reflector {
 
@@ -24,7 +24,7 @@ public:
 
     void Close() noexcept;
 
-    [[nodiscard]] bool SetInterface(std::string_view interface);
+    [[nodiscard]] bool SetInterface(const std::string& interface);
     [[nodiscard]] bool SetBroadcast(bool enabled) noexcept;
     [[nodiscard]] bool SetReuseAddr(bool enabled) noexcept;
     [[nodiscard]] bool Bind(uint16_t port);

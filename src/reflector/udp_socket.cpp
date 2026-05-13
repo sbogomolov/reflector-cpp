@@ -76,27 +76,26 @@ bool UdpSocket::SetNonBlocking() noexcept {
     return true;
 }
 
-bool UdpSocket::SetInterface(std::string_view interface) {
+bool UdpSocket::SetInterface(const std::string& interface) {
     if (!IsValid()) {
         logger_.Error("Cannot set interface to \"{}\": socket is invalid", interface);
         return false;
     }
 
     logger_.Info("Setting interface to \"{}\"", interface);
-    const std::string interface_name{interface};
 
 #if defined(__linux__)
-    const auto interface_size = interface_name.size() + 1;
+    const auto interface_size = interface.size() + 1;
     if (interface_size > IF_NAMESIZE) {
         logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": interface name is too long", interface);
         return false;
     }
-    if (setsockopt(fd_, SOL_SOCKET, SO_BINDTODEVICE, interface_name.c_str(), static_cast<socklen_t>(interface_size)) != 0) {
+    if (setsockopt(fd_, SOL_SOCKET, SO_BINDTODEVICE, interface.c_str(), static_cast<socklen_t>(interface_size)) != 0) {
         logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
-    unsigned int idx = if_nametoindex(interface_name.c_str());
+    unsigned int idx = if_nametoindex(interface.c_str());
     if (idx == 0) {
         logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
         return false;
