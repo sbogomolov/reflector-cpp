@@ -98,7 +98,6 @@ target_link_libraries(reflector_app PRIVATE reflector)
 add_subdirectory(src)
 
 if(BUILD_TESTING)
-    include(FetchContent)
     FetchContent_Declare(googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG v1.17.0
