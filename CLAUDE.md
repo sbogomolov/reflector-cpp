@@ -3,7 +3,7 @@
 ## Invariants
 
 - Single-threaded main loop. No worker threads, no locks, no condition variables.
-- Signal handlers run async → state they touch must be `std::atomic` (e.g. `Logger::min_level_`). Prefer `_r` glibc variants (`localtime_r`) over the non-reentrant ones.
+- Signal handlers run async → state they share with the main loop must be `volatile sig_atomic_t` or a lock-free `std::atomic`. Prefer `_r` glibc variants (`localtime_r`) over the non-reentrant ones.
 
 ## Code style
 
