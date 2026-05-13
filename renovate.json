@@ -6,7 +6,9 @@
   "customManagers": [
     {
       "customType": "regex",
-      "fileMatch": ["(^|/)CMakeLists\\.txt$"],
+      "managerFilePatterns": [
+        "/(^|/)CMakeLists\\.txt$/"
+      ],
       "matchStrings": [
         "FetchContent_Declare\\([\\s\\S]*?GIT_REPOSITORY\\s+https://github\\.com/(?<depName>[^.]+)\\.git[\\s\\S]*?GIT_TAG\\s+(?<currentValue>v?\\d+\\.\\d+\\.\\d+)"
       ],
