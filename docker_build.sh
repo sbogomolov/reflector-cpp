@@ -12,15 +12,17 @@ push=false
 usage() {
     cat <<EOF
 Usage:
-  ./docker_build.sh
+  ./docker_build.sh [--platforms PLATFORM]
   ./docker_build.sh --push [--image IMAGE] [--platforms PLATFORMS]
 
 Options:
-  --push                  Publish a multi-platform image manifest.
+  --push                  Publish an image manifest to the registry.
   --image IMAGE           Registry image name for --push.
                            Default: ${default_push_image}
-  --platforms PLATFORMS   Comma-separated platforms for --push.
-                           Default: ${default_platforms}
+  --platforms PLATFORMS   Comma-separated platforms.
+                           Without --push: single platform only (Docker cannot
+                           --load multi-arch images locally).
+                           With --push: default ${default_platforms}.
   -h, --help              Show this help.
 EOF
 }
@@ -83,17 +85,19 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-if [ "$push" = false ]; then
-    if [ "$image_set" = true ]; then
-        echo "--image is only valid with --push" >&2
-        usage >&2
-        exit 2
-    fi
-    if [ "$platforms_set" = true ]; then
-        echo "--platforms is only valid with --push" >&2
-        usage >&2
-        exit 2
-    fi
+if [ "$push" = false ] && [ "$image_set" = true ]; then
+    echo "--image is only valid with --push" >&2
+    usage >&2
+    exit 2
+fi
+
+if [ "$push" = false ] && [ "$platforms_set" = true ]; then
+    case "$platforms" in
+        *,*)
+            echo "multi-platform requires --push (Docker cannot --load multi-arch images)" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 if [ "$push" = true ] && [ "$image_set" = false ]; then
@@ -109,15 +113,28 @@ fi
 if [ "$push" = true ]; then
     docker buildx build \
         --platform "$platforms" \
+        --push \
         -t "${image}:${version}" \
         -t "${image}:latest" \
-        --push \
         .
 
     printf '\nPublished %s:%s (also tagged latest).\n' "$image" "$version"
     printf 'Platforms: %s\n' "$platforms"
+elif [ "$platforms_set" = true ]; then
+    docker buildx build \
+        --load \
+        --platform "$platforms" \
+        -t "${image}:${version}" \
+        -t "${image}:latest" \
+        .
+
+    printf '\nBuilt %s:%s for %s (also tagged latest).\n' "$image" "$version" "$platforms"
 else
-    docker build -t "${image}:${version}" -t "${image}:latest" .
+    docker buildx build \
+        --load \
+        -t "${image}:${version}" \
+        -t "${image}:latest" \
+        .
 
     printf '\nBuilt %s:%s (also tagged latest).\n' "$image" "$version"
 fi
