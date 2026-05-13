@@ -20,7 +20,7 @@ cmake --build build
 
 ## Tests
 
-Run tests against a Debug build whenever possible — ASan/UBSan catch issues that Release silently passes.
+Default: run unit tests against a Debug build with ASan/UBSan on. Before trusting a result, confirm `grep REFLECTOR_SANITIZE build/CMakeCache.txt` shows `ON` — CMake caches the value at first configure and a stale `OFF` survives later reconfigures, silently disabling instrumentation.
 
 ```sh
 ctest --test-dir build -L unit --output-on-failure

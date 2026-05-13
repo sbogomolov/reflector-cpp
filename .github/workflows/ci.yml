@@ -16,25 +16,27 @@ permissions:
 
 jobs:
   unit:
-    name: Unit (${{ matrix.name }})
+    name: Unit (${{ matrix.variant }} ${{ matrix.build_type }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
     strategy:
       fail-fast: false
       matrix:
+        build_type: [Debug, Release]
+        variant: [linux-amd64, linux-arm64, macos-arm64]
         include:
-          - name: linux-amd64
+          - variant: linux-amd64
             runner: ubuntu-24.04
             platform: linux
             cc: gcc-14
             cxx: g++-14
-          - name: linux-arm64
+          - variant: linux-arm64
             runner: ubuntu-24.04-arm
             platform: linux
             cc: gcc-14
             cxx: g++-14
-          - name: macos-arm64
+          - variant: macos-arm64
             runner: macos-15
             platform: macos
             cc: clang
@@ -72,7 +74,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -D CMAKE_BUILD_TYPE=Debug \
+            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -D REFLECTOR_ENABLE_DOCKER_TESTS=OFF \
             -D REFLECTOR_ENABLE_E2E_TESTS=OFF
         env:
@@ -86,9 +88,19 @@ jobs:
         run: ctest --test-dir build -L unit --output-on-failure
 
   docker-test:
-    name: Docker test
+    name: Docker test (${{ matrix.build_type }})
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+        include:
+          - build_type: Debug
+            target: test-debug
+          - build_type: Release
+            target: test-release
 
     steps:
       - name: Check out repository
@@ -101,7 +113,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: test
+          target: ${{ matrix.target }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
