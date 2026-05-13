@@ -153,7 +153,7 @@ void WolListener::ReleasePort(uint16_t port) noexcept {
     listeners_.erase(it);
 }
 
-bool WolListener::Unregister(const SharedPtrUnsynchronized<RegistrationEntry>& registration) noexcept {
+bool WolListener::Unregister(SharedPtrUnsynchronized<RegistrationEntry> registration) noexcept {
     if (!registration) {
         return false;
     }
@@ -165,6 +165,9 @@ bool WolListener::Unregister(const SharedPtrUnsynchronized<RegistrationEntry>& r
         return false;
     }
 
+    // Pass-by-value above keeps the entry alive through the erase below — callers (e.g.
+    // ~WolListener) typically hand us a SharedPtr stored *in* registrations_, and erasing
+    // it would otherwise drop the last strong ref and free the entry under our feet.
     // Tear down the dispatcher registration before releasing the port: the last release may
     // destroy the underlying UdpListener, and the dispatcher must not still hold its fd.
     registration->dispatcher_reg.Reset();
