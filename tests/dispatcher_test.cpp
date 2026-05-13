@@ -232,6 +232,29 @@ TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
     EXPECT_EQ(counter.count, 0);
 }
 
+TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
+    UdpSocket listener_socket;
+    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
+    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
+    const auto listener_port = BoundPort(listener_socket);
+    ASSERT_NE(listener_port, 0);
+
+    UnregisteringPacketCounter counter;
+    auto registration = dispatcher.Register(
+        listener_socket, PacketFilter{}, CreateDelegate<&UnregisteringPacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+    counter.registration_to_reset = &registration;
+
+    UdpSocket sender_socket;
+    const std::array payload{std::byte{0x01}};
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(counter.count, 1);
+    EXPECT_EQ(RegistrationCount(), 0);
+}
+
 TEST_F(DispatcherTest, PollOnceDispatchesQueuedPacketBurst) {
     UdpSocket listener_socket;
     ASSERT_TRUE(listener_socket.SetReuseAddr(true));

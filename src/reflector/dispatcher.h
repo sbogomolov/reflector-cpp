@@ -73,7 +73,7 @@ private:
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
     [[nodiscard]] bool AddReadEvent(int fd) noexcept;
-    [[nodiscard]] bool RemoveReadEventIfUnused(int fd) noexcept;
+    [[nodiscard]] bool RemoveReadEvent(int fd) noexcept;
     [[nodiscard]] bool DrainReadableFd(int fd) noexcept;
     bool Unregister(RegistrationId id) noexcept;
     [[nodiscard]] std::optional<Packet> Receive(int fd) noexcept;
@@ -85,6 +85,9 @@ private:
     SharedPtrUnsynchronized<DispatcherState> dispatcher_state_;
     RegistrationId next_registration_id_ = 1;
     int event_fd_ = -1;
+    // fd currently being drained; cleared when the last registration for it is unregistered, so
+    // DrainReadableFd can bail before recvfrom on a possibly-reused descriptor.
+    int active_fd_ = -1;
 };
 
 } // namespace reflector

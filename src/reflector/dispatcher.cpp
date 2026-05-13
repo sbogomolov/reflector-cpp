@@ -166,8 +166,18 @@ bool Dispatcher::Unregister(RegistrationId id) noexcept {
     const auto fd = it->fd;
     registrations_.erase(it);
 
-    if (fd >= 0 && !RemoveReadEventIfUnused(fd)) {
-        GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", fd, id);
+    const auto fd_still_used = std::ranges::any_of(registrations_, [fd](const auto& r) {
+        return r.fd == fd;
+    });
+    if (fd >= 0 && !fd_still_used) {
+        if (!RemoveReadEvent(fd)) {
+            GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", fd, id);
+        }
+        // The caller may now close the fd; invalidate active_fd_ so DrainReadableFd stops
+        // before recvfrom on a possibly-reused descriptor.
+        if (active_fd_ == fd) {
+            active_fd_ = -1;
+        }
     }
 
     GetLogger().Debug("Unregistered packet callback {}", id);
@@ -265,13 +275,7 @@ bool Dispatcher::AddReadEvent(int fd) noexcept {
     return true;
 }
 
-bool Dispatcher::RemoveReadEventIfUnused(int fd) noexcept {
-    const auto still_used = std::ranges::any_of(registrations_, [fd](const auto& registration) {
-        return registration.fd == fd;
-    });
-    if (still_used) {
-        return true;
-    }
+bool Dispatcher::RemoveReadEvent(int fd) noexcept {
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
         return false;
@@ -296,17 +300,25 @@ bool Dispatcher::RemoveReadEventIfUnused(int fd) noexcept {
 }
 
 bool Dispatcher::DrainReadableFd(int fd) noexcept {
+    active_fd_ = fd;
     bool dispatched_any = false;
     for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
         const auto packet = Receive(fd);
         if (!packet) {
-            return dispatched_any;
+            break;
         }
 
         DispatchPacket(fd, *packet);
         dispatched_any = true;
+
+        if (active_fd_ != fd) {
+            // A callback unregistered the last user of this fd; the descriptor may already
+            // belong to a new socket. Stop draining before recvfrom hits it.
+            break;
+        }
     }
 
+    active_fd_ = -1;
     return dispatched_any;
 }
 
