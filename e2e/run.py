@@ -24,7 +24,8 @@ UNCONFIGURED_PORT = 40010
 REFLECTOR_READY_LOG = "Starting dispatcher event loop"
 RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
 CONTAINER_READY_TIMEOUT_SECONDS = 15.0
-PROBE_INTERFACE = "eth0"
+REFLECTOR_SOURCE_IFNAME = "wol_src"
+REFLECTOR_TARGET_IFNAME = "wol_dst"
 
 
 class CommandError(RuntimeError):
@@ -153,13 +154,20 @@ class DockerE2E:
         docker(["network", "create", "--driver", "bridge", self.target_network])
 
     def start_reflector(self) -> None:
+        # Pin in-container interface names per network. Without this, Docker's interface
+        # naming at start time is non-deterministic when multiple endpoints are attached,
+        # which made the reflector's SO_BINDTODEVICE land on the wrong bridge ~16% of runs.
+        # Using a non-"eth" prefix avoids the prefix-collision caveat in moby/moby#49155.
+        # Requires Docker 28.0+ (com.docker.network.endpoint.ifname driver-opt).
         docker(
             [
                 "create",
                 "--name",
                 self.reflector_container,
                 "--network",
-                self.source_network,
+                f"name={self.source_network},driver-opt=com.docker.network.endpoint.ifname={REFLECTOR_SOURCE_IFNAME}",
+                "--network",
+                f"name={self.target_network},driver-opt=com.docker.network.endpoint.ifname={REFLECTOR_TARGET_IFNAME}",
                 "--cap-add",
                 "NET_RAW",
                 "--mount",
@@ -168,7 +176,6 @@ class DockerE2E:
                 "/etc/reflector/config.toml",
             ]
         )
-        docker(["network", "connect", self.target_network, self.reflector_container])
         docker(["start", self.reflector_container])
         self.wait_for_reflector()
 
@@ -215,8 +222,6 @@ class DockerE2E:
             str(self.case.receive_port),
             "--timeout",
             str(self.case.timeout_seconds),
-            "--interface",
-            PROBE_INTERFACE,
         ]
         if self.case.expect_mac is None:
             command.append("--expect-none")
@@ -230,7 +235,6 @@ class DockerE2E:
         self.wait_for_container_log(self.receiver_container, RECEIVER_READY_LOG, "receiver")
 
     def run_sender(self) -> None:
-        # TODO: Investigate intermittent Docker bridge delivery misses for 255.255.255.255.
         docker(
             [
                 "run",
@@ -248,8 +252,6 @@ class DockerE2E:
                 self.case.send_mac,
                 "--port",
                 str(self.case.send_port),
-                "--interface",
-                PROBE_INTERFACE,
             ]
         )
 
