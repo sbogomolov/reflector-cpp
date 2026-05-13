@@ -174,10 +174,7 @@ TEST_F(DispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
 
 TEST_F(DispatcherTest, PollOnceDispatchesPacket) {
     UdpSocket listener_socket;
-    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
-    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
-    const auto listener_port = BoundPort(listener_socket);
-    ASSERT_NE(listener_port, 0);
+    const auto listener_port = BindLoopback(listener_socket);
 
     PacketRecorder recorder;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
@@ -196,10 +193,7 @@ TEST_F(DispatcherTest, PollOnceDispatchesPacket) {
 TEST_F(DispatcherTest, PollOnceDispatchesLargePacket) {
     constexpr size_t LARGE_PAYLOAD_SIZE = 8 * 1024;
     UdpSocket listener_socket;
-    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
-    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
-    const auto listener_port = BoundPort(listener_socket);
-    ASSERT_NE(listener_port, 0);
+    const auto listener_port = BindLoopback(listener_socket);
 
     PacketRecorder recorder;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
@@ -221,8 +215,7 @@ TEST_F(DispatcherTest, PollOnceDispatchesLargePacket) {
 
 TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
     UdpSocket listener_socket;
-    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
-    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
+    BindLoopback(listener_socket);
 
     PacketCounter counter;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
@@ -234,10 +227,7 @@ TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
 
 TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
     UdpSocket listener_socket;
-    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
-    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
-    const auto listener_port = BoundPort(listener_socket);
-    ASSERT_NE(listener_port, 0);
+    const auto listener_port = BindLoopback(listener_socket);
 
     UnregisteringPacketCounter counter;
     auto registration = dispatcher.Register(
@@ -257,10 +247,7 @@ TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
 
 TEST_F(DispatcherTest, PollOnceDispatchesQueuedPacketBurst) {
     UdpSocket listener_socket;
-    ASSERT_TRUE(listener_socket.SetReuseAddr(true));
-    ASSERT_TRUE(listener_socket.Bind(IpAddress::Loopback(), 0));
-    const auto listener_port = BoundPort(listener_socket);
-    ASSERT_NE(listener_port, 0);
+    const auto listener_port = BindLoopback(listener_socket);
 
     PacketCounter counter;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));

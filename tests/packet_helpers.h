@@ -56,6 +56,14 @@ inline uint16_t BoundPort(const UdpSocket& socket) {
     return ntohs(address.sin_port);
 }
 
+inline uint16_t BindLoopback(UdpSocket& socket, uint16_t port = 0) {
+    EXPECT_TRUE(socket.SetReuseAddr(true));
+    EXPECT_TRUE(socket.Bind(IpAddress::Loopback(), port));
+    const auto bound_port = BoundPort(socket);
+    EXPECT_NE(bound_port, 0);
+    return bound_port;
+}
+
 inline std::vector<uint16_t> FreeLoopbackPorts(size_t count) {
     std::vector<UdpSocket> sockets;
     std::vector<uint16_t> ports;
@@ -84,8 +92,7 @@ struct LoopbackReceiver {
     Dispatcher::Registration registration;
 
     explicit LoopbackReceiver(uint16_t port = 0) {
-        EXPECT_TRUE(socket.SetReuseAddr(true));
-        EXPECT_TRUE(socket.Bind(IpAddress::Loopback(), port));
+        BindLoopback(socket, port);
         registration = dispatcher.Register(
             socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
         EXPECT_TRUE(registration.IsValid());
