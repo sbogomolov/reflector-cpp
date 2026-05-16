@@ -44,6 +44,16 @@ docker build --target test-release .
 
 The runtime image uses pinned Debian/distroless base image digests. The default Docker build keeps the local workflow simple by building only the native platform. The `--push` mode uses `docker buildx` to publish `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64` and `linux/arm64`; override the destination with `--image`, or override architectures with `--platforms` only for unusual deployment targets. The `test-debug` target builds and runs the unit suite inside the Debian build environment with AddressSanitizer and UndefinedBehaviorSanitizer enabled; `test-release` runs the same suite against a release build. When Docker tests are enabled through CTest, Debug builds use `test-debug` and other build types use `test-release`.
 
+## Release
+
+Release checklist:
+
+- Make sure `CMakeLists.txt` has the new project version.
+- Make sure all changes for the release are present on `origin/main`.
+- Check that all GitHub Actions CI jobs on `origin/main` succeeded.
+- Create a GitHub release with the tag corresponding to the new version, for example `v0.1.4`.
+- Push the new Docker images with `./docker_build.sh --push`.
+
 ## Run
 
 ```sh
