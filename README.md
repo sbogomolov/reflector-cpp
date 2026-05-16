@@ -2,7 +2,7 @@
 
 Reflects Wake-on-LAN magic packets received on one network interface onto another. Useful when the host that sends WoL packets and the host you want to wake live on different L2 segments — for example, a router bridging a wired LAN to a Wi-Fi network where broadcasts are not forwarded.
 
-Each reflector entry tries to set up IPv4 and IPv6 handling independently. A magic packet received over IPv4 is re-emitted as the IPv4 limited broadcast (`255.255.255.255`); one received over IPv6 is re-emitted to the IPv6 link-local all-nodes multicast group (`ff02::1`). If only one address family can be initialized, that family keeps running. If neither IPv4 nor IPv6 can be initialized for an entry, startup fails with an error.
+By default, each reflector entry tries to set up IPv4 and IPv6 handling independently. A magic packet received over IPv4 is re-emitted as the IPv4 limited broadcast (`255.255.255.255`); one received over IPv6 is re-emitted to the IPv6 link-local all-nodes multicast group (`ff02::1`). If only one address family can be initialized, that family keeps running. If neither IPv4 nor IPv6 can be initialized for an entry, startup fails with an error.
 
 ## Platform support
 
@@ -90,9 +90,12 @@ mac       = "B0:37:95:C5:60:BE" # MAC address of the host to wake
 source_if = "en0"              # interface to listen on (must differ from target_if)
 target_if = "lo0"              # interface to broadcast on
 ports     = [7, 9]             # optional; defaults to [7, 9] (the standard WoL ports)
+address_family = "default"    # optional; default | dual | ipv4 | ipv6
 ```
 
-Each entry installs IPv4 and IPv6 listeners on `source_if` for the listed UDP ports, matches incoming packets against the WoL magic-packet format for `mac`, and re-emits matching packets on `target_if` on the same destination port — to `255.255.255.255` for packets received over IPv4, and to `ff02::1` for packets received over IPv6. No IP addresses appear in the config; dual-stack is automatic.
+Each entry installs listeners on `source_if` for the listed UDP ports, matches incoming packets against the WoL magic-packet format for `mac`, and re-emits matching packets on `target_if` on the same destination port — to `255.255.255.255` for packets received over IPv4, and to `ff02::1` for packets received over IPv6. No IP addresses appear in the config.
+
+`address_family = "default"` keeps the best-effort dual-stack behavior: IPv4 and IPv6 are both attempted, and startup succeeds if either works. Use `"dual"` to require both IPv4 and IPv6 reflectors, or `"ipv4"` / `"ipv6"` to create only that address family.
 
 ## Tests
 

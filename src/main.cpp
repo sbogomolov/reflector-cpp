@@ -30,6 +30,18 @@ void ConfigureStdoutBuffering() noexcept {
     }
 }
 
+bool UsesIPv4(reflector::WolAddressFamily address_family) noexcept {
+    return address_family != reflector::WolAddressFamily::IPv6;
+}
+
+bool UsesIPv6(reflector::WolAddressFamily address_family) noexcept {
+    return address_family != reflector::WolAddressFamily::IPv4;
+}
+
+bool RequiresEveryRequestedFamily(reflector::WolAddressFamily address_family) noexcept {
+    return address_family != reflector::WolAddressFamily::Default;
+}
+
 int Run(int argc, char* argv[]) {
     ConfigureStdoutBuffering();
 
@@ -59,21 +71,43 @@ int Run(int argc, char* argv[]) {
     std::unordered_map<std::string, reflector::WolListener> v6_wol_listeners;
     std::vector<std::unique_ptr<reflector::WolReflector>> reflectors;
     for (const auto& wol_config : config->WolConfigs()) {
-        auto& v4_listener = v4_wol_listeners.try_emplace(
-            wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V4).first->second;
-        auto& v6_listener = v6_wol_listeners.try_emplace(
-            wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V6).first->second;
-        auto v4_reflector = std::make_unique<reflector::WolReflector>(v4_listener, wol_config);
-        auto v6_reflector = std::make_unique<reflector::WolReflector>(v6_listener, wol_config);
-        if (!v4_reflector->IsValid() && !v6_reflector->IsValid()) {
+        std::unique_ptr<reflector::WolReflector> v4_reflector;
+        std::unique_ptr<reflector::WolReflector> v6_reflector;
+
+        if (UsesIPv4(wol_config.address_family)) {
+            auto& v4_listener = v4_wol_listeners.try_emplace(
+                wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V4).first->second;
+            v4_reflector = std::make_unique<reflector::WolReflector>(v4_listener, wol_config);
+        }
+        if (UsesIPv6(wol_config.address_family)) {
+            auto& v6_listener = v6_wol_listeners.try_emplace(
+                wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V6).first->second;
+            v6_reflector = std::make_unique<reflector::WolReflector>(v6_listener, wol_config);
+        }
+
+        const auto v4_valid = v4_reflector && v4_reflector->IsValid();
+        const auto v6_valid = v6_reflector && v6_reflector->IsValid();
+        if (RequiresEveryRequestedFamily(wol_config.address_family)) {
+            if (v4_reflector && !v4_valid) {
+                logger.Error("Cannot configure wol reflector \"{}\": IPv4 did not come up",
+                    wol_config.name);
+                return 1;
+            }
+            if (v6_reflector && !v6_valid) {
+                logger.Error("Cannot configure wol reflector \"{}\": IPv6 did not come up",
+                    wol_config.name);
+                return 1;
+            }
+        } else if (!v4_valid && !v6_valid) {
             logger.Error("Cannot configure wol reflector \"{}\": neither IPv4 nor IPv6 came up",
                 wol_config.name);
             return 1;
         }
-        if (v4_reflector->IsValid()) {
+
+        if (v4_valid) {
             reflectors.push_back(std::move(v4_reflector));
         }
-        if (v6_reflector->IsValid()) {
+        if (v6_valid) {
             reflectors.push_back(std::move(v6_reflector));
         }
     }

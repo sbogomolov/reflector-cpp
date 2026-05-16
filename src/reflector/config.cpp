@@ -30,15 +30,33 @@ std::expected<std::string_view, Error> ReadStringField(const toml::node& field_n
     return *field_value;
 }
 
-std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
+std::string ToLower(std::string_view s) {
     std::string lower;
     lower.reserve(s.size());
-    std::ranges::transform(s, std::back_inserter(lower), [](unsigned char c) { return std::tolower(c); });
+    std::ranges::transform(s, std::back_inserter(lower), [](unsigned char c) {
+        // std::tolower requires EOF or a value representable as unsigned char.
+        return static_cast<char>(std::tolower(c));
+    });
+    return lower;
+}
+
+std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
+    const auto lower = ToLower(s);
     if (lower == "debug") return LogLevel::Debug;
     if (lower == "info") return LogLevel::Info;
     if (lower == "warning") return LogLevel::Warning;
     if (lower == "error") return LogLevel::Error;
     return std::unexpected(Error{"log_level must be one of: debug, info, warning, error; got \"{}\"", s});
+}
+
+std::expected<WolAddressFamily, Error> WolAddressFamilyFromString(std::string_view s) {
+    const auto lower = ToLower(s);
+    if (lower == "default") return WolAddressFamily::Default;
+    if (lower == "dual") return WolAddressFamily::Dual;
+    if (lower == "ipv4") return WolAddressFamily::IPv4;
+    if (lower == "ipv6") return WolAddressFamily::IPv6;
+    return std::unexpected(Error{
+        "wol address_family must be one of: default, dual, ipv4, ipv6; got \"{}\"", s});
 }
 
 std::expected<std::vector<uint16_t>, Error> ReadPorts(const toml::node& ports_node) {
@@ -105,6 +123,17 @@ std::expected<WolConfig, Error> ReadWolConfig(const toml::table& entry_table) {
                 return std::unexpected(std::move(ports).error());
             }
             wol_config.ports = std::move(*ports);
+        }
+        else if (field_name == "address_family") {
+            const auto field_value = field_node.value<std::string_view>();
+            if (!field_value.has_value()) {
+                return std::unexpected(Error{"wol address_family must be a string"});
+            }
+            auto address_family = WolAddressFamilyFromString(*field_value);
+            if (!address_family.has_value()) {
+                return std::unexpected(std::move(address_family).error());
+            }
+            wol_config.address_family = *address_family;
         } else {
             return std::unexpected(Error{"unexpected wol option: {}", field_name});
         }

@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 using namespace reflector;
@@ -40,7 +41,7 @@ target_if = "eth1"
 
 } // namespace
 
-TEST(ConfigTest, ParsesDefaultPorts) {
+TEST(ConfigTest, ParsesDefaultWolOptions) {
     std::string toml = R"(
 [[wol]]
 name = "tv"
@@ -60,6 +61,7 @@ target_if = "eth1"
     EXPECT_EQ(wol.target_if, "eth1");
     const std::vector<uint16_t> expected_ports{7, 9};
     EXPECT_EQ(wol.ports, expected_ports);
+    EXPECT_EQ(wol.address_family, WolAddressFamily::Default);
 }
 
 TEST(ConfigTest, ParsesMultipleWolEntries) {
@@ -106,6 +108,33 @@ ports = [7, 9, 40000]
 
     const std::vector<uint16_t> expected_ports{7, 9, 40000};
     EXPECT_EQ(config->WolConfigs().front().ports, expected_ports);
+}
+
+TEST(ConfigTest, ParsesAddressFamily) {
+    const std::vector<std::pair<std::string_view, WolAddressFamily>> cases{
+        {"default", WolAddressFamily::Default},
+        {"dual", WolAddressFamily::Dual},
+        {"ipv4", WolAddressFamily::IPv4},
+        {"ipv6", WolAddressFamily::IPv6},
+        {"IPv6", WolAddressFamily::IPv6},
+    };
+
+    for (const auto& [value, expected] : cases) {
+        std::string toml = R"(
+[[wol]]
+name = "tv"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = ")";
+        toml += value;
+        toml += "\"\n";
+
+        const auto config = Config::FromString(toml);
+        ASSERT_TRUE(config.has_value()) << value << ": " << config.error().Message();
+        ASSERT_EQ(config->WolConfigs().size(), 1);
+        EXPECT_EQ(config->WolConfigs().front().address_family, expected) << value;
+    }
 }
 
 TEST(ConfigTest, RejectsEmptyDocument) {
@@ -281,6 +310,34 @@ mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 extra_option = "abc"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, RejectsUnknownAddressFamily) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = "ipx"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, RejectsNonStringAddressFamily) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = ["ipv4"]
 )";
 
     const auto config = Config::FromString(toml);
