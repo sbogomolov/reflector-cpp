@@ -35,6 +35,9 @@ class CommandError(RuntimeError):
         super().__init__(f"command failed with exit code {result.returncode}: {format_command(command)}")
 
 
+IPV6_ALL_NODES = "ff02::1"
+
+
 @dataclasses.dataclass(frozen=True)
 class TestCase:
     name: str
@@ -43,6 +46,13 @@ class TestCase:
     receive_port: int
     expect_mac: str | None
     timeout_seconds: float
+    # IP version exercised end to end. The reflector runs both pipelines from one config;
+    # each case drives just one of them.
+    family: int = 4
+
+    @property
+    def send_address(self) -> str:
+        return IPV6_ALL_NODES if self.family == 6 else "255.255.255.255"
 
 
 TEST_CASES = [
@@ -53,6 +63,15 @@ TEST_CASES = [
         receive_port=CONFIGURED_PORT,
         expect_mac=CONFIGURED_MAC,
         timeout_seconds=5.0,
+    ),
+    TestCase(
+        name="reflects_matching_magic_packet_ipv6",
+        send_mac=CONFIGURED_MAC,
+        send_port=CONFIGURED_PORT,
+        receive_port=CONFIGURED_PORT,
+        expect_mac=CONFIGURED_MAC,
+        timeout_seconds=5.0,
+        family=6,
     ),
     TestCase(
         name="ignores_wrong_mac",
@@ -150,8 +169,10 @@ class DockerE2E:
             docker(["network", "rm", network], check=False)
 
     def setup_networks(self) -> None:
-        docker(["network", "create", "--driver", "bridge", self.source_network])
-        docker(["network", "create", "--driver", "bridge", self.target_network])
+        # Both networks are dual-stack: IPv4 cases are unaffected, and IPv6 cases need the
+        # bridges to carry IPv6 so the reflector can listen on / emit to ff02::1.
+        docker(["network", "create", "--driver", "bridge", "--ipv6", self.source_network])
+        docker(["network", "create", "--driver", "bridge", "--ipv6", self.target_network])
 
     def start_reflector(self) -> None:
         # Pin in-container interface names per network. Without this, Docker's interface
@@ -228,6 +249,8 @@ class DockerE2E:
         else:
             command.extend(["--expect-mac", self.case.expect_mac])
 
+        command.extend(["--family", str(self.case.family)])
+
         docker(command)
         self.wait_for_receiver()
 
@@ -240,8 +263,10 @@ class DockerE2E:
                 "run",
                 "--name",
                 self.sender_container,
+                # Pin the sender's source-network interface name so the IPv6 probe can scope
+                # ff02::1 to it deterministically (see start_reflector for the rationale).
                 "--network",
-                self.source_network,
+                f"name={self.source_network},driver-opt=com.docker.network.endpoint.ifname={REFLECTOR_SOURCE_IFNAME}",
                 "--mount",
                 f"type=bind,source={E2E_DIR},target=/e2e,readonly",
                 self.args.helper_image,
@@ -252,6 +277,10 @@ class DockerE2E:
                 self.case.send_mac,
                 "--port",
                 str(self.case.send_port),
+                "--address",
+                self.case.send_address,
+                "--interface",
+                REFLECTOR_SOURCE_IFNAME,
             ]
         )
 
