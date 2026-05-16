@@ -38,10 +38,11 @@ Dependencies (`tomlplusplus`, `googletest`) are fetched via `FetchContent` — n
 ```sh
 ./docker_build.sh
 ./docker_build.sh --push
-docker build --target test .
+docker build --target test-debug .
+docker build --target test-release .
 ```
 
-The runtime image uses pinned Debian/distroless base image digests. The default Docker build keeps the local workflow simple by building only the native platform. The `--push` mode uses `docker buildx` to publish `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64` and `linux/arm64`; override the destination with `--image`, or override architectures with `--platforms` only for unusual deployment targets. The `test` target builds and runs the unit suite inside the Debian build environment without changing the final production image.
+The runtime image uses pinned Debian/distroless base image digests. The default Docker build keeps the local workflow simple by building only the native platform. The `--push` mode uses `docker buildx` to publish `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64` and `linux/arm64`; override the destination with `--image`, or override architectures with `--platforms` only for unusual deployment targets. The `test-debug` target builds and runs the unit suite inside the Debian build environment with AddressSanitizer and UndefinedBehaviorSanitizer enabled; `test-release` runs the same suite against a release build. When Docker tests are enabled through CTest, Debug builds use `test-debug` and other build types use `test-release`.
 
 ## Run
 

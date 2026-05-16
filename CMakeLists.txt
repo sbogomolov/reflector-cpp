@@ -112,16 +112,22 @@ if(BUILD_TESTING)
         if(NOT DOCKER_EXECUTABLE)
             message(FATAL_ERROR "REFLECTOR_ENABLE_DOCKER_TESTS requires the docker executable")
         endif()
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            set(_reflector_docker_test_target test-debug)
+        else()
+            set(_reflector_docker_test_target test-release)
+        endif()
 
         add_test(
             NAME ReflectorDocker.BuildTestTarget
-            COMMAND ${DOCKER_EXECUTABLE} build --target test .
+            COMMAND ${DOCKER_EXECUTABLE} build --target ${_reflector_docker_test_target} .
         )
         set_tests_properties(ReflectorDocker.BuildTestTarget PROPERTIES
             LABELS "docker"
             TIMEOUT 600
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        unset(_reflector_docker_test_target)
     endif()
 
     if(REFLECTOR_ENABLE_E2E_TESTS)
