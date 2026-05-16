@@ -42,7 +42,7 @@ struct UnregisteringPacketCounter {
 };
 
 TEST_F(DispatcherTest, RegistersCallback) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
 
     const auto registration = dispatcher.Register(socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
@@ -52,7 +52,7 @@ TEST_F(DispatcherTest, RegistersCallback) {
 }
 
 TEST_F(DispatcherTest, RegisterRejectsMovedFromSocket) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     auto moved_socket = std::move(socket);
     PacketCounter counter;
 
@@ -65,7 +65,7 @@ TEST_F(DispatcherTest, RegisterRejectsMovedFromSocket) {
 }
 
 TEST_F(DispatcherTest, DispatchesMatchingPacket) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
     const auto registration = dispatcher.Register(socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
     ASSERT_TRUE(registration.IsValid());
@@ -76,38 +76,38 @@ TEST_F(DispatcherTest, DispatchesMatchingPacket) {
 }
 
 TEST_F(DispatcherTest, SourceFiltersRejectNonMatchingPackets) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
     PacketFilter filter{
-        .source_ip = IpAddress::FromBytes(192, 0, 2, 10),
+        .source_ip = IpAddress::FromV4Bytes(192, 0, 2, 10),
         .source_port = 7,
     };
     const auto registration = dispatcher.Register(socket, filter, CreateDelegate<&PacketCounter::OnPacket>(&counter));
     ASSERT_TRUE(registration.IsValid());
 
-    Dispatch(socket.Fd(), MakePacket(IpAddress::FromBytes(192, 0, 2, 10), 9));
-    Dispatch(socket.Fd(), MakePacket(IpAddress::FromBytes(192, 0, 2, 11), 7));
+    Dispatch(socket.Fd(), MakePacket(IpAddress::FromV4Bytes(192, 0, 2, 10), 9));
+    Dispatch(socket.Fd(), MakePacket(IpAddress::FromV4Bytes(192, 0, 2, 11), 7));
 
     EXPECT_EQ(counter.count, 0);
 }
 
 TEST_F(DispatcherTest, SourceFiltersAcceptMatchingPackets) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
     PacketFilter filter{
-        .source_ip = IpAddress::FromBytes(192, 0, 2, 10),
+        .source_ip = IpAddress::FromV4Bytes(192, 0, 2, 10),
         .source_port = 7,
     };
     const auto registration = dispatcher.Register(socket, filter, CreateDelegate<&PacketCounter::OnPacket>(&counter));
     ASSERT_TRUE(registration.IsValid());
 
-    Dispatch(socket.Fd(), MakePacket(IpAddress::FromBytes(192, 0, 2, 10), 7));
+    Dispatch(socket.Fd(), MakePacket(IpAddress::FromV4Bytes(192, 0, 2, 10), 7));
 
     EXPECT_EQ(counter.count, 1);
 }
 
 TEST_F(DispatcherTest, MultipleRegistrationsReceivePacket) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter first;
     PacketCounter second;
 
@@ -124,7 +124,7 @@ TEST_F(DispatcherTest, MultipleRegistrationsReceivePacket) {
 }
 
 TEST_F(DispatcherTest, UnregisterRemovesCallback) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
     auto registration = dispatcher.Register(socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
     ASSERT_TRUE(registration.IsValid());
@@ -138,7 +138,7 @@ TEST_F(DispatcherTest, UnregisterRemovesCallback) {
 
 TEST(DispatcherRegistrationLifetimeTest, RegistrationInvalidAfterDispatcherDestroyed) {
     Dispatcher::Registration registration;
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     PacketCounter counter;
 
     {
@@ -152,7 +152,7 @@ TEST(DispatcherRegistrationLifetimeTest, RegistrationInvalidAfterDispatcherDestr
 }
 
 TEST_F(DispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
-    UdpSocket socket;
+    UdpSocket socket{IpAddress::Family::V4};
     UnregisteringPacketCounter first;
     PacketCounter second;
 
@@ -173,26 +173,26 @@ TEST_F(DispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
 }
 
 TEST_F(DispatcherTest, PollOnceDispatchesPacket) {
-    UdpSocket listener_socket;
+    UdpSocket listener_socket{IpAddress::Family::V4};
     const auto listener_port = BindLoopback(listener_socket);
 
     PacketRecorder recorder;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
     ASSERT_TRUE(registration.IsValid());
 
-    UdpSocket sender_socket;
+    UdpSocket sender_socket{IpAddress::Family::V4};
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
 
     EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
     EXPECT_EQ(recorder.count, 1);
     EXPECT_EQ(recorder.payload, std::vector<std::byte>(payload.begin(), payload.end()));
-    EXPECT_EQ(recorder.source_ip, IpAddress::Loopback());
+    EXPECT_EQ(recorder.source_ip, IpAddress::LoopbackV4());
 }
 
 TEST_F(DispatcherTest, PollOnceDispatchesLargePacket) {
     constexpr size_t LARGE_PAYLOAD_SIZE = 8 * 1024;
-    UdpSocket listener_socket;
+    UdpSocket listener_socket{IpAddress::Family::V4};
     const auto listener_port = BindLoopback(listener_socket);
 
     PacketRecorder recorder;
@@ -204,17 +204,17 @@ TEST_F(DispatcherTest, PollOnceDispatchesLargePacket) {
         payload[i] = std::byte{static_cast<unsigned char>(i & 0xff)};
     }
 
-    UdpSocket sender_socket;
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+    UdpSocket sender_socket{IpAddress::Family::V4};
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
 
     EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
     EXPECT_EQ(recorder.count, 1);
     EXPECT_EQ(recorder.payload, payload);
-    EXPECT_EQ(recorder.source_ip, IpAddress::Loopback());
+    EXPECT_EQ(recorder.source_ip, IpAddress::LoopbackV4());
 }
 
 TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
-    UdpSocket listener_socket;
+    UdpSocket listener_socket{IpAddress::Family::V4};
     BindLoopback(listener_socket);
 
     PacketCounter counter;
@@ -226,7 +226,7 @@ TEST_F(DispatcherTest, PollOnceWithoutPacketReturnsFalse) {
 }
 
 TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
-    UdpSocket listener_socket;
+    UdpSocket listener_socket{IpAddress::Family::V4};
     const auto listener_port = BindLoopback(listener_socket);
 
     UnregisteringPacketCounter counter;
@@ -235,10 +235,10 @@ TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
     ASSERT_TRUE(registration.IsValid());
     counter.registration_to_reset = &registration;
 
-    UdpSocket sender_socket;
+    UdpSocket sender_socket{IpAddress::Family::V4};
     const std::array payload{std::byte{0x01}};
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
 
     EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
     EXPECT_EQ(counter.count, 1);
@@ -246,18 +246,18 @@ TEST_F(DispatcherTest, DrainStopsWhenCallbackResetsLastRegistration) {
 }
 
 TEST_F(DispatcherTest, PollOnceDispatchesQueuedPacketBurst) {
-    UdpSocket listener_socket;
+    UdpSocket listener_socket{IpAddress::Family::V4};
     const auto listener_port = BindLoopback(listener_socket);
 
     PacketCounter counter;
     const auto registration = dispatcher.Register(listener_socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
     ASSERT_TRUE(registration.IsValid());
 
-    UdpSocket sender_socket;
+    UdpSocket sender_socket{IpAddress::Family::V4};
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
     constexpr int packet_count = 3;
     for (int i = 0; i < packet_count; ++i) {
-        ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::Loopback(), listener_port));
+        ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
     }
 
     EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));

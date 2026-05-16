@@ -5,12 +5,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace reflector {
 
 struct PacketHeader {
-    IpAddress source_ip = IpAddress::Any();
+    IpAddress source_ip;
     uint16_t source_port = 0;
 };
 
@@ -22,7 +23,8 @@ struct Packet {
 };
 
 struct PacketFilter {
-    IpAddress source_ip = IpAddress::Any();
+    // An unset source_ip matches packets from any source address.
+    std::optional<IpAddress> source_ip;
     uint16_t source_port = 0;
 };
 

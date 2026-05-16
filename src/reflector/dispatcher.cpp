@@ -36,7 +36,7 @@ timespec ToTimespec(std::chrono::milliseconds timeout) noexcept {
 #endif
 
 bool Matches(const PacketFilter& filter, const Packet& packet) {
-    if (!filter.source_ip.IsAny() && filter.source_ip != packet.header.source_ip) {
+    if (filter.source_ip && *filter.source_ip != packet.header.source_ip) {
         return false;
     }
     if (filter.source_port != 0 && filter.source_port != packet.header.source_port) {
@@ -330,7 +330,7 @@ bool Dispatcher::DrainReadableFd(int fd) noexcept {
 }
 
 std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
-    sockaddr_in source_address{};
+    sockaddr_storage source_address{};
     socklen_t source_address_size = sizeof(source_address);
     // EINTR before recvfrom consumes the datagram leaves it queued — retry, don't drop.
     ssize_t bytes_received;
@@ -351,10 +351,24 @@ std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
         return std::nullopt;
     }
 
+    const auto* source = reinterpret_cast<const sockaddr*>(&source_address);
+    const auto source_ip = IpAddress::FromSockaddr(source);
+    if (!source_ip) {
+        GetLogger().Error("Cannot receive packet from fd {}: unsupported source address family", fd);
+        return std::nullopt;
+    }
+
+    uint16_t source_port = 0;
+    if (source->sa_family == AF_INET) {
+        source_port = ntohs(reinterpret_cast<const sockaddr_in*>(source)->sin_port);
+    } else if (source->sa_family == AF_INET6) {
+        source_port = ntohs(reinterpret_cast<const sockaddr_in6*>(source)->sin6_port);
+    }
+
     Packet packet{
         .header = PacketHeader{
-            .source_ip = IpAddress::FromInAddr(source_address.sin_addr.s_addr),
-            .source_port = ntohs(source_address.sin_port),
+            .source_ip = *source_ip,
+            .source_port = source_port,
         },
         .payload = std::span<const std::byte>{receive_buffer_.data(), static_cast<size_t>(bytes_received)},
     };
