@@ -52,7 +52,7 @@ protected:
     static int ListenerFdForPort(const WolListener& l, uint16_t port) {
         for (const auto& entry : l.listeners_) {
             if (entry.port == port) {
-                return entry.listener.Socket().Fd();
+                return entry.socket.Fd();
             }
         }
         return -1;

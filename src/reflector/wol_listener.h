@@ -1,7 +1,7 @@
 #pragma once
 
 #include "dispatcher.h"
-#include "udp_listener.h"
+#include "udp_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
 #include "util/shared_ptr_unsynchronized.h"
@@ -51,7 +51,7 @@ private:
     friend class WolReflectorTestBase;
 
     struct PortListener {
-        UdpListener listener;
+        UdpSocket socket;
         size_t refcount;
         uint16_t port;
     };

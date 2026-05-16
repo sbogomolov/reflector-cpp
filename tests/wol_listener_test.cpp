@@ -60,7 +60,7 @@ INSTANTIATE_TEST_SUITE_P(
         return std::format("{}", info.param);
     });
 
-TEST_P(WolListenerPerFamilyTest, RegisterCreatesUdpListenerForPort) {
+TEST_P(WolListenerPerFamilyTest, RegisterCreatesSocketForPort) {
     PacketCounter counter;
     const auto port = FreeLoopbackPort(GetParam());
 
@@ -83,7 +83,7 @@ TEST_P(WolListenerPerFamilyTest, UnregisterRemovesUnusedListener) {
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
 }
 
-TEST_P(WolListenerPerFamilyTest, RegistrationsShareUdpListener) {
+TEST_P(WolListenerPerFamilyTest, RegistrationsShareSocket) {
     PacketCounter first;
     PacketCounter second;
     const auto port = FreeLoopbackPort(GetParam());
@@ -97,7 +97,7 @@ TEST_P(WolListenerPerFamilyTest, RegistrationsShareUdpListener) {
     EXPECT_EQ(DispatcherRegistrationCount(), 2);
 }
 
-TEST_P(WolListenerPerFamilyTest, DifferentPortsCreateSeparateListeners) {
+TEST_P(WolListenerPerFamilyTest, DifferentPortsCreateSeparateSockets) {
     PacketCounter counter;
     const auto ports = FreeLoopbackPorts(2, GetParam());
 
