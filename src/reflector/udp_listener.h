@@ -12,7 +12,8 @@ class UdpListener : NoCopy {
 public:
     struct Options {
         std::string interface;
-        IpAddress local_ip = IpAddress::Any();
+        // The address family is taken from local_ip; pass AnyV4() / AnyV6() to bind a wildcard.
+        IpAddress local_ip;
         uint16_t local_port = 0;
     };
 

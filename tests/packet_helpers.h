@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <netinet/in.h>
+#include <optional>
 #include <sys/socket.h>
 #include <vector>
 
@@ -33,10 +34,10 @@ struct PacketRecorder {
 
     int count = 0;
     std::vector<std::byte> payload;
-    IpAddress source_ip = IpAddress::Any();
+    std::optional<IpAddress> source_ip;
 };
 
-inline Packet MakePacket(IpAddress source_ip = IpAddress::FromBytes(192, 0, 2, 1), uint16_t source_port = 12345) {
+inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1), uint16_t source_port = 12345) {
     return Packet{
         .header = PacketHeader{
             .source_ip = source_ip,
@@ -46,42 +47,49 @@ inline Packet MakePacket(IpAddress source_ip = IpAddress::FromBytes(192, 0, 2, 1
     };
 }
 
+inline IpAddress LoopbackFor(IpAddress::Family family) {
+    return family == IpAddress::Family::V6 ? IpAddress::LoopbackV6() : IpAddress::LoopbackV4();
+}
+
 inline uint16_t BoundPort(const UdpSocket& socket) {
-    sockaddr_in address{};
+    sockaddr_storage address{};
     socklen_t address_size = sizeof(address);
     if (getsockname(socket.Fd(), reinterpret_cast<sockaddr*>(&address), &address_size) != 0) {
         ADD_FAILURE() << "getsockname failed for fd " << socket.Fd() << ": " << std::strerror(errno);
         return 0;
     }
-    return ntohs(address.sin_port);
+    if (address.ss_family == AF_INET6) {
+        return ntohs(reinterpret_cast<const sockaddr_in6*>(&address)->sin6_port);
+    }
+    return ntohs(reinterpret_cast<const sockaddr_in*>(&address)->sin_port);
 }
 
 inline uint16_t BindLoopback(UdpSocket& socket, uint16_t port = 0) {
     EXPECT_TRUE(socket.SetReuseAddr(true));
-    EXPECT_TRUE(socket.Bind(IpAddress::Loopback(), port));
+    EXPECT_TRUE(socket.Bind(LoopbackFor(socket.AddressFamily()), port));
     const auto bound_port = BoundPort(socket);
     EXPECT_NE(bound_port, 0);
     return bound_port;
 }
 
-inline std::vector<uint16_t> FreeLoopbackPorts(size_t count) {
+inline std::vector<uint16_t> FreeLoopbackPorts(size_t count, IpAddress::Family family) {
     std::vector<UdpSocket> sockets;
     std::vector<uint16_t> ports;
     sockets.reserve(count);
     ports.reserve(count);
 
     for (size_t i = 0; i < count; ++i) {
-        auto& socket = sockets.emplace_back();
+        auto& socket = sockets.emplace_back(family);
         EXPECT_TRUE(socket.SetReuseAddr(true));
-        EXPECT_TRUE(socket.Bind(IpAddress::Loopback(), 0));
+        EXPECT_TRUE(socket.Bind(LoopbackFor(family), 0));
         ports.push_back(BoundPort(socket));
     }
 
     return ports;
 }
 
-inline uint16_t FreeLoopbackPort() {
-    const auto ports = FreeLoopbackPorts(1);
+inline uint16_t FreeLoopbackPort(IpAddress::Family family) {
+    const auto ports = FreeLoopbackPorts(1, family);
     return ports.front();
 }
 
@@ -91,7 +99,8 @@ struct LoopbackReceiver {
     PacketRecorder recorder;
     Dispatcher::Registration registration;
 
-    explicit LoopbackReceiver(uint16_t port = 0) {
+    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family)
+            : socket{family} {
         BindLoopback(socket, port);
         registration = dispatcher.Register(
             socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));

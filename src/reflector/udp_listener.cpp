@@ -13,9 +13,20 @@ Logger& GetLogger() noexcept {
 
 } // namespace
 
-UdpListener::UdpListener(const Options& options) {
+UdpListener::UdpListener(const Options& options)
+        : socket_{options.local_ip.AddressFamily()} {
+    if (!socket_.IsValid()) {
+        GetLogger().Warning("Cannot create UDP listener on interface \"{}\": socket setup failed", options.interface);
+        return;
+    }
     if (!options.interface.empty() && !socket_.SetInterface(options.interface)) {
         GetLogger().Error("Cannot create UDP listener on interface \"{}\"", options.interface);
+        socket_.Close();
+        return;
+    }
+    if (options.local_ip.IsV6() && !socket_.SetV6Only(true)) {
+        GetLogger().Error("Cannot create UDP listener on interface \"{}\": IPV6_V6ONLY setup failed",
+            options.interface);
         socket_.Close();
         return;
     }

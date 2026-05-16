@@ -13,11 +13,15 @@
 
 namespace reflector {
 
-UdpSocket::UdpSocket() {
+UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
     logger_.Debug("Creating socket");
-    fd_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    fd_ = socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (fd_ < 0) {
-        logger_.Error("Cannot create socket: {}", Error::FromErrno());
+        if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) {
+            logger_.Warning("Cannot create socket: address family not supported: {}", Error::FromErrno());
+        } else {
+            logger_.Error("Cannot create socket: {}", Error::FromErrno());
+        }
         return;
     }
 
@@ -42,7 +46,9 @@ void UdpSocket::Close() noexcept {
 
 UdpSocket::UdpSocket(UdpSocket&& other) noexcept
         : logger_{std::move(other.logger_)}
-        , fd_{std::exchange(other.fd_, -1)} {}
+        , fd_{std::exchange(other.fd_, -1)}
+        , family_{other.family_}
+        , interface_index_{std::exchange(other.interface_index_, 0)} {}
 
 UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
     if (this == &other) {
@@ -53,6 +59,8 @@ UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
 
     logger_ = std::move(other.logger_);
     fd_ = std::exchange(other.fd_, -1);
+    family_ = other.family_;
+    interface_index_ = std::exchange(other.interface_index_, 0);
 
     return *this;
 }
@@ -76,6 +84,15 @@ bool UdpSocket::SetNonBlocking() noexcept {
     return true;
 }
 
+bool UdpSocket::IsInterfaceConsistent(const std::string& interface, unsigned int index) noexcept {
+    if (interface_index_ != 0 && interface_index_ != index) {
+        logger_.Error("Cannot use interface \"{}\": socket is already bound to a different interface (index {})",
+                      interface, interface_index_);
+        return false;
+    }
+    return true;
+}
+
 bool UdpSocket::SetInterface(const std::string& interface) {
     if (!IsValid()) {
         logger_.Error("Cannot set interface to \"{}\": socket is invalid", interface);
@@ -83,6 +100,15 @@ bool UdpSocket::SetInterface(const std::string& interface) {
     }
 
     logger_.Info("Setting interface to \"{}\"", interface);
+
+    const unsigned int idx = if_nametoindex(interface.c_str());
+    if (idx == 0) {
+        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        return false;
+    }
+    if (!IsInterfaceConsistent(interface, idx)) {
+        return false;
+    }
 
 #if defined(__linux__)
     const auto interface_size = interface.size() + 1;
@@ -95,18 +121,16 @@ bool UdpSocket::SetInterface(const std::string& interface) {
         return false;
     }
 #elif defined(__APPLE__)
-    unsigned int idx = if_nametoindex(interface.c_str());
-    if (idx == 0) {
-        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
-        return false;
-    }
-    if (setsockopt(fd_, IPPROTO_IP, IP_BOUND_IF, &idx, sizeof(idx)) != 0) {
-        logger_.Error("Cannot set IP_BOUND_IF to \"{}\" (index {}): {}",
+    const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    const int option = family_ == IpAddress::Family::V6 ? IPV6_BOUND_IF : IP_BOUND_IF;
+    if (setsockopt(fd_, level, option, &idx, sizeof(idx)) != 0) {
+        logger_.Error("Cannot bind socket to interface \"{}\" (index {}): {}",
                       interface, idx, Error::FromErrno());
         return false;
     }
 #endif
 
+    interface_index_ = idx;
     return true;
 }
 
@@ -140,8 +164,56 @@ bool UdpSocket::SetReuseAddr(bool enabled) noexcept {
     return true;
 }
 
+bool UdpSocket::SetV6Only(bool enabled) noexcept {
+    if (!IsValid()) {
+        logger_.Error("Cannot set IPV6_V6ONLY to {}: socket is invalid", enabled);
+        return false;
+    }
+    if (family_ != IpAddress::Family::V6) {
+        logger_.Error("Cannot set IPV6_V6ONLY to {}: socket is not IPv6", enabled);
+        return false;
+    }
+
+    int value = enabled ? 1 : 0;
+    if (setsockopt(fd_, IPPROTO_IPV6, IPV6_V6ONLY, &value, sizeof(value)) != 0) {
+        logger_.Error("Cannot set IPV6_V6ONLY to {}: {}", enabled, Error::FromErrno());
+        return false;
+    }
+
+    return true;
+}
+
+bool UdpSocket::SetMulticastInterface(const std::string& interface) {
+    if (!IsValid()) {
+        logger_.Error("Cannot set multicast interface to \"{}\": socket is invalid", interface);
+        return false;
+    }
+    if (family_ != IpAddress::Family::V6) {
+        logger_.Error("Cannot set multicast interface to \"{}\": socket is not IPv6", interface);
+        return false;
+    }
+
+    const unsigned int idx = if_nametoindex(interface.c_str());
+    if (idx == 0) {
+        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        return false;
+    }
+    if (!IsInterfaceConsistent(interface, idx)) {
+        return false;
+    }
+
+    if (setsockopt(fd_, IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx)) != 0) {
+        logger_.Error("Cannot set IPV6_MULTICAST_IF to \"{}\" (index {}): {}",
+                      interface, idx, Error::FromErrno());
+        return false;
+    }
+
+    interface_index_ = idx;
+    return true;
+}
+
 bool UdpSocket::Bind(uint16_t port) {
-    return Bind(IpAddress::Any(), port);
+    return Bind(family_ == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4(), port);
 }
 
 bool UdpSocket::Bind(IpAddress address, uint16_t port) {
@@ -149,15 +221,16 @@ bool UdpSocket::Bind(IpAddress address, uint16_t port) {
         logger_.Error("Cannot bind to port {}: socket is invalid", port);
         return false;
     }
+    if (address.AddressFamily() != family_) {
+        logger_.Error("Cannot bind to {}:{}: address family does not match the socket's", address, port);
+        return false;
+    }
 
     logger_.Info("Binding socket to {}:{}", address, port);
 
-    sockaddr_in socket_address{};
-    socket_address.sin_family = AF_INET;
-    socket_address.sin_port = htons(port);
-    socket_address.sin_addr.s_addr = address.InAddr();
-
-    if (bind(fd_, reinterpret_cast<sockaddr*>(&socket_address), sizeof(socket_address)) != 0) {
+    sockaddr_storage storage{};
+    const socklen_t length = address.ToSockaddr(storage, port);
+    if (bind(fd_, reinterpret_cast<sockaddr*>(&storage), length) != 0) {
         logger_.Error("Cannot bind UDP socket: {}", Error::FromErrno());
         return false;
     }
@@ -171,11 +244,13 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, IpAddress address, ui
         logger_.Error("Cannot send to {}:{}: socket is invalid", address, port);
         return false;
     }
+    if (address.AddressFamily() != family_) {
+        logger_.Error("Cannot send to {}:{}: address family does not match the socket's", address, port);
+        return false;
+    }
 
-    sockaddr_in destination_address{};
-    destination_address.sin_family = AF_INET;
-    destination_address.sin_port = htons(port);
-    destination_address.sin_addr.s_addr = address.InAddr();
+    sockaddr_storage storage{};
+    const socklen_t length = address.ToSockaddr(storage, port, interface_index_);
 
     ssize_t bytes_sent;
     do {
@@ -183,8 +258,8 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, IpAddress address, ui
             payload.data(),
             payload.size(),
             0,
-            reinterpret_cast<sockaddr*>(&destination_address),
-            sizeof(destination_address));
+            reinterpret_cast<sockaddr*>(&storage),
+            length);
     } while (bytes_sent < 0 && errno == EINTR);
     if (bytes_sent < 0) {
         logger_.Error("Cannot send UDP packet to {}:{}: {}", address, port, Error::FromErrno());
