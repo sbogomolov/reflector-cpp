@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <cstddef>
+#include <format>
 #include <functional>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -54,6 +55,13 @@ TEST(IpAddressTest, FromV4BytesFormatsAsDottedDecimal) {
     const auto addr = IpAddress::FromV4Bytes(192, 168, 1, 100);
     EXPECT_EQ(addr.ToString(), "192.168.1.100");
     EXPECT_TRUE(addr.IsV4());
+}
+
+TEST(IpAddressTest, FormatsIpv6WithBrackets) {
+    EXPECT_EQ(std::format("{}", IpAddress::FromV4Bytes(192, 0, 2, 1)), "192.0.2.1");
+    EXPECT_EQ(std::format("{}:7", IpAddress::FromV4Bytes(192, 0, 2, 1)), "192.0.2.1:7");
+    EXPECT_EQ(std::format("{}", *IpAddress::FromString("2001:db8::1")), "[2001:db8::1]");
+    EXPECT_EQ(std::format("{}:9", *IpAddress::FromString("2001:db8::1")), "[2001:db8::1]:9");
 }
 
 TEST(IpAddressTest, BytesExposeNetworkOrderOctets) {

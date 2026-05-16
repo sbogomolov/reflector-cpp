@@ -97,6 +97,21 @@ TEST_P(WolReflectorPerFamilyTest, RegistersWithListener) {
     EXPECT_EQ(DispatcherRegistrationCount(), 1);
 }
 
+TEST_P(WolReflectorPerFamilyTest, CreatedLogUsesFamilyInLoggerName) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    UdpLinkFanoutSender sender{"", LoopbackFor(GetParam())};
+    const auto config = MakeConfig(GetParam());
+
+    const std::string output = CaptureStdout([&] {
+        const auto reflector = MakeReflector(listener, sender, config);
+        EXPECT_TRUE(reflector.IsValid());
+    });
+
+    EXPECT_NE(output.find(std::format("[WolReflector:tv:{}]", GetParam())), std::string::npos)
+        << output;
+    EXPECT_NE(output.find("Created wol reflector \"tv\""), std::string::npos) << output;
+}
+
 TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromListener) {
     UdpLinkFanoutSender sender{"", LoopbackFor(GetParam())};
 

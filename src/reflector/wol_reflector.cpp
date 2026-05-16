@@ -3,12 +3,22 @@
 
 #include <algorithm>
 #include <cstring>
+#include <format>
+#include <string>
 #include <utility>
 
 namespace reflector {
 
+namespace {
+
+std::string LoggerName(const WolListener& listener, const WolConfig& config) {
+    return std::format("WolReflector:{}:{}", config.name, listener.AddressFamily());
+}
+
+} // namespace
+
 WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
-        : logger_{"WolReflector:" + config.name} {
+        : logger_{LoggerName(listener, config)} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -19,7 +29,7 @@ WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
 }
 
 WolReflector::WolReflector(WolListener& listener, UdpLinkFanoutSender& sender, const WolConfig& config)
-        : logger_{"WolReflector:" + config.name}, sender_{&sender} {
+        : logger_{LoggerName(listener, config)}, sender_{&sender} {
     if (!ValidateConfig(config)) {
         return;
     }

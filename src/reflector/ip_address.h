@@ -84,6 +84,9 @@ struct std::formatter<reflector::IpAddress, char>
 
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::IpAddress& address, FmtContext& ctx) const {
+        if (address.IsV6()) {
+            return std::format_to(ctx.out(), "[{}]", address.ToString());
+        }
         return std::format_to(ctx.out(), "{}", address.ToString());
     }
 };
