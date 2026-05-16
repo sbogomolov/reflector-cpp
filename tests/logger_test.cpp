@@ -2,7 +2,8 @@
 
 #include <gtest/gtest.h>
 
-#include <cstdio>
+#include "test_helpers.h"
+
 #include <string>
 #include <string_view>
 #include <utility>
@@ -10,28 +11,6 @@
 using namespace reflector;
 
 namespace {
-
-class ScopedMinLogLevel {
-public:
-    explicit ScopedMinLogLevel(LogLevel level) noexcept : previous_{Logger::MinLevel()} {
-        Logger::SetMinLevel(level);
-    }
-
-    ~ScopedMinLogLevel() noexcept {
-        Logger::SetMinLevel(previous_);
-    }
-
-private:
-    LogLevel previous_;
-};
-
-template <typename Fn>
-std::string CaptureStdout(Fn&& fn) {
-    testing::internal::CaptureStdout();
-    std::forward<Fn>(fn)();
-    std::fflush(stdout);
-    return testing::internal::GetCapturedStdout();
-}
 
 constexpr char STATIC_ARRAY_NAME[] = "StaticArrayLogger";
 

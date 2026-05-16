@@ -3,13 +3,14 @@
 
 #include <gtest/gtest.h>
 
-#include "packet_helpers.h"
+#include "test_helpers.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace reflector {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "reflector/dispatcher.h"
+#include "reflector/logger.h"
 #include "reflector/packet.h"
 #include "reflector/udp_socket.h"
 #include "reflector/util/delegate.h"
@@ -10,14 +11,39 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <netinet/in.h>
 #include <optional>
+#include <string>
 #include <sys/socket.h>
+#include <utility>
 #include <vector>
 
 namespace reflector {
+
+class ScopedMinLogLevel {
+public:
+    explicit ScopedMinLogLevel(LogLevel level) noexcept : previous_{Logger::MinLevel()} {
+        Logger::SetMinLevel(level);
+    }
+
+    ~ScopedMinLogLevel() noexcept {
+        Logger::SetMinLevel(previous_);
+    }
+
+private:
+    LogLevel previous_;
+};
+
+template <typename Fn>
+std::string CaptureStdout(Fn&& fn) {
+    testing::internal::CaptureStdout();
+    std::forward<Fn>(fn)();
+    std::fflush(stdout);
+    return testing::internal::GetCapturedStdout();
+}
 
 struct PacketCounter {
     void OnPacket(const Packet&) { ++count; }
