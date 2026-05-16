@@ -56,7 +56,9 @@ public:
 private:
     friend class DispatcherTest;
     friend class WolListenerTest;
+    friend class WolListenerPerFamilyTest;
     friend class WolReflectorTest;
+    friend class WolReflectorPerFamilyTest;
 
     // Large enough for the maximum normal IPv4/IPv6 UDP payload. UDP datagrams can
     // exceed link MTU via IP fragmentation, and recvfrom returns the reassembled payload.

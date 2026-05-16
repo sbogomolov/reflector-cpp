@@ -1,5 +1,6 @@
 #include "reflector/config.h"
 #include "reflector/dispatcher.h"
+#include "reflector/ip_address.h"
 #include "reflector/logger.h"
 #include "reflector/wol_listener.h"
 #include "reflector/wol_reflector.h"
@@ -54,16 +55,27 @@ int Run(int argc, char* argv[]) {
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
 
-    std::unordered_map<std::string, reflector::WolListener> wol_listeners;
+    std::unordered_map<std::string, reflector::WolListener> v4_wol_listeners;
+    std::unordered_map<std::string, reflector::WolListener> v6_wol_listeners;
     std::vector<std::unique_ptr<reflector::WolReflector>> reflectors;
     for (const auto& wol_config : config->WolConfigs()) {
-        auto listener_it = wol_listeners.try_emplace(wol_config.source_if, dispatcher, wol_config.source_if).first;
-        auto reflector = std::make_unique<reflector::WolReflector>(listener_it->second, wol_config);
-        if (!reflector->IsValid()) {
-            logger.Error("Cannot configure wol reflector: {}", wol_config);
+        auto& v4_listener = v4_wol_listeners.try_emplace(
+            wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V4).first->second;
+        auto& v6_listener = v6_wol_listeners.try_emplace(
+            wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V6).first->second;
+        auto v4_reflector = std::make_unique<reflector::WolReflector>(v4_listener, wol_config);
+        auto v6_reflector = std::make_unique<reflector::WolReflector>(v6_listener, wol_config);
+        if (!v4_reflector->IsValid() && !v6_reflector->IsValid()) {
+            logger.Error("Cannot configure wol reflector \"{}\": neither IPv4 nor IPv6 came up",
+                wol_config.name);
             return 1;
         }
-        reflectors.push_back(std::move(reflector));
+        if (v4_reflector->IsValid()) {
+            reflectors.push_back(std::move(v4_reflector));
+        }
+        if (v6_reflector->IsValid()) {
+            reflectors.push_back(std::move(v6_reflector));
+        }
     }
 
     dispatcher.Run(g_stop_requested);

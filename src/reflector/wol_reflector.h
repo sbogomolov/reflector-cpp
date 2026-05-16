@@ -3,7 +3,7 @@
 #include "config.h"
 #include "logger.h"
 #include "mac_address.h"
-#include "udp_sender.h"
+#include "udp_link_fanout_sender.h"
 #include "util/no_move.h"
 #include "wol_listener.h"
 
@@ -20,17 +20,18 @@ namespace reflector {
 class WolReflector : NoMove {
 public:
     WolReflector(WolListener& listener, const WolConfig& config);
-    WolReflector(WolListener& listener, UdpSender& sender, const WolConfig& config);
     ~WolReflector() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
 private:
-    friend class WolReflectorTest;
+    friend class WolReflectorTestBase;
 
     static constexpr size_t PREFIX_SIZE = 6;
     static constexpr size_t MAC_REPETITIONS = 16;
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * 6;
+
+    WolReflector(WolListener& listener, UdpLinkFanoutSender& sender, const WolConfig& config);
 
     struct PortHandler {
         WolReflector* parent;
@@ -46,8 +47,8 @@ private:
     void Reset() noexcept;
 
     Logger logger_;
-    std::optional<UdpSender> owned_sender_;
-    UdpSender* sender_ = nullptr;
+    std::optional<UdpLinkFanoutSender> owned_sender_;
+    UdpLinkFanoutSender* sender_ = nullptr;
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
     // std::deque keeps element addresses stable across growth — Delegate stores raw PortHandler*
     // pointers into this container, so reallocating storage would dangle them.

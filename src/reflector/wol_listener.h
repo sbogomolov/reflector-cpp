@@ -38,14 +38,17 @@ public:
         WeakPtrUnsynchronized<RegistrationEntry> registration_entry_;
     };
 
-    WolListener(Dispatcher& dispatcher, std::string_view interface);
+    WolListener(Dispatcher& dispatcher, std::string_view interface, IpAddress::Family family);
     ~WolListener() noexcept;
+
+    [[nodiscard]] IpAddress::Family AddressFamily() const noexcept { return family_; }
 
     [[nodiscard]] Registration Register(uint16_t port, const PacketCallback& callback);
 
 private:
     friend class WolListenerTest;
-    friend class WolReflectorTest;
+    friend class WolListenerPerFamilyTest;
+    friend class WolReflectorTestBase;
 
     struct PortListener {
         UdpListener listener;
@@ -60,6 +63,7 @@ private:
 
     Dispatcher* dispatcher_;
     std::string interface_;
+    IpAddress::Family family_;
     std::vector<PortListener> listeners_;
     std::vector<SharedPtrUnsynchronized<RegistrationEntry>> registrations_;
 };

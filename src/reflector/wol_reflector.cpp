@@ -13,12 +13,12 @@ WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
         return;
     }
 
-    owned_sender_.emplace(config.target_if);
+    owned_sender_.emplace(config.target_if, listener.AddressFamily());
     sender_ = &*owned_sender_;
     Initialize(listener, config);
 }
 
-WolReflector::WolReflector(WolListener& listener, UdpSender& sender, const WolConfig& config)
+WolReflector::WolReflector(WolListener& listener, UdpLinkFanoutSender& sender, const WolConfig& config)
         : logger_{"WolReflector:" + config.name}, sender_{&sender} {
     if (!ValidateConfig(config)) {
         return;
@@ -99,14 +99,14 @@ void WolReflector::HandlePacket(const Packet& packet, uint16_t port) noexcept {
         return;
     }
 
-    if (!sender_->SendBroadcast(packet.payload, port)) {
+    if (!sender_->Send(packet.payload, port)) {
         logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
-            packet.header.source_ip, packet.header.source_port, sender_->BroadcastAddress(), port);
+            packet.header.source_ip, packet.header.source_port, sender_->DestinationAddress(), port);
         return;
     }
 
     logger_.Info("Reflected wol packet from {}:{} to {}:{}",
-        packet.header.source_ip, packet.header.source_port, sender_->BroadcastAddress(), port);
+        packet.header.source_ip, packet.header.source_port, sender_->DestinationAddress(), port);
 }
 
 void WolReflector::Reset() noexcept {

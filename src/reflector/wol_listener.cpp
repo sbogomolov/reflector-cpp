@@ -61,8 +61,8 @@ bool WolListener::Registration::Reset() noexcept {
     return registration->listener->Unregister(registration);
 }
 
-WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface)
-        : dispatcher_{&dispatcher}, interface_{interface} {}
+WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface, IpAddress::Family family)
+        : dispatcher_{&dispatcher}, interface_{interface}, family_{family} {}
 
 WolListener::~WolListener() noexcept {
     if (!registrations_.empty()) {
@@ -119,7 +119,7 @@ int WolListener::AcquirePort(uint16_t port) {
 
     UdpListener listener{UdpListener::Options{
         .interface = interface_,
-        .local_ip = IpAddress::Any(),
+        .local_ip = family_ == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4(),
         .local_port = port,
     }};
     if (!listener.IsValid()) {
