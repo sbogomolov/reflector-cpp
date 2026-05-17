@@ -55,7 +55,11 @@ void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
         return;
     }
 
-    BuildExpectedMagicPacket(config.mac);
+    target_mac_ = config.mac;
+    std::fill_n(expected_magic_packet_.begin(), PREFIX_SIZE, std::byte{0xff});
+    if (target_mac_.has_value()) {
+        BuildExpectedMagicPacket(*target_mac_);
+    }
 
     registrations_.reserve(config.ports.size());
 
@@ -83,11 +87,41 @@ bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
         return false;
     }
 
-    if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
-        logger_.Debug("Ignoring wol packet: magic packet does not match expected MAC");
+    // Fixed-MAC mode: compare the packet against the precomputed magic packet.
+    if (target_mac_.has_value()) {
+        if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
+            logger_.Debug("Ignoring wol packet: magic packet does not match expected MAC");
+            return false;
+        }
+        return true;
+    }
+
+    // Any-MAC mode: validate the generic WoL shape and accept whichever MAC is repeated.
+    if (!HasMagicPacketPrefix(payload)) {
+        logger_.Debug("Ignoring wol packet: magic packet prefix is invalid");
         return false;
     }
 
+    if (!HasRepeatedMac(payload)) {
+        logger_.Debug("Ignoring wol packet: magic packet MAC repetitions are inconsistent");
+        return false;
+    }
+
+    return true;
+}
+
+bool WolReflector::HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept {
+    return std::memcmp(payload.data(), expected_magic_packet_.data(), PREFIX_SIZE) == 0;
+}
+
+bool WolReflector::HasRepeatedMac(std::span<const std::byte> payload) noexcept {
+    const auto* mac = payload.data() + PREFIX_SIZE;
+    for (size_t repetition = 1; repetition < MAC_REPETITIONS; ++repetition) {
+        const auto* repeated_mac = mac + repetition * MAC_SIZE;
+        if (std::memcmp(mac, repeated_mac, MAC_SIZE) != 0) {
+            return false;
+        }
+    }
     return true;
 }
 

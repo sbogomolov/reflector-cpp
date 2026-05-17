@@ -96,16 +96,18 @@ log_level = "info"             # optional; one of debug | info | warning | error
 
 [[wol]]
 name      = "tv"                # human-readable label, used in logs
-mac       = "B0:37:95:C5:60:BE" # MAC address of the host to wake
+mac       = "B0:37:95:C5:60:BE" # optional; when omitted, all WoL magic packets are proxied
 source_if = "en0"               # interface to listen on (must differ from target_if)
 target_if = "lo0"               # interface to emit reflected packets on
 ports     = [7, 9]              # optional; defaults to [7, 9] (the standard WoL ports)
 address_family = "default"      # optional; default | dual | ipv4 | ipv6
 ```
 
-Each entry installs listeners on `source_if` for the listed UDP ports, matches incoming packets against the WoL magic-packet format for `mac`, and re-emits matching packets on `target_if` on the same destination port. IPv4 packets go to `255.255.255.255`; IPv6 packets go to `ff02::1`. No IP addresses appear in the config.
+Each entry installs listeners on `source_if` for the listed UDP ports, matches incoming packets against the WoL magic-packet format for `mac` when configured, and re-emits matching packets on `target_if` on the same destination port. If `mac` is omitted, every valid WoL magic packet is re-emitted. IPv4 packets go to `255.255.255.255`; IPv6 packets go to `ff02::1`. No IP addresses appear in the config.
 
 `address_family = "default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort. Use `"dual"` to require both address families, or `"ipv4"` / `"ipv6"` to use only one.
+
+Every WoL entry name must be unique. Beyond the name, duplicate detection rejects only rules that could reflect the same packet twice: the entries must use the same `source_if`, the same `target_if`, at least one common UDP port, and overlapping MAC selection. MAC selection overlaps when both entries use the same `mac`, or when either entry omits `mac` and therefore accepts any MAC. Rules with different source interfaces, target interfaces, or disjoint port sets can coexist.
 
 ## Tests
 

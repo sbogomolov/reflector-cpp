@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -56,7 +57,8 @@ target_if = "eth1"
 
     const auto& wol = config->WolConfigs().front();
     EXPECT_EQ(wol.name, "tv");
-    EXPECT_EQ(wol.mac, *MacAddress::FromString("00:11:22:33:44:55"));
+    ASSERT_TRUE(wol.mac.has_value());
+    EXPECT_EQ(*wol.mac, *MacAddress::FromString("00:11:22:33:44:55"));
     EXPECT_EQ(wol.source_if, "eth0");
     EXPECT_EQ(wol.target_if, "eth1");
     const std::vector<uint16_t> expected_ports{7, 9};
@@ -83,11 +85,13 @@ target_if = "eth3"
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     ASSERT_EQ(config->WolConfigs().size(), 2);
     EXPECT_EQ(config->WolConfigs()[0].name, "a");
-    EXPECT_EQ(config->WolConfigs()[0].mac, *MacAddress::FromString("00:00:00:00:00:0a"));
+    ASSERT_TRUE(config->WolConfigs()[0].mac.has_value());
+    EXPECT_EQ(*config->WolConfigs()[0].mac, *MacAddress::FromString("00:00:00:00:00:0a"));
     EXPECT_EQ(config->WolConfigs()[0].source_if, "eth0");
     EXPECT_EQ(config->WolConfigs()[0].target_if, "eth1");
     EXPECT_EQ(config->WolConfigs()[1].name, "b");
-    EXPECT_EQ(config->WolConfigs()[1].mac, *MacAddress::FromString("00:00:00:00:00:0b"));
+    ASSERT_TRUE(config->WolConfigs()[1].mac.has_value());
+    EXPECT_EQ(*config->WolConfigs()[1].mac, *MacAddress::FromString("00:00:00:00:00:0b"));
     EXPECT_EQ(config->WolConfigs()[1].source_if, "eth2");
     EXPECT_EQ(config->WolConfigs()[1].target_if, "eth3");
 }
@@ -217,7 +221,8 @@ target_if = "eth1"
 
     const auto& wol = config->WolConfigs().front();
     EXPECT_EQ(wol.name, "file");
-    EXPECT_EQ(wol.mac, *MacAddress::FromString("00:11:22:33:44:55"));
+    ASSERT_TRUE(wol.mac.has_value());
+    EXPECT_EQ(*wol.mac, *MacAddress::FromString("00:11:22:33:44:55"));
     EXPECT_EQ(wol.source_if, "eth0");
     EXPECT_EQ(wol.target_if, "eth1");
 }
@@ -279,7 +284,7 @@ target_if = "eth1"
     ASSERT_FALSE(config.has_value());
 }
 
-TEST(ConfigTest, RejectsMissingMac) {
+TEST(ConfigTest, AcceptsMissingMac) {
     std::string toml = R"(
 [[wol]]
 name = "a"
@@ -288,7 +293,9 @@ target_if = "eth1"
 )";
 
     const auto config = Config::FromString(toml);
-    ASSERT_FALSE(config.has_value());
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->WolConfigs().size(), 1);
+    EXPECT_FALSE(config->WolConfigs().front().mac.has_value());
 }
 
 TEST(ConfigTest, RejectsMissingSourceIf) {
@@ -442,6 +449,19 @@ TEST(ConfigTest, VerifyRejectsPortZero) {
     EXPECT_TRUE(error.has_value());
 }
 
+TEST(ConfigTest, VerifyAcceptsMissingMac) {
+    const auto wol_config = WolConfig{
+        .name = "a",
+        .mac = std::nullopt,
+        .source_if = "eth0",
+        .target_if = "eth1",
+    };
+
+    const auto error = wol_config.Verify();
+
+    EXPECT_FALSE(error.has_value());
+}
+
 TEST(ConfigTest, RejectsDuplicatePorts) {
     std::string toml = R"(
 [[wol]]
@@ -589,11 +609,105 @@ target_if = "eth1"
     ASSERT_FALSE(config.has_value());
 }
 
+TEST(ConfigTest, RejectsDuplicateUnfilteredSourceTargetRule) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+source_if = "eth0"
+target_if = "eth1"
+
+[[wol]]
+name = "b"
+source_if = "eth0"
+target_if = "eth1"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, RejectsSpecificRuleOverlappedByUnfilteredRule) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+source_if = "eth0"
+target_if = "eth1"
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_FALSE(config.has_value());
+}
+
 TEST(ConfigTest, AcceptsSameMacWithDifferentTargets) {
     std::string toml = R"(
 [[wol]]
 name = "a"
 mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth2"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 2);
+}
+
+TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDisjointPorts) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+source_if = "eth0"
+target_if = "eth1"
+ports = [7]
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+ports = [9]
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 2);
+}
+
+TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentSources) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+source_if = "eth0"
+target_if = "eth1"
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth2"
+target_if = "eth1"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 2);
+}
+
+TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentTargets) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
 source_if = "eth0"
 target_if = "eth1"
 

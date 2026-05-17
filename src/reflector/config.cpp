@@ -81,6 +81,19 @@ std::expected<std::vector<uint16_t>, Error> ReadPorts(const toml::node& ports_no
     return ports;
 }
 
+bool WolMacSelectionsOverlap(const std::optional<MacAddress>& lhs, const std::optional<MacAddress>& rhs) noexcept {
+    return !lhs.has_value() || !rhs.has_value() || lhs == rhs;
+}
+
+bool PortsOverlap(const std::vector<uint16_t>& lhs, const std::vector<uint16_t>& rhs) noexcept {
+    for (const auto port : lhs) {
+        if (std::ranges::find(rhs, port) != rhs.end()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::expected<WolConfig, Error> ReadWolConfig(const toml::table& entry_table) {
     WolConfig wol_config{};
     for (const auto& [field_key, field_node] : entry_table) {
@@ -167,11 +180,12 @@ std::expected<std::vector<WolConfig>, Error> ReadWolConfigs(const toml::node& wo
             if (existing.name == wol_config->name) {
                 return std::unexpected(Error{"duplicate wol name: \"{}\"", wol_config->name});
             }
-            if (existing.mac == wol_config->mac
+            if (WolMacSelectionsOverlap(existing.mac, wol_config->mac)
                     && existing.source_if == wol_config->source_if
-                    && existing.target_if == wol_config->target_if) {
+                    && existing.target_if == wol_config->target_if
+                    && PortsOverlap(existing.ports, wol_config->ports)) {
                 return std::unexpected(Error{
-                    "duplicate wol rule: \"{}\" and \"{}\" share mac, source_if, and target_if",
+                    "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and ports",
                     existing.name, wol_config->name});
             }
         }
@@ -189,8 +203,8 @@ std::optional<Error> WolConfig::Verify() const {
     if (name.empty()) {
         return Error{"wol name is not configured"};
     }
-    if (!mac.IsValid()) {
-        return Error{"wol mac is not configured (or is the unsupported all-zero address)"};
+    if (mac.has_value() && !mac->IsValid()) {
+        return Error{"wol mac is the unsupported all-zero address"};
     }
     if (source_if.empty()) {
         return Error{"wol source_if is not configured"};

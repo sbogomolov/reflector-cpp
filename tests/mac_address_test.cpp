@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <format>
 
 using namespace reflector;
 
@@ -91,4 +92,11 @@ TEST(MacAddressTest, AllOnesAddressIsValid) {
     for (const auto b : mac->Bytes()) {
         EXPECT_EQ(b, std::byte{0xff});
     }
+}
+
+TEST(MacAddressTest, FormatsAddress) {
+    const auto mac = MacAddress::FromString("b0:37:95:c5:60:be");
+    ASSERT_TRUE(mac.has_value());
+
+    EXPECT_EQ(std::format("{}", *mac), "B0:37:95:C5:60:BE");
 }

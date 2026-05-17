@@ -30,6 +30,13 @@ def magic_packet(mac: str) -> bytes:
     return b"\xff" * 6 + mac_bytes * 16
 
 
+def parse_payload_hex(value: str) -> bytes:
+    try:
+        return binascii.unhexlify(value)
+    except (binascii.Error, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"invalid hex payload: {value}") from exc
+
+
 def packet_hex(payload: bytes) -> str:
     return binascii.hexlify(payload).decode("ascii")
 
@@ -39,7 +46,7 @@ def is_ipv6(address: str) -> bool:
 
 
 def send(args: argparse.Namespace) -> int:
-    payload = magic_packet(args.mac)
+    payload = args.payload_hex if args.payload_hex is not None else magic_packet(args.mac)
 
     if is_ipv6(args.address):
         with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
@@ -107,7 +114,9 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     send_parser = subparsers.add_parser("send", help="send a Wake-on-LAN magic packet")
-    send_parser.add_argument("--mac", required=True, help="target MAC address")
+    payload = send_parser.add_mutually_exclusive_group(required=True)
+    payload.add_argument("--mac", help="target MAC address")
+    payload.add_argument("--payload-hex", type=parse_payload_hex, help="raw UDP payload encoded as hex")
     send_parser.add_argument("--port", required=True, type=int, help="destination UDP port")
     send_parser.add_argument("--address", default="255.255.255.255", help="destination IP address")
     send_parser.add_argument("--interface", help="egress interface (IPv6 link-local scope)")

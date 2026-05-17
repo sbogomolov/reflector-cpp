@@ -6,3 +6,9 @@ mac = "02:42:ac:11:00:09"
 source_if = "wol_src"
 target_if = "wol_dst"
 ports = [40009]
+
+[[wol]]
+name = "e2e-any"
+source_if = "wol_src"
+target_if = "wol_dst"
+ports = [40011]

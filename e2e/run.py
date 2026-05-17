@@ -21,6 +21,8 @@ CONFIGURED_MAC = "02:42:ac:11:00:09"
 WRONG_MAC = "02:42:ac:11:00:0a"
 CONFIGURED_PORT = 40009
 UNCONFIGURED_PORT = 40010
+ANY_MAC_PORT = 40011
+MALFORMED_MAGIC_PAYLOAD_HEX = "ff" * 6 + "0242ac11000a" * 15 + "0242ac11000b"
 REFLECTOR_READY_LOG = "Starting dispatcher event loop"
 RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
 CONTAINER_READY_TIMEOUT_SECONDS = 15.0
@@ -41,11 +43,12 @@ IPV6_ALL_NODES = "ff02::1"
 @dataclasses.dataclass(frozen=True)
 class TestCase:
     name: str
-    send_mac: str
     send_port: int
     receive_port: int
     expect_mac: str | None
     timeout_seconds: float
+    send_mac: str | None = None
+    send_payload_hex: str | None = None
     # IP version exercised end to end. The reflector runs both pipelines from one config;
     # each case drives just one of them.
     family: int = 4
@@ -58,36 +61,52 @@ class TestCase:
 TEST_CASES = [
     TestCase(
         name="reflects_matching_magic_packet",
-        send_mac=CONFIGURED_MAC,
         send_port=CONFIGURED_PORT,
         receive_port=CONFIGURED_PORT,
         expect_mac=CONFIGURED_MAC,
         timeout_seconds=5.0,
+        send_mac=CONFIGURED_MAC,
     ),
     TestCase(
         name="reflects_matching_magic_packet_ipv6",
-        send_mac=CONFIGURED_MAC,
         send_port=CONFIGURED_PORT,
         receive_port=CONFIGURED_PORT,
         expect_mac=CONFIGURED_MAC,
         timeout_seconds=5.0,
+        send_mac=CONFIGURED_MAC,
         family=6,
     ),
     TestCase(
         name="ignores_wrong_mac",
-        send_mac=WRONG_MAC,
         send_port=CONFIGURED_PORT,
         receive_port=CONFIGURED_PORT,
         expect_mac=None,
         timeout_seconds=1.5,
+        send_mac=WRONG_MAC,
     ),
     TestCase(
         name="ignores_unconfigured_port",
-        send_mac=CONFIGURED_MAC,
         send_port=UNCONFIGURED_PORT,
         receive_port=UNCONFIGURED_PORT,
         expect_mac=None,
         timeout_seconds=1.5,
+        send_mac=CONFIGURED_MAC,
+    ),
+    TestCase(
+        name="reflects_magic_packet_without_configured_mac",
+        send_port=ANY_MAC_PORT,
+        receive_port=ANY_MAC_PORT,
+        expect_mac=WRONG_MAC,
+        timeout_seconds=5.0,
+        send_mac=WRONG_MAC,
+    ),
+    TestCase(
+        name="ignores_malformed_packet_without_configured_mac",
+        send_port=ANY_MAC_PORT,
+        receive_port=ANY_MAC_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=MALFORMED_MAGIC_PAYLOAD_HEX,
     ),
 ]
 
@@ -258,6 +277,13 @@ class DockerE2E:
         self.wait_for_container_log(self.receiver_container, RECEIVER_READY_LOG, "receiver")
 
     def run_sender(self) -> None:
+        if self.case.send_payload_hex is not None:
+            payload_args = ["--payload-hex", self.case.send_payload_hex]
+        elif self.case.send_mac is not None:
+            payload_args = ["--mac", self.case.send_mac]
+        else:
+            raise RuntimeError(f"case {self.case.name} has no send payload")
+
         docker(
             [
                 "run",
@@ -273,8 +299,7 @@ class DockerE2E:
                 "python3",
                 "/e2e/probe.py",
                 "send",
-                "--mac",
-                self.case.send_mac,
+                *payload_args,
                 "--port",
                 str(self.case.send_port),
                 "--address",

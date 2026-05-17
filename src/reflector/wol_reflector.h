@@ -28,8 +28,9 @@ private:
     friend class WolReflectorTestBase;
 
     static constexpr size_t PREFIX_SIZE = 6;
+    static constexpr size_t MAC_SIZE = 6;
     static constexpr size_t MAC_REPETITIONS = 16;
-    static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * 6;
+    static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
     WolReflector(WolListener& listener, UdpLinkFanoutSender& sender, const WolConfig& config);
 
@@ -43,12 +44,17 @@ private:
     void Initialize(WolListener& listener, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
+    [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;
+    [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
     void HandlePacket(const Packet& packet, uint16_t port) noexcept;
     void Reset() noexcept;
 
     Logger logger_;
     std::optional<UdpLinkFanoutSender> owned_sender_;
     UdpLinkFanoutSender* sender_ = nullptr;
+    std::optional<MacAddress> target_mac_;
+    // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
+    // repeated target MAC; in any-MAC mode only the prefix bytes are used.
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
     // std::deque keeps element addresses stable across growth — Delegate stores raw PortHandler*
     // pointers into this container, so reallocating storage would dangle them.

@@ -138,7 +138,8 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     const auto fd = ListenerFdForPort(listener, port);
     ASSERT_GE(fd, 0);
 
-    const auto payload = MakeMagicPacket(config.mac);
+    ASSERT_TRUE(config.mac.has_value());
+    const auto payload = MakeMagicPacket(*config.mac);
     DispatchPacket(fd, MakePacket(payload, LoopbackFor(family)));
 
     ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
@@ -182,7 +183,7 @@ TEST_F(WolReflectorTest, ReflectsPacketWithTrailingBytes) {
 
     LoopbackReceiver receiver{0, IpAddress::Family::V4};
 
-    auto payload = MakeMagicPacket(MakeConfig(IpAddress::Family::V4).mac);
+    auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
     payload.push_back(std::byte{0x12});
     Dispatch(reflector, receiver.Port(), MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1)));
 
@@ -199,7 +200,7 @@ TEST_F(WolReflectorTest, ReflectsLargePacketWithTrailingBytesIntact) {
 
     LoopbackReceiver receiver{0, IpAddress::Family::V4};
 
-    auto payload = MakeMagicPacket(MakeConfig(IpAddress::Family::V4).mac);
+    auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
     const auto magic_packet_size = payload.size();
     payload.resize(LARGE_PAYLOAD_SIZE);
     for (size_t i = magic_packet_size; i < payload.size(); ++i) {
@@ -233,7 +234,7 @@ TEST_F(WolReflectorTest, IgnoresInvalidMagicPrefix) {
 
     LoopbackReceiver receiver{0, IpAddress::Family::V4};
 
-    auto payload = MakeMagicPacket(MakeConfig(IpAddress::Family::V4).mac);
+    auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
     payload.front() = std::byte{0x00};
     Dispatch(reflector, receiver.Port(), MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1)));
 
@@ -249,6 +250,40 @@ TEST_F(WolReflectorTest, IgnoresDifferentMac) {
     LoopbackReceiver receiver{0, IpAddress::Family::V4};
 
     const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+    Dispatch(reflector, receiver.Port(), MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1)));
+
+    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
+    EXPECT_EQ(receiver.recorder.count, 0);
+}
+
+TEST_F(WolReflectorTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
+    UdpLinkFanoutSender sender{"", IpAddress::LoopbackV4()};
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.mac.reset();
+    auto reflector = MakeReflector(listener, sender, config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V4};
+
+    const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+    Dispatch(reflector, receiver.Port(), MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1)));
+
+    ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(receiver.recorder.count, 1);
+    EXPECT_EQ(receiver.recorder.payload, payload);
+}
+
+TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
+    UdpLinkFanoutSender sender{"", IpAddress::LoopbackV4()};
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.mac.reset();
+    auto reflector = MakeReflector(listener, sender, config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V4};
+
+    auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+    payload[12] = std::byte{0x12};
     Dispatch(reflector, receiver.Port(), MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1)));
 
     EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));

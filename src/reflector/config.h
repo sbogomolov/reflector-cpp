@@ -25,7 +25,7 @@ enum class WolAddressFamily : uint8_t {
 
 struct WolConfig {
     std::string name;
-    MacAddress mac;
+    std::optional<MacAddress> mac;
     std::string source_if;
     std::string target_if;
     std::vector<uint16_t> ports{7, 9};
@@ -112,12 +112,13 @@ struct std::formatter<reflector::WolConfig, char>
 
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::WolConfig& c, FmtContext& ctx) const {
-        const auto& mac_bytes = c.mac.Bytes();
-        std::format_to(ctx.out(), "{{name: \"{}\", mac: \"{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}\", source_if: \"{}\", target_if: \"{}\", address_family: {}, ports: [",
-            c.name,
-            static_cast<uint8_t>(mac_bytes[0]), static_cast<uint8_t>(mac_bytes[1]),
-            static_cast<uint8_t>(mac_bytes[2]), static_cast<uint8_t>(mac_bytes[3]),
-            static_cast<uint8_t>(mac_bytes[4]), static_cast<uint8_t>(mac_bytes[5]),
+        std::format_to(ctx.out(), "{{name: \"{}\", mac: ", c.name);
+        if (c.mac.has_value()) {
+            std::format_to(ctx.out(), "\"{}\"", *c.mac);
+        } else {
+            std::format_to(ctx.out(), "any");
+        }
+        std::format_to(ctx.out(), ", source_if: \"{}\", target_if: \"{}\", address_family: {}, ports: [",
             c.source_if, c.target_if, c.address_family);
         bool first = true;
         for (const auto port : c.ports) {
