@@ -137,6 +137,32 @@ address_family = ")";
     }
 }
 
+TEST(ConfigTest, AddressFamilyRuntimePolicy) {
+    struct Case {
+        WolAddressFamily address_family;
+        bool uses_v4;
+        bool uses_v6;
+        bool requires_v4;
+        bool requires_v6;
+    };
+
+    const std::vector<Case> cases{
+        {WolAddressFamily::Default, true, true, true, false},
+        {WolAddressFamily::Dual, true, true, true, true},
+        {WolAddressFamily::IPv4, true, false, true, false},
+        {WolAddressFamily::IPv6, false, true, false, true},
+    };
+
+    for (const auto& c : cases) {
+        WolConfig wol_config;
+        wol_config.address_family = c.address_family;
+        EXPECT_EQ(wol_config.UsesIPv4(), c.uses_v4) << std::format("{}", c.address_family);
+        EXPECT_EQ(wol_config.UsesIPv6(), c.uses_v6) << std::format("{}", c.address_family);
+        EXPECT_EQ(wol_config.RequiresIPv4(), c.requires_v4) << std::format("{}", c.address_family);
+        EXPECT_EQ(wol_config.RequiresIPv6(), c.requires_v6) << std::format("{}", c.address_family);
+    }
+}
+
 TEST(ConfigTest, RejectsEmptyDocument) {
     const auto config = Config::FromString("");
     ASSERT_FALSE(config.has_value());

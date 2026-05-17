@@ -31,6 +31,25 @@ struct WolConfig {
     std::vector<uint16_t> ports{7, 9};
     WolAddressFamily address_family = WolAddressFamily::Default;
 
+    [[nodiscard]] constexpr bool UsesIPv4() const noexcept {
+        return address_family != WolAddressFamily::IPv6;
+    }
+
+    [[nodiscard]] constexpr bool UsesIPv6() const noexcept {
+        return address_family != WolAddressFamily::IPv4;
+    }
+
+    [[nodiscard]] constexpr bool RequiresIPv4() const noexcept {
+        return address_family == WolAddressFamily::Default
+            || address_family == WolAddressFamily::Dual
+            || address_family == WolAddressFamily::IPv4;
+    }
+
+    [[nodiscard]] constexpr bool RequiresIPv6() const noexcept {
+        return address_family == WolAddressFamily::Dual
+            || address_family == WolAddressFamily::IPv6;
+    }
+
     [[nodiscard]] std::optional<Error> Verify() const;
 };
 
