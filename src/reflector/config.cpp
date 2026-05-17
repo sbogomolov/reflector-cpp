@@ -203,9 +203,6 @@ std::optional<Error> WolConfig::Verify() const {
     if (name.empty()) {
         return Error{"wol name is not configured"};
     }
-    if (mac.has_value() && !mac->IsValid()) {
-        return Error{"wol mac is the unsupported all-zero address"};
-    }
     if (source_if.empty()) {
         return Error{"wol source_if is not configured"};
     }

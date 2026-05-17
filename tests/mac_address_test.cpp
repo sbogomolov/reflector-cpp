@@ -10,7 +10,6 @@ using namespace reflector;
 TEST(MacAddressTest, ParsesLowercaseAddress) {
     const auto mac = MacAddress::FromString("00:11:22:33:44:55");
     ASSERT_TRUE(mac.has_value());
-    EXPECT_TRUE(mac->IsValid());
     const auto& bytes = mac->Bytes();
     EXPECT_EQ(bytes[0], std::byte{0x00});
     EXPECT_EQ(bytes[1], std::byte{0x11});
@@ -23,7 +22,6 @@ TEST(MacAddressTest, ParsesLowercaseAddress) {
 TEST(MacAddressTest, ParsesUppercaseAddress) {
     const auto mac = MacAddress::FromString("B0:37:95:C5:60:BE");
     ASSERT_TRUE(mac.has_value());
-    EXPECT_TRUE(mac->IsValid());
     const auto& bytes = mac->Bytes();
     EXPECT_EQ(bytes[0], std::byte{0xb0});
     EXPECT_EQ(bytes[1], std::byte{0x37});
@@ -37,14 +35,11 @@ TEST(MacAddressTest, ParsesMixedCaseAddress) {
     EXPECT_TRUE(MacAddress::FromString("aA:bB:cC:dD:eE:fF").has_value());
 }
 
-TEST(MacAddressTest, DefaultIsInvalid) {
-    EXPECT_FALSE(MacAddress{}.IsValid());
-}
-
-TEST(MacAddressTest, NonZeroAddressIsValid) {
-    const auto mac = MacAddress::FromString("00:00:00:00:00:01");
-    ASSERT_TRUE(mac.has_value());
-    EXPECT_TRUE(mac->IsValid());
+TEST(MacAddressTest, DefaultInitializesToZero) {
+    const MacAddress mac;
+    for (const auto b : mac.Bytes()) {
+        EXPECT_EQ(b, std::byte{0});
+    }
 }
 
 TEST(MacAddressTest, RejectsTooShortAddress) {
@@ -76,19 +71,17 @@ TEST(MacAddressTest, RejectsSpaceSeparators) {
     EXPECT_FALSE(MacAddress::FromString("00 11 22 33 44 55").has_value());
 }
 
-TEST(MacAddressTest, AllZeroAddressIsInvalid) {
+TEST(MacAddressTest, ParsesAllZeroAddress) {
     const auto mac = MacAddress::FromString("00:00:00:00:00:00");
     ASSERT_TRUE(mac.has_value());
-    EXPECT_FALSE(mac->IsValid());
     for (const auto b : mac->Bytes()) {
         EXPECT_EQ(b, std::byte{0});
     }
 }
 
-TEST(MacAddressTest, AllOnesAddressIsValid) {
+TEST(MacAddressTest, ParsesAllOnesAddress) {
     const auto mac = MacAddress::FromString("ff:ff:ff:ff:ff:ff");
     ASSERT_TRUE(mac.has_value());
-    EXPECT_TRUE(mac->IsValid());
     for (const auto b : mac->Bytes()) {
         EXPECT_EQ(b, std::byte{0xff});
     }

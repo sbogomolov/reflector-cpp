@@ -20,15 +20,6 @@ public:
 
     [[nodiscard]] static std::expected<MacAddress, Error> FromString(std::string_view mac);
 
-    [[nodiscard]] constexpr bool IsValid() const noexcept {
-        for (const auto byte : bytes_) {
-            if (byte != std::byte{0}) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     [[nodiscard]] constexpr const ByteArray& Bytes() const noexcept { return bytes_; }
 
     bool operator==(const MacAddress&) const = default;
