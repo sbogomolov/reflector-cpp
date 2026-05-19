@@ -10,112 +10,11 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <initializer_list>
 #include <optional>
 #include <span>
 #include <vector>
 
 namespace reflector {
-
-namespace {
-
-constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
-constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
-constexpr uint16_t ARP_ETHERTYPE = 0x0806;
-constexpr uint8_t IP_PROTO_UDP = 17;
-constexpr uint8_t IPV6_NEXT_HOPOPT = 0;
-
-void AppendBytes(std::vector<std::byte>& out, std::span<const std::byte> bytes) {
-    out.insert(out.end(), bytes.begin(), bytes.end());
-}
-
-void AppendU16Be(std::vector<std::byte>& out, uint16_t value) {
-    out.push_back(static_cast<std::byte>((value >> 8) & 0xff));
-    out.push_back(static_cast<std::byte>(value & 0xff));
-}
-
-void AppendIpv4(std::vector<std::byte>& out, const IpAddress& ip) {
-    AppendBytes(out, std::span{ip.Bytes().data(), 4});
-}
-
-void AppendIpv6(std::vector<std::byte>& out, const IpAddress& ip) {
-    AppendBytes(out, ip.Bytes());
-}
-
-void AppendMac(std::vector<std::byte>& out, const MacAddress& mac) {
-    AppendBytes(out, mac.Bytes());
-}
-
-std::vector<std::byte> MakeBytes(std::initializer_list<unsigned> values) {
-    std::vector<std::byte> bytes;
-    bytes.reserve(values.size());
-    for (const auto value : values) {
-        bytes.push_back(static_cast<std::byte>(value & 0xff));
-    }
-    return bytes;
-}
-
-struct FrameBuilder {
-    std::vector<std::byte> bytes;
-
-    void AppendEthernet(const MacAddress& dst, const MacAddress& src, uint16_t ethertype) {
-        AppendMac(bytes, dst);
-        AppendMac(bytes, src);
-        AppendU16Be(bytes, ethertype);
-    }
-
-    void AppendLoopback(uint32_t family) {
-        std::byte buf[4];
-        std::memcpy(buf, &family, sizeof(family));
-        AppendBytes(bytes, std::span{buf, 4});
-    }
-
-    void AppendIPv4Header(const IpAddress& src, const IpAddress& dst, uint8_t protocol,
-        uint16_t total_length, uint16_t flags_fragment = 0, uint8_t ihl_words = 5) {
-        bytes.push_back(static_cast<std::byte>((4u << 4) | (ihl_words & 0x0f))); // version+IHL
-        bytes.push_back(std::byte{0x00});                                         // DSCP/ECN
-        AppendU16Be(bytes, total_length);                                         // total length
-        AppendU16Be(bytes, 0);                                                    // identification
-        AppendU16Be(bytes, flags_fragment);                                       // flags + fragment offset
-        bytes.push_back(std::byte{64});                                           // TTL
-        bytes.push_back(static_cast<std::byte>(protocol));                        // protocol
-        AppendU16Be(bytes, 0);                                                    // header checksum (ignored)
-        AppendIpv4(bytes, src);
-        AppendIpv4(bytes, dst);
-        // Pad to ihl_words * 4 bytes if requested IHL is larger than the minimum 20.
-        const size_t want = static_cast<size_t>(ihl_words) * 4;
-        const size_t have = 20;
-        if (want > have) {
-            bytes.insert(bytes.end(), want - have, std::byte{0});
-        }
-    }
-
-    void AppendIPv6Header(const IpAddress& src, const IpAddress& dst, uint8_t next_header,
-        uint16_t payload_length, uint8_t version = 6) {
-        bytes.push_back(static_cast<std::byte>(version << 4));                    // version + traffic class hi
-        bytes.push_back(std::byte{0x00});                                         // traffic class lo + flow hi
-        AppendU16Be(bytes, 0);                                                    // flow lo
-        AppendU16Be(bytes, payload_length);                                       // payload length
-        bytes.push_back(static_cast<std::byte>(next_header));                     // next header
-        bytes.push_back(std::byte{64});                                           // hop limit
-        AppendIpv6(bytes, src);
-        AppendIpv6(bytes, dst);
-    }
-
-    void AppendUdp(uint16_t src_port, uint16_t dst_port, uint16_t udp_length) {
-        AppendU16Be(bytes, src_port);
-        AppendU16Be(bytes, dst_port);
-        AppendU16Be(bytes, udp_length);
-        AppendU16Be(bytes, 0); // checksum (ignored)
-    }
-
-    void AppendPayload(std::span<const std::byte> payload) {
-        AppendBytes(bytes, payload);
-    }
-};
-
-} // namespace
 
 class PacketCaptureSocketTest : public ::testing::Test {
 protected:
@@ -397,5 +296,51 @@ TEST_F(PacketCaptureSocketTest, RejectsUdpLengthExceedingL4Size) {
 
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
 }
+
+#if defined(__APPLE__)
+// Packs N bpf_hdr-prefixed frames into a single batch (one read returns all of them),
+// then verifies Receive() walks them one at a time. Mirrors what
+// PacketCaptureSocketRequiresRootTest::DrainsBatchedFramesFromOneRead exercises against
+// real BPF + loopback, but without needing capture privileges — the test stages bytes
+// directly via TestCaptureSocket::WriteFrameBatch.
+TEST(PacketCaptureSocketBatchTest, ReceiveWalksMultiFrameBpfBatch) {
+    TestCaptureSocket capture;
+    constexpr int frame_count = 4;
+    const auto payload = MakeBytes({0xab, 0xcd});
+
+    std::vector<std::vector<std::byte>> frame_storage;
+    std::vector<std::span<const std::byte>> frame_spans;
+    frame_storage.reserve(frame_count);
+    frame_spans.reserve(frame_count);
+    for (int i = 0; i < frame_count; ++i) {
+        FrameBuilder f;
+        f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+        f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(),
+            IP_PROTO_UDP, /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+        f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
+        f.AppendPayload(payload);
+        frame_storage.push_back(std::move(f.bytes));
+        frame_spans.emplace_back(frame_storage.back());
+    }
+    ASSERT_TRUE(capture.WriteFrameBatch(frame_spans));
+
+    int received = 0;
+    bool observed_buffered = false;
+    for (int i = 0; i < frame_count; ++i) {
+        const auto packet = capture.socket.Receive();
+        ASSERT_TRUE(packet.has_value()) << "missing packet " << (i + 1);
+        ++received;
+        if (capture.socket.HasBufferedData()) {
+            observed_buffered = true;
+        }
+    }
+
+    EXPECT_EQ(received, frame_count);
+    EXPECT_TRUE(observed_buffered)
+        << "Expected the buffer walker to leave bytes between frames — got single-frame reads";
+    EXPECT_FALSE(capture.socket.Receive().has_value())
+        << "Expected no more frames after draining the batch";
+}
+#endif  // defined(__APPLE__)
 
 } // namespace reflector

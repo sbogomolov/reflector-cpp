@@ -350,4 +350,38 @@ TEST_F(DispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
+// Drives an Ethernet/IPv4/UDP frame through TestCaptureSocket's socketpair so that
+// PollOnce wakes via kqueue/epoll, Receive() consumes the bytes, ParseFrame decodes
+// them, and DispatchPacket invokes the callback. Exercises the full receive path on
+// both macOS (bpf_hdr-prefixed) and Linux (raw bytes) without needing capture
+// privileges or real loopback traffic.
+TEST_F(DispatcherTest, PollOnceDispatchesFrameWrittenToTestSocket) {
+    TestCaptureSocket capture;
+    PacketRecorder recorder;
+    const auto registration = dispatcher.Register(capture.socket,
+        PacketFilter{.dest_port = uint16_t{9}},
+        CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
+    ASSERT_TRUE(registration.IsValid());
+
+    const auto src_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
+    const auto dst_mac = *MacAddress::FromString("11:22:33:44:55:66");
+    const auto src_ip = IpAddress::FromV4Bytes(192, 0, 2, 1);
+    const auto dst_ip = IpAddress::BroadcastV4();
+    const auto payload = MakeBytes({0xde, 0xad, 0xbe, 0xef});
+
+    FrameBuilder f;
+    f.AppendEthernet(dst_mac, src_mac, IPV4_ETHERTYPE);
+    f.AppendIPv4Header(src_ip, dst_ip, IP_PROTO_UDP,
+        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+    f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+
+    ASSERT_TRUE(capture.WriteFrame(f.bytes));
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(recorder.count, 1);
+    EXPECT_EQ(recorder.payload, payload);
+    EXPECT_EQ(recorder.source_ip, src_ip);
+}
+
 } // namespace reflector
