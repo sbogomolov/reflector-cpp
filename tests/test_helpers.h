@@ -3,6 +3,7 @@
 #include "reflector/dispatcher.h"
 #include "reflector/logger.h"
 #include "reflector/packet.h"
+#include "reflector/packet_capture_socket.h"
 #include "reflector/udp_socket.h"
 #include "reflector/util/delegate.h"
 
@@ -14,10 +15,14 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <optional>
+#include <poll.h>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -63,11 +68,14 @@ struct PacketRecorder {
     std::optional<IpAddress> source_ip;
 };
 
-inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1), uint16_t source_port = 12345) {
+inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1),
+    uint16_t source_port = 12345, uint16_t dest_port = 9) {
     return Packet{
         .header = PacketHeader{
             .source_ip = source_ip,
+            .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
             .source_port = source_port,
+            .dest_port = dest_port,
         },
         .payload = {},
     };
@@ -119,22 +127,81 @@ inline uint16_t FreeLoopbackPort(IpAddress::Family family) {
     return ports.front();
 }
 
+// Wraps a SOCK_DGRAM socketpair into a PacketCaptureSocket-shaped object so tests can
+// register against the dispatcher and then call DispatchPacket directly via the friend
+// declarations. SOCK_DGRAM (rather than pipe()) preserves message boundaries — Linux's
+// AF_PACKET delivers one frame per recv, and the socketpair mimics that. The read end
+// is non-blocking to match production.
+struct TestCaptureSocket {
+    int write_fd = -1;
+    PacketCaptureSocket socket;
+
+    explicit TestCaptureSocket(std::string_view interface = "test") : socket{MakeSocket(interface)} {}
+
+    TestCaptureSocket(const TestCaptureSocket&) = delete;
+    TestCaptureSocket& operator=(const TestCaptureSocket&) = delete;
+
+    ~TestCaptureSocket() {
+        if (write_fd >= 0) {
+            ::close(write_fd);
+        }
+    }
+
+private:
+    PacketCaptureSocket MakeSocket(std::string_view interface) {
+        int fds[2];
+        if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) {
+            ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
+            return PacketCaptureSocket::ForTesting(interface, -1);
+        }
+        if (::fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) {
+            ADD_FAILURE() << "fcntl(O_NONBLOCK) failed: " << std::strerror(errno);
+            ::close(fds[0]);
+            ::close(fds[1]);
+            return PacketCaptureSocket::ForTesting(interface, -1);
+        }
+        write_fd = fds[1];
+        return PacketCaptureSocket::ForTesting(interface, fds[0]);
+    }
+};
+
 struct LoopbackReceiver {
-    Dispatcher dispatcher;
     UdpSocket socket;
     PacketRecorder recorder;
-    Dispatcher::Registration registration;
 
-    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family)
-            : socket{family} {
+    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family) : socket{family} {
         BindLoopback(socket, port);
-        registration = dispatcher.Register(
-            socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
-        EXPECT_TRUE(registration.IsValid());
     }
 
     [[nodiscard]] uint16_t Port() const { return BoundPort(socket); }
-    bool PollOnce(std::chrono::milliseconds timeout) { return dispatcher.PollOnce(timeout); }
+
+    // Polls the socket for one datagram and records it. Returns true if a packet arrived.
+    bool PollOnce(std::chrono::milliseconds timeout) {
+        pollfd pfd{.fd = socket.Fd(), .events = POLLIN, .revents = 0};
+        const auto ready = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+        if (ready <= 0) {
+            return false;
+        }
+
+        std::vector<std::byte> buffer(64 * 1024);
+        sockaddr_storage source{};
+        socklen_t source_size = sizeof(source);
+        const auto bytes = ::recvfrom(socket.Fd(), buffer.data(), buffer.size(), 0,
+            reinterpret_cast<sockaddr*>(&source), &source_size);
+        if (bytes <= 0) {
+            return false;
+        }
+        const auto source_ip = IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&source));
+        Packet packet{
+            .header = PacketHeader{
+                .source_ip = source_ip.value_or(LoopbackFor(socket.AddressFamily())),
+                .dest_ip = LoopbackFor(socket.AddressFamily()),
+            },
+            .payload = std::span<const std::byte>{buffer.data(), static_cast<size_t>(bytes)},
+        };
+        recorder.OnPacket(packet);
+        return true;
+    }
 };
 
 } // namespace reflector

@@ -1,7 +1,6 @@
 #include "wol_reflector.h"
 #include "util/delegate.h"
 
-#include <algorithm>
 #include <cstring>
 #include <format>
 #include <string>
@@ -11,25 +10,32 @@ namespace reflector {
 
 namespace {
 
-std::string LoggerName(const WolListener& listener, const WolConfig& config) {
-    return std::format("WolReflector:{}:{}", config.name, listener.AddressFamily());
+std::string LoggerName(const WolConfig& config) {
+    return std::format("WolReflector:{}", config.name);
 }
 
 } // namespace
 
 WolReflector::WolReflector(WolListener& listener, const WolConfig& config)
-        : logger_{LoggerName(listener, config)} {
+        : logger_{LoggerName(config)} {
     if (!ValidateConfig(config)) {
         return;
     }
 
-    owned_sender_.emplace(config.target_if, listener.AddressFamily());
-    sender_ = &*owned_sender_;
+    if (config.UsesIPv4()) {
+        v4_sender_.emplace(config.target_if, IpAddress::Family::V4);
+    }
+    if (config.UsesIPv6()) {
+        v6_sender_.emplace(config.target_if, IpAddress::Family::V6);
+    }
     Initialize(listener, config);
 }
 
-WolReflector::WolReflector(WolListener& listener, UdpLinkFanoutSender& sender, const WolConfig& config)
-        : logger_{LoggerName(listener, config)}, sender_{&sender} {
+WolReflector::WolReflector(WolListener& listener, const WolConfig& config,
+    std::optional<UdpLinkFanoutSender> v4_sender, std::optional<UdpLinkFanoutSender> v6_sender)
+        : logger_{LoggerName(config)}
+        , v4_sender_{std::move(v4_sender)}
+        , v6_sender_{std::move(v6_sender)} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -50,8 +56,14 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
 }
 
 void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
-    if (!sender_ || !sender_->IsValid()) {
-        logger_.Error("Cannot create wol reflector \"{}\": sender setup failed", config.name);
+    const auto v4_ready = v4_sender_ && v4_sender_->IsValid();
+    const auto v6_ready = v6_sender_ && v6_sender_->IsValid();
+    if (config.RequiresIPv4() && !v4_ready) {
+        logger_.Error("Cannot create wol reflector \"{}\": IPv4 sender setup failed", config.name);
+        return;
+    }
+    if (config.RequiresIPv6() && !v6_ready) {
+        logger_.Error("Cannot create wol reflector \"{}\": IPv6 sender setup failed", config.name);
         return;
     }
 
@@ -87,7 +99,6 @@ bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
         return false;
     }
 
-    // Fixed-MAC mode: compare the packet against the precomputed magic packet.
     if (target_mac_.has_value()) {
         if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
             logger_.Debug("Ignoring wol packet: magic packet does not match expected MAC");
@@ -96,7 +107,6 @@ bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
         return true;
     }
 
-    // Any-MAC mode: validate the generic WoL shape and accept whichever MAC is repeated.
     if (!HasMagicPacketPrefix(payload)) {
         logger_.Debug("Ignoring wol packet: magic packet prefix is invalid");
         return false;
@@ -138,19 +148,33 @@ void WolReflector::PortHandler::OnPacket(const Packet& packet) noexcept {
     parent->HandlePacket(packet, port);
 }
 
+UdpLinkFanoutSender* WolReflector::SenderFor(IpAddress::Family family) noexcept {
+    auto& sender = family == IpAddress::Family::V4 ? v4_sender_ : v6_sender_;
+    return sender ? &*sender : nullptr;
+}
+
 void WolReflector::HandlePacket(const Packet& packet, uint16_t port) noexcept {
     if (!IsMagicPacket(packet.payload)) {
         return;
     }
 
-    if (!sender_->Send(packet.payload, port)) {
-        logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
-            packet.header.source_ip, packet.header.source_port, sender_->DestinationAddress(), port);
+    auto* sender = SenderFor(packet.header.source_ip.AddressFamily());
+    if (!sender) {
+        logger_.Debug("Ignoring wol packet from {}:{}: no sender for {}",
+            packet.header.source_ip, packet.header.source_port, packet.header.source_ip.AddressFamily());
         return;
     }
 
+    if (!sender->Send(packet.payload, port)) {
+        logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
+            packet.header.source_ip, packet.header.source_port, sender->DestinationAddress(), port);
+        return;
+    }
+
+    // TODO: include source MAC in this log line so operators can identify the originating
+    // device, not just its (often DHCP'd) IP.
     logger_.Info("Reflected wol packet from {}:{} to {}:{}",
-        packet.header.source_ip, packet.header.source_port, sender_->DestinationAddress(), port);
+        packet.header.source_ip, packet.header.source_port, sender->DestinationAddress(), port);
 }
 
 void WolReflector::Reset() noexcept {

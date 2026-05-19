@@ -1,7 +1,7 @@
 #include "reflector/config.h"
 #include "reflector/dispatcher.h"
-#include "reflector/ip_address.h"
 #include "reflector/logger.h"
+#include "reflector/packet_capture_socket.h"
 #include "reflector/wol_listener.h"
 #include "reflector/wol_reflector.h"
 
@@ -30,8 +30,13 @@ void ConfigureStdoutBuffering() noexcept {
     }
 }
 
+// TODO: extract the dispatcher / capture-socket / listener / reflector wiring into a
+// dedicated class so this function stays a thin entry point (arg parsing, config load,
+// signal setup) and the wiring becomes testable in isolation.
 int Run(int argc, char* argv[]) {
     ConfigureStdoutBuffering();
+    std::signal(SIGINT, SignalHandler);
+    std::signal(SIGTERM, SignalHandler);
 
     reflector::Logger logger("main");
     if (argc > 2) {
@@ -51,47 +56,35 @@ int Run(int argc, char* argv[]) {
 
     logger.Debug("Config: {}", *config);
 
+    // The dispatcher caches each PacketCaptureSocket* in the kernel event queue
+    // (epoll data.ptr / kqueue udata), so element addresses must stay stable across
+    // insertions — unordered_map's node storage preserves them. Declaration order
+    // also drives the shutdown sequence: listeners drop their registrations first,
+    // the dispatcher then tears down its event queue (dropping any cached udata),
+    // and only then the capture sockets close their fds.
+    std::unordered_map<std::string, reflector::PacketCaptureSocket> capture_sockets;
     reflector::Dispatcher dispatcher;
-    std::signal(SIGINT, SignalHandler);
-    std::signal(SIGTERM, SignalHandler);
-
-    std::unordered_map<std::string, reflector::WolListener> v4_wol_listeners;
-    std::unordered_map<std::string, reflector::WolListener> v6_wol_listeners;
+    std::unordered_map<std::string, reflector::WolListener> wol_listeners;
     std::vector<std::unique_ptr<reflector::WolReflector>> reflectors;
+
     for (const auto& wol_config : config->WolConfigs()) {
-        std::unique_ptr<reflector::WolReflector> v4_reflector;
-        std::unique_ptr<reflector::WolReflector> v6_reflector;
-
-        if (wol_config.UsesIPv4()) {
-            auto& v4_listener = v4_wol_listeners.try_emplace(
-                wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V4).first->second;
-            v4_reflector = std::make_unique<reflector::WolReflector>(v4_listener, wol_config);
-        }
-        if (wol_config.UsesIPv6()) {
-            auto& v6_listener = v6_wol_listeners.try_emplace(
-                wol_config.source_if, dispatcher, wol_config.source_if, reflector::IpAddress::Family::V6).first->second;
-            v6_reflector = std::make_unique<reflector::WolReflector>(v6_listener, wol_config);
-        }
-
-        const auto v4_valid = v4_reflector && v4_reflector->IsValid();
-        const auto v6_valid = v6_reflector && v6_reflector->IsValid();
-        if (wol_config.RequiresIPv4() && !v4_valid) {
-            logger.Error("Cannot configure wol reflector \"{}\": IPv4 did not come up",
-                wol_config.name);
-            return 1;
-        }
-        if (wol_config.RequiresIPv6() && !v6_valid) {
-            logger.Error("Cannot configure wol reflector \"{}\": IPv6 did not come up",
-                wol_config.name);
+        auto& capture = capture_sockets.try_emplace(
+            wol_config.source_if, wol_config.source_if).first->second;
+        if (!capture.IsValid()) {
+            logger.Error("Cannot configure wol reflector \"{}\": capture socket on interface \"{}\" is invalid",
+                wol_config.name, wol_config.source_if);
             return 1;
         }
 
-        if (v4_valid) {
-            reflectors.push_back(std::move(v4_reflector));
+        auto& listener = wol_listeners.try_emplace(
+            wol_config.source_if, dispatcher, capture).first->second;
+
+        auto reflector = std::make_unique<reflector::WolReflector>(listener, wol_config);
+        if (!reflector->IsValid()) {
+            logger.Error("Cannot configure wol reflector \"{}\": setup failed", wol_config.name);
+            return 1;
         }
-        if (v6_valid) {
-            reflectors.push_back(std::move(v6_reflector));
-        }
+        reflectors.push_back(std::move(reflector));
     }
 
     dispatcher.Run(g_stop_requested);

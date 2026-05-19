@@ -1,15 +1,13 @@
 #pragma once
 
 #include "dispatcher.h"
-#include "udp_socket.h"
+#include "packet_capture_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
 #include "util/shared_ptr_unsynchronized.h"
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
-#include <string_view>
 #include <vector>
 
 namespace reflector {
@@ -38,33 +36,20 @@ public:
         WeakPtrUnsynchronized<RegistrationEntry> registration_entry_;
     };
 
-    WolListener(Dispatcher& dispatcher, std::string_view interface, IpAddress::Family family);
+    WolListener(Dispatcher& dispatcher, PacketCaptureSocket& capture);
     ~WolListener() noexcept;
-
-    [[nodiscard]] IpAddress::Family AddressFamily() const noexcept { return family_; }
 
     [[nodiscard]] Registration Register(uint16_t port, const PacketCallback& callback);
 
 private:
     friend class WolListenerTest;
-    friend class WolListenerPerFamilyTest;
     friend class WolReflectorTestBase;
 
-    struct PortListener {
-        UdpSocket socket;
-        size_t refcount;
-        uint16_t port;
-    };
-
-    [[nodiscard]] int AcquirePort(uint16_t port);
-    void ReleasePort(uint16_t port) noexcept;
     bool Unregister(SharedPtrUnsynchronized<RegistrationEntry> registration) noexcept;
-    [[nodiscard]] size_t ListenerCount() const noexcept { return listeners_.size(); }
+    [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
     Dispatcher* dispatcher_;
-    std::string interface_;
-    IpAddress::Family family_;
-    std::vector<PortListener> listeners_;
+    PacketCaptureSocket* capture_;
     std::vector<SharedPtrUnsynchronized<RegistrationEntry>> registrations_;
 };
 

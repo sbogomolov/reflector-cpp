@@ -12,7 +12,7 @@ Linux and macOS. The CI workflow runs the unit suite on Ubuntu 24.04 x64, Ubuntu
 
 Prerequisites:
 
-- CMake ≥ 3.20, Ninja, Git
+- CMake ≥ 3.22, Ninja, Git
 - A C++23 toolchain. The standard library bits used here (`std::println`, `std::expected`, `std::format`) require:
   - GCC ≥ 14, or
   - Clang ≥ 18 (with libc++ or libstdc++ from GCC 14+), or
@@ -64,27 +64,34 @@ The default config path is `./config.toml`. The process logs to stdout and shuts
 
 ### Runtime privileges
 
+The reflector opens an L2 packet-capture socket on each `source_if` to observe incoming
+WoL traffic, and a UDP sender bound to each `target_if` to re-emit it. The capture
+socket is what drives the privilege requirements below; the sender does not need to
+bind to a port (it sends only), so no WoL-port-related privileges are required even
+when the default ports `7` / `9` are in use.
+
 #### Linux
 
-Binding a UDP socket to a specific interface uses `SO_BINDTODEVICE`, which requires
-`CAP_NET_RAW`.
-
-The default WoL ports (`7` and `9`) are privileged ports on Linux, so running with the default
-configuration also requires `CAP_NET_BIND_SERVICE`. Either run as root, choose non-privileged
-ports, or grant the capabilities once:
+Capture uses `AF_PACKET`; the sender uses `SO_BINDTODEVICE`. Both require `CAP_NET_RAW`.
+Either run as root or grant the capability once:
 
 ```sh
-sudo setcap cap_net_raw,cap_net_bind_service=eip ./build/reflector
+sudo setcap cap_net_raw=eip ./build/reflector
 ```
 
 #### macOS
 
-Binding sockets to `source_if` / `target_if` uses `IP_BOUND_IF` for IPv4 and
-`IPV6_BOUND_IF` for IPv6. These options do not require extra privileges.
+Capture uses BPF (`/dev/bpf*`); the sender uses `IP_BOUND_IF` / `IPV6_BOUND_IF`, which
+need no extra privileges. BPF devices are owned by `root:wheel` with mode `0600` on a
+default install, so out of the box the reflector must run as root. To run unprivileged,
+install Wireshark's `ChmodBPF` helper — it creates an `access_bpf` group, adds the
+current user to it, and re-applies the right permissions to `/dev/bpf*` on every boot:
 
-The default WoL ports (`7` and `9`) are privileged ports on macOS too, so running with
-the default configuration still requires root. Choose non-privileged ports during
-development if you want to run as a regular user.
+```sh
+open "/Applications/Wireshark.app/Contents/Resources/Extras/Install ChmodBPF.pkg"
+```
+
+Log out and back in after installing for the group membership to take effect.
 
 ## Configuration
 
