@@ -65,6 +65,10 @@ protected:
     static void Dispatch(WolReflector& reflector, uint16_t port, const Packet& packet) {
         reflector.HandlePacket(packet, port);
     }
+
+    static void ReplaceV4Sender(WolReflector& reflector, std::optional<UdpLinkFanoutSender> sender) {
+        reflector.v4_sender_ = std::move(sender);
+    }
 };
 
 class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Family>,
@@ -176,6 +180,30 @@ TEST_F(WolReflectorTest, IsInvalidWhenSenderInvalid) {
 
     EXPECT_FALSE(reflector.IsValid());
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
+}
+
+TEST_F(WolReflectorTest, LogsErrorWhenSenderRejectsPacket) {
+    // Build the reflector with a valid sender so Initialize fully sets up magic-packet
+    // state, then swap in an invalid sender so sender->Send() returns false. This is the
+    // only way to reach HandlePacket's send-failure branch — in production the path is
+    // unreachable (a sender that fails Send was already invalid at construction time, so
+    // the reflector itself would have failed to initialize).
+    auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
+    ASSERT_TRUE(reflector.IsValid());
+    ReplaceV4Sender(reflector,
+        UdpLinkFanoutSender{"nonexistent-iface-xyz", IpAddress::Family::V4});
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V4};
+    const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
+
+    const std::string output = CaptureStdout([&] {
+        Dispatch(reflector, receiver.Port(),
+            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    });
+
+    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
+    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_NE(output.find("Cannot reflect wol packet"), std::string::npos) << output;
 }
 
 TEST_F(WolReflectorTest, IgnoresPacketWithUnsupportedFamily) {

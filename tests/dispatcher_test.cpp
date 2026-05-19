@@ -38,6 +38,25 @@ struct UnregisteringPacketCounter {
     int count = 0;
 };
 
+// Registers a second callback the first time it runs, then disables itself so subsequent
+// dispatches don't keep adding more.
+struct RegisteringPacketCounter {
+    void OnPacket(const Packet&) {
+        ++count;
+        if (dispatcher != nullptr) {
+            new_registration = dispatcher->Register(*socket, PacketFilter{},
+                CreateDelegate<&PacketCounter::OnPacket>(target));
+            dispatcher = nullptr;
+        }
+    }
+
+    Dispatcher* dispatcher = nullptr;
+    PacketCaptureSocket* socket = nullptr;
+    PacketCounter* target = nullptr;
+    Dispatcher::Registration new_registration;
+    int count = 0;
+};
+
 TEST_F(DispatcherTest, RegistersCallback) {
     TestCaptureSocket capture;
     PacketCounter counter;
@@ -288,6 +307,46 @@ TEST_F(DispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
     EXPECT_EQ(first.count, 1);
     EXPECT_TRUE(first.reset_result);
     EXPECT_EQ(second.count, 0);
+    EXPECT_EQ(RegistrationCount(), 1);
+}
+
+TEST_F(DispatcherTest, DispatchesToCallbackRegisteredDuringDispatch) {
+    TestCaptureSocket capture;
+    RegisteringPacketCounter first;
+    PacketCounter second;
+    first.dispatcher = &dispatcher;
+    first.socket = &capture.socket;
+    first.target = &second;
+
+    const auto first_registration = dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&RegisteringPacketCounter::OnPacket>(&first));
+    ASSERT_TRUE(first_registration.IsValid());
+
+    Dispatch(capture.socket, MakePacket());
+
+    EXPECT_EQ(first.count, 1);
+    ASSERT_TRUE(first.new_registration.IsValid());
+    EXPECT_EQ(second.count, 1);
+    EXPECT_EQ(RegistrationCount(), 2);
+}
+
+TEST_F(DispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
+    TestCaptureSocket capture;
+    PacketCounter first;
+    PacketCounter second;
+
+    auto first_registration = dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&first));
+    const auto second_registration = dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&second));
+    ASSERT_TRUE(first_registration.IsValid());
+    ASSERT_TRUE(second_registration.IsValid());
+
+    ASSERT_TRUE(first_registration.Reset());
+    Dispatch(capture.socket, MakePacket());
+
+    EXPECT_EQ(first.count, 0);
+    EXPECT_EQ(second.count, 1);
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
