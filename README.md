@@ -126,6 +126,13 @@ ctest --test-dir build -L unit --output-on-failure
 
 `--output-on-failure` prints the full test log for any failing test (ctest hides output for passing tests by default). Several tests open loopback UDP sockets and exchange real packets, so they need to run outside any sandbox that blocks local networking.
 
+A subset of tests exercises real packet capture on the loopback interface and needs the same privileges the reflector itself does (see [Runtime privileges](#runtime-privileges)). They carry an extra `root` label and probe for the privilege at startup — if it's missing they `GTEST_SKIP` cleanly, so the default `ctest` run is green on an under-privileged box. Select or exclude them explicitly with:
+
+```sh
+ctest --test-dir build -L root --output-on-failure         # only the capture-using tests
+ctest --test-dir build -LE root --output-on-failure        # skip them outright
+```
+
 ### Docker-backed tests
 
 Docker-backed coverage is opt-in because it builds/runs containers and, for e2e, creates temporary Docker networks. Run the Dockerfile unit-test targets directly with:

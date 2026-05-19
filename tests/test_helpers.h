@@ -127,6 +127,31 @@ inline uint16_t FreeLoopbackPort(IpAddress::Family family) {
     return ports.front();
 }
 
+// Loopback interface name varies by OS; "lo" on Linux, "lo0" on macOS.
+inline std::string_view LoopbackInterface() noexcept {
+#if defined(__APPLE__)
+    return "lo0";
+#else
+    return "lo";
+#endif
+}
+
+// Opens a real PacketCaptureSocket on the loopback interface to probe whether the running
+// user has the privileges needed (CAP_NET_RAW on Linux, bpf-group / root on macOS). Tests
+// that need real capture call this in SetUp and GTEST_SKIP if it returns false. Cached:
+// the probe is destructive enough (open + close) that we only want to pay it once per run.
+inline bool HasPacketCapturePrivileges() {
+    static const bool cached = [] {
+        bool valid = false;
+        (void)CaptureStdout([&] {
+            PacketCaptureSocket probe{LoopbackInterface()};
+            valid = probe.IsValid();
+        });
+        return valid;
+    }();
+    return cached;
+}
+
 // Wraps a SOCK_DGRAM socketpair into a PacketCaptureSocket-shaped object so tests can
 // register against the dispatcher and then call DispatchPacket directly via the friend
 // declarations. SOCK_DGRAM (rather than pipe()) preserves message boundaries — Linux's
