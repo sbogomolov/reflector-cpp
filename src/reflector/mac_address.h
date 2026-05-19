@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <span>
 #include <string_view>
 
 namespace reflector {
@@ -19,6 +20,7 @@ public:
     explicit constexpr MacAddress(ByteArray bytes) noexcept : bytes_{bytes} {}
 
     [[nodiscard]] static std::expected<MacAddress, Error> FromString(std::string_view mac);
+    [[nodiscard]] static MacAddress FromBytes(std::span<const std::byte, 6> bytes) noexcept;
 
     [[nodiscard]] constexpr const ByteArray& Bytes() const noexcept { return bytes_; }
 

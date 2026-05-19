@@ -1,5 +1,7 @@
 #include "mac_address.h"
 
+#include <cstring>
+
 namespace {
 
 int HexValue(char c) noexcept {
@@ -39,6 +41,12 @@ std::expected<MacAddress, Error> MacAddress::FromString(std::string_view mac) {
     }
 
     return MacAddress{bytes};
+}
+
+MacAddress MacAddress::FromBytes(std::span<const std::byte, 6> bytes) noexcept {
+    ByteArray copy{};
+    std::memcpy(copy.data(), bytes.data(), bytes.size());
+    return MacAddress{copy};
 }
 
 } // namespace reflector
