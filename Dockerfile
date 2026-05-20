@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.24
 
-ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:109e2c65005bf160609e4ba6acf7783752f8502ad218e298253428690b9eaa4b
+ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
 ARG DISTROLESS_CC_DEBIAN13=gcr.io/distroless/cc-debian13:latest@sha256:8b5d1db6d2253036a53cb8362d3e3fa82a7caf84c247772c46a023166c64e977
 
 FROM ${DEBIAN_TRIXIE_SLIM} AS build-env
