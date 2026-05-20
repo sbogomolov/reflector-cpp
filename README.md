@@ -114,7 +114,7 @@ Each entry installs listeners on `source_if` for the listed UDP ports, matches i
 
 `address_family = "default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort. Use `"dual"` to require both address families, or `"ipv4"` / `"ipv6"` to use only one.
 
-Every WoL entry name must be unique. Beyond the name, duplicate detection rejects only rules that could reflect the same packet twice: the entries must use the same `source_if`, the same `target_if`, at least one common UDP port, and overlapping MAC selection. MAC selection overlaps when both entries use the same `mac`, or when either entry omits `mac` and therefore accepts any MAC. Rules with different source interfaces, target interfaces, or disjoint port sets can coexist.
+Every WoL entry name must be unique. Beyond the name, duplicate detection rejects only rules that could reflect the same packet twice: the entries must use the same `source_if`, the same `target_if`, at least one common UDP port, overlapping MAC selection, and overlapping address-family handling. MAC selection overlaps when both entries use the same `mac`, or when either entry omits `mac` and therefore accepts any MAC. Address-family handling overlaps when the two entries can both handle the same IP version — an `ipv4`-only rule and an `ipv6`-only rule never overlap, while `default`/`dual` handle both versions and so overlap with either. Rules with different source interfaces, target interfaces, disjoint port sets, or non-overlapping address families can coexist.
 
 ## Tests
 

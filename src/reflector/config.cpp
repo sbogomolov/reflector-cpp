@@ -94,6 +94,13 @@ bool PortsOverlap(const std::vector<uint16_t>& lhs, const std::vector<uint16_t>&
     return false;
 }
 
+// Two rules can reflect the same captured packet only if they both handle its IP version.
+// A captured datagram is v4 or v6, so an ipv4-only rule and an ipv6-only rule never
+// collide; "default"/"dual" handle both and overlap with either.
+bool WolAddressFamiliesOverlap(const WolConfig& lhs, const WolConfig& rhs) noexcept {
+    return (lhs.UsesIPv4() && rhs.UsesIPv4()) || (lhs.UsesIPv6() && rhs.UsesIPv6());
+}
+
 std::expected<WolConfig, Error> ReadWolConfig(const toml::table& entry_table) {
     WolConfig wol_config{};
     for (const auto& [field_key, field_node] : entry_table) {
@@ -183,9 +190,10 @@ std::expected<std::vector<WolConfig>, Error> ReadWolConfigs(const toml::node& wo
             if (WolMacSelectionsOverlap(existing.mac, wol_config->mac)
                     && existing.source_if == wol_config->source_if
                     && existing.target_if == wol_config->target_if
-                    && PortsOverlap(existing.ports, wol_config->ports)) {
+                    && PortsOverlap(existing.ports, wol_config->ports)
+                    && WolAddressFamiliesOverlap(existing, *wol_config)) {
                 return std::unexpected(Error{
-                    "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and ports",
+                    "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, ports, and address family",
                     existing.name, wol_config->name});
             }
         }

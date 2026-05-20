@@ -723,6 +723,52 @@ target_if = "eth2"
     EXPECT_EQ(config->WolConfigs().size(), 2);
 }
 
+// An ipv4-only and an ipv6-only rule never handle the same packet, so an otherwise
+// identical pair is not a duplicate — it is just the long form of one "dual" rule.
+TEST(ConfigTest, AcceptsIdenticalRuleWithDisjointAddressFamilies) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = "ipv4"
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = "ipv6"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 2);
+}
+
+// "default" handles IPv4 too, so it overlaps an ipv4-only rule on the same triple.
+TEST(ConfigTest, RejectsOverlappingRuleWhenDefaultCoversIpv4) {
+    std::string toml = R"(
+[[wol]]
+name = "a"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = "default"
+
+[[wol]]
+name = "b"
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1"
+address_family = "ipv4"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_FALSE(config.has_value());
+}
+
 TEST(ConfigTest, RejectsTooShortMac) {
     std::string toml = R"(
 [[wol]]
