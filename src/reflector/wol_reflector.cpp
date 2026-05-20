@@ -99,8 +99,10 @@ void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
         registrations_.push_back(std::move(registration));
     }
 
-    logger_.Info("Created wol reflector \"{}\" from interface \"{}\" to interface \"{}\"",
-        config.name, config.source_if, config.target_if);
+    logger_.Info("Created wol reflector \"{}\" from interface \"{}\" to interface \"{}\" (IPv4: {}, IPv6: {})",
+        config.name, config.source_if, config.target_if,
+        v4_sender_ ? "enabled" : "disabled",
+        v6_sender_ ? "enabled" : "disabled");
 }
 
 bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
