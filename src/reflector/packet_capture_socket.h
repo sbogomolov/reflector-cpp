@@ -2,7 +2,7 @@
 
 #include "logger.h"
 #include "packet.h"
-#include "util/no_copy.h"
+#include "util/no_move.h"
 
 #include <cstddef>
 #include <optional>
@@ -19,7 +19,12 @@ namespace reflector {
 // headers are dropped — out of scope for the WoL/mDNS/SSDP traffic this serves.
 //
 // Requires CAP_NET_RAW on Linux or BPF device permissions on macOS.
-class PacketCaptureSocket : NoCopy {
+//
+// Immovable so registered instances stay put: Dispatcher caches the socket address in its
+// kernel event queue (epoll data.ptr / kqueue udata) and in registration entries; a move
+// would silently invalidate those pointers. Hold instances in storage that preserves
+// element addresses (stack, std::optional, node-based map) — std::vector won't do.
+class PacketCaptureSocket : NoMove {
 public:
     explicit PacketCaptureSocket(std::string_view interface);
     ~PacketCaptureSocket() noexcept;
@@ -28,9 +33,6 @@ public:
     // returned socket's Receive() always yields nullopt, so callers drive dispatch by
     // invoking Dispatcher::DispatchPacket directly via the test friend declarations.
     [[nodiscard]] static PacketCaptureSocket ForTesting(std::string_view interface, int owned_fd);
-
-    PacketCaptureSocket(PacketCaptureSocket&& other) noexcept;
-    PacketCaptureSocket& operator=(PacketCaptureSocket&& other) noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
     [[nodiscard]] int Fd() const noexcept { return fd_; }

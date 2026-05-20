@@ -333,36 +333,6 @@ PacketCaptureSocket::~PacketCaptureSocket() noexcept {
     Close();
 }
 
-PacketCaptureSocket::PacketCaptureSocket(PacketCaptureSocket&& other) noexcept
-        : logger_{std::move(other.logger_)}
-        , interface_{std::move(other.interface_)}
-        , fd_{std::exchange(other.fd_, -1)}
-        , receive_buffer_{std::move(other.receive_buffer_)}
-#if defined(__APPLE__)
-        , receive_buffer_filled_{std::exchange(other.receive_buffer_filled_, 0)}
-        , receive_buffer_offset_{std::exchange(other.receive_buffer_offset_, 0)}
-        , link_type_{std::exchange(other.link_type_, LinkType::Ethernet)}
-#endif
-        {}
-
-PacketCaptureSocket& PacketCaptureSocket::operator=(PacketCaptureSocket&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
-
-    Close();
-    logger_ = std::move(other.logger_);
-    interface_ = std::move(other.interface_);
-    fd_ = std::exchange(other.fd_, -1);
-    receive_buffer_ = std::move(other.receive_buffer_);
-#if defined(__APPLE__)
-    receive_buffer_filled_ = std::exchange(other.receive_buffer_filled_, 0);
-    receive_buffer_offset_ = std::exchange(other.receive_buffer_offset_, 0);
-    link_type_ = std::exchange(other.link_type_, LinkType::Ethernet);
-#endif
-    return *this;
-}
-
 #if defined(__APPLE__)
 bool PacketCaptureSocket::HasBufferedData() const noexcept {
     return receive_buffer_offset_ < receive_buffer_filled_;
