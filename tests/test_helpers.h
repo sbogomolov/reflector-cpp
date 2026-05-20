@@ -76,6 +76,23 @@ struct PacketRecorder {
     std::optional<IpAddress> source_ip;
 };
 
+// Counts packets and, on each dispatch, resets the registration pointed at by
+// `registration_to_reset` (if any). Used to exercise the dispatcher's behaviour when a
+// callback drops its own (or another) registration mid-dispatch. `reset_result` captures
+// the return value of Reset() so callers can assert on it.
+struct UnregisteringPacketCounter {
+    void OnPacket(const Packet&) {
+        ++count;
+        if (registration_to_reset != nullptr && registration_to_reset->IsValid()) {
+            reset_result = registration_to_reset->Reset();
+        }
+    }
+
+    Dispatcher::Registration* registration_to_reset = nullptr;
+    bool reset_result = false;
+    int count = 0;
+};
+
 inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1),
     uint16_t source_port = 12345, uint16_t dest_port = 9) {
     return Packet{

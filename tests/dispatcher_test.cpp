@@ -25,19 +25,6 @@ protected:
     }
 };
 
-struct UnregisteringPacketCounter {
-    void OnPacket(const Packet&) {
-        ++count;
-        if (registration_to_reset != nullptr && registration_to_reset->IsValid()) {
-            reset_result = registration_to_reset->Reset();
-        }
-    }
-
-    Dispatcher::Registration* registration_to_reset = nullptr;
-    bool reset_result = false;
-    int count = 0;
-};
-
 // Registers a second callback the first time it runs, then disables itself so subsequent
 // dispatches don't keep adding more.
 struct RegisteringPacketCounter {

@@ -101,18 +101,6 @@ TEST_F(DispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBurst) {
     EXPECT_EQ(counter.count, packet_count);
 }
 
-struct UnregisteringPacketCounter {
-    void OnPacket(const Packet&) {
-        ++count;
-        if (registration_to_reset != nullptr && registration_to_reset->IsValid()) {
-            registration_to_reset->Reset();
-        }
-    }
-
-    Dispatcher::Registration* registration_to_reset = nullptr;
-    int count = 0;
-};
-
 TEST_F(DispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLastRegistration) {
     UnregisteringPacketCounter counter;
     auto registration = dispatcher.Register(*capture, LoopbackFilter(),
