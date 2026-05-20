@@ -67,6 +67,16 @@ void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
         return;
     }
 
+    // A family the config merely *uses* (Default uses both, but only requires v4) may have
+    // failed setup — e.g. no IPv6 on target_if. Drop the optional so SenderFor returns
+    // null for that family instead of dispatching to a sender that always returns false.
+    if (!v4_ready) {
+        v4_sender_.reset();
+    }
+    if (!v6_ready) {
+        v6_sender_.reset();
+    }
+
     target_mac_ = config.mac;
     std::fill_n(expected_magic_packet_.begin(), PREFIX_SIZE, std::byte{0xff});
     if (target_mac_.has_value()) {

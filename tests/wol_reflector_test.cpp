@@ -313,4 +313,32 @@ TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
     EXPECT_EQ(receiver.recorder.count, 0);
 }
 
+// In Default mode the config "uses" but doesn't "require" IPv6: if the v6 sender setup
+// fails (e.g. no IPv6 on target_if) the reflector is still valid via IPv4. Incoming v6
+// packets must then be silently dropped — not handed to the invalid sender, which would
+// log a per-packet error on top of every drop.
+TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6SenderUnavailableInDefault) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = WolAddressFamily::Default;
+    UdpLinkFanoutSender invalid_v6{"nonexistent-iface-xyz", IpAddress::Family::V6};
+    ASSERT_FALSE(invalid_v6.IsValid());
+
+    auto reflector = MakeReflector(listener, config,
+        UdpLinkFanoutSender{"", IpAddress::LoopbackV4()}, std::move(invalid_v6));
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V6};
+    const auto payload = MakeMagicPacket(*config.mac);
+
+    const std::string output = CaptureStdout([&] {
+        Dispatch(reflector, receiver.Port(),
+            MakePacket(payload, IpAddress::LoopbackV6(), receiver.Port()));
+    });
+
+    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
+    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_EQ(output.find("ERROR"), std::string::npos)
+        << "v6 packet on a v6-unavailable Default reflector should not log at ERROR level: " << output;
+}
+
 } // namespace reflector
