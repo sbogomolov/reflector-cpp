@@ -150,5 +150,5 @@ Run:
 --network host is recommended so the reflector sees the real source/target interfaces.
 
 If you run with --cap-drop=ALL (or Kubernetes restricted PSS), also add:
-  --cap-add NET_RAW --cap-add NET_BIND_SERVICE
+  --cap-add NET_RAW
 EOF

@@ -29,9 +29,11 @@ public:
     explicit PacketCaptureSocket(std::string_view interface);
     ~PacketCaptureSocket() noexcept;
 
-    // Test-only: wrap an arbitrary fd without performing any OS-level capture setup. The
-    // returned socket's Receive() always yields nullopt, so callers drive dispatch by
-    // invoking Dispatcher::DispatchPacket directly via the test friend declarations.
+    // Test-only: wrap an arbitrary fd without performing any OS-level capture setup.
+    // Receive() consumes bytes from that fd the same way the production socket would,
+    // so tests can either synthesize Packets via Dispatcher::DispatchPacket directly
+    // (when nothing is written to the fd) or drive real frames end-to-end via
+    // TestCaptureSocket::WriteFrame.
     [[nodiscard]] static PacketCaptureSocket ForTesting(std::string_view interface, int owned_fd);
 
     [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
