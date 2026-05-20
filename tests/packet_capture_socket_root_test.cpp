@@ -74,8 +74,6 @@ TEST_F(PacketCaptureSocketRequiresRootTest, ReceivesLoopbackUdpDatagram) {
     EXPECT_EQ(packet->header.dest_ip, IpAddress::LoopbackV4());
     EXPECT_EQ(packet->header.dest_port, listener_port);
     EXPECT_NE(packet->header.source_port, 0);
-    EXPECT_TRUE(packet->header.source_mac.has_value());
-    EXPECT_TRUE(packet->header.dest_mac.has_value());
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()),
         std::vector<std::byte>(payload.begin(), payload.end()));
 }

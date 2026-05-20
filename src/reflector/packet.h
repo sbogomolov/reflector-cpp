@@ -20,13 +20,13 @@ struct PacketHeader {
     IpAddress dest_ip;
     uint16_t source_port = 0;
     uint16_t dest_port = 0;
-    std::optional<MacAddress> source_mac = std::nullopt;
-    std::optional<MacAddress> dest_mac = std::nullopt;
+    MacAddress source_mac;
+    MacAddress dest_mac;
 };
 
 struct Packet {
     PacketHeader header;
-    // Non-owning view into the dispatcher's reused receive buffer. Valid only for the duration
+    // Non-owning view into the reused receive buffer. Valid only for the duration
     // of the dispatching callback; copy the bytes if you need to retain them.
     std::span<const std::byte> payload;
 };

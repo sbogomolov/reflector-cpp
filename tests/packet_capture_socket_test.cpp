@@ -57,10 +57,8 @@ TEST_F(PacketCaptureSocketTest, ParsesEthernetIpv4Udp) {
     EXPECT_EQ(packet->header.dest_ip, dst_ip);
     EXPECT_EQ(packet->header.source_port, 12345);
     EXPECT_EQ(packet->header.dest_port, 9);
-    ASSERT_TRUE(packet->header.source_mac.has_value());
-    EXPECT_EQ(*packet->header.source_mac, src_mac);
-    ASSERT_TRUE(packet->header.dest_mac.has_value());
-    EXPECT_EQ(*packet->header.dest_mac, dst_mac);
+    EXPECT_EQ(packet->header.source_mac, src_mac);
+    EXPECT_EQ(packet->header.dest_mac, dst_mac);
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()), payload);
 }
 
@@ -84,10 +82,8 @@ TEST_F(PacketCaptureSocketTest, ParsesEthernetIpv6Udp) {
     EXPECT_EQ(packet->header.dest_ip, dst_ip);
     EXPECT_EQ(packet->header.source_port, 5353);
     EXPECT_EQ(packet->header.dest_port, 5353);
-    ASSERT_TRUE(packet->header.source_mac.has_value());
-    EXPECT_EQ(*packet->header.source_mac, src_mac);
-    ASSERT_TRUE(packet->header.dest_mac.has_value());
-    EXPECT_EQ(*packet->header.dest_mac, dst_mac);
+    EXPECT_EQ(packet->header.source_mac, src_mac);
+    EXPECT_EQ(packet->header.dest_mac, dst_mac);
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()), payload);
 }
 
@@ -113,10 +109,9 @@ TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv4UdpWithZeroMacs) {
     EXPECT_EQ(packet->header.dest_ip, dst_ip);
     EXPECT_EQ(packet->header.source_port, 40000);
     EXPECT_EQ(packet->header.dest_port, 9);
-    ASSERT_TRUE(packet->header.source_mac.has_value());
-    EXPECT_EQ(*packet->header.source_mac, MacAddress{});
-    ASSERT_TRUE(packet->header.dest_mac.has_value());
-    EXPECT_EQ(*packet->header.dest_mac, MacAddress{});
+    // DLT_NULL frames carry no L2 — both MACs report as all-zeros.
+    EXPECT_EQ(packet->header.source_mac, MacAddress{});
+    EXPECT_EQ(packet->header.dest_mac, MacAddress{});
 }
 
 TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv6Udp) {

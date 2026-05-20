@@ -47,10 +47,10 @@ bool Matches(const PacketFilter& filter, const Packet& packet) {
     if (filter.dest_port && *filter.dest_port != packet.header.dest_port) {
         return false;
     }
-    if (filter.source_mac && (!packet.header.source_mac || *filter.source_mac != *packet.header.source_mac)) {
+    if (filter.source_mac && *filter.source_mac != packet.header.source_mac) {
         return false;
     }
-    if (filter.dest_mac && (!packet.header.dest_mac || *filter.dest_mac != *packet.header.dest_mac)) {
+    if (filter.dest_mac && *filter.dest_mac != packet.header.dest_mac) {
         return false;
     }
     return true;

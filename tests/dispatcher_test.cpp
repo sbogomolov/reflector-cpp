@@ -152,20 +152,6 @@ TEST_F(DispatcherTest, DestFilterAcceptsMatchingPackets) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(DispatcherTest, MacFilterRequiresPacketMacToBePresent) {
-    TestCaptureSocket capture;
-    PacketCounter counter;
-    PacketFilter filter{.source_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff")};
-    const auto registration = dispatcher.Register(
-        capture.socket, filter, CreateDelegate<&PacketCounter::OnPacket>(&counter));
-    ASSERT_TRUE(registration.IsValid());
-
-    // Packet header has no source_mac set; filter requires one — must not match.
-    Dispatch(capture.socket, MakePacket());
-
-    EXPECT_EQ(counter.count, 0);
-}
-
 TEST_F(DispatcherTest, SourceMacFilterMatchesEqualMac) {
     TestCaptureSocket capture;
     PacketCounter counter;
