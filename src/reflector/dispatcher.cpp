@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <ctime>
-#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
@@ -39,7 +38,19 @@ bool Matches(const PacketFilter& filter, const Packet& packet) {
     if (filter.source_ip && *filter.source_ip != packet.header.source_ip) {
         return false;
     }
-    if (filter.source_port != 0 && filter.source_port != packet.header.source_port) {
+    if (filter.dest_ip && *filter.dest_ip != packet.header.dest_ip) {
+        return false;
+    }
+    if (filter.source_port && *filter.source_port != packet.header.source_port) {
+        return false;
+    }
+    if (filter.dest_port && *filter.dest_port != packet.header.dest_port) {
+        return false;
+    }
+    if (filter.source_mac && *filter.source_mac != packet.header.source_mac) {
+        return false;
+    }
+    if (filter.dest_mac && *filter.dest_mac != packet.header.dest_mac) {
         return false;
     }
     return true;
@@ -131,29 +142,23 @@ Dispatcher::~Dispatcher() noexcept {
 }
 
 Dispatcher::Registration Dispatcher::Register(
-    const UdpSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
+    PacketCaptureSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
-        GetLogger().Error("Cannot register packet callback: socket is invalid");
+        GetLogger().Error("Cannot register packet callback: capture socket is invalid");
         return Registration{};
     }
-    return Register(socket.Fd(), filter, callback);
-}
-
-Dispatcher::Registration Dispatcher::Register(
-    int fd, const PacketFilter& filter, const PacketCallback& callback) {
-    if (fd < 0) {
-        GetLogger().Error("Cannot register packet callback: fd {} is invalid", fd);
-        return Registration{};
-    }
-    if (!AddReadEvent(fd)) {
+    const auto fd = socket.Fd();
+    if (!AddReadEvent(socket)) {
         GetLogger().Error("Cannot register packet callback: read event registration failed for fd {}", fd);
         return Registration{};
     }
 
+    // Must append (never insert in the middle) so registrations_ stays sorted by id —
+    // DispatchPacket's merge walk depends on it.
     const auto id = next_registration_id_++;
     registrations_.push_back(RegistrationEntry{
         .id = id,
-        .fd = fd,
+        .socket = &socket,
         .filter = filter,
         .callback = callback,
     });
@@ -170,20 +175,20 @@ bool Dispatcher::Unregister(RegistrationId id) noexcept {
         return false;
     }
 
-    const auto fd = it->fd;
+    const auto* socket = it->socket;
     registrations_.erase(it);
 
-    const auto fd_still_used = std::ranges::any_of(registrations_, [fd](const auto& r) {
-        return r.fd == fd;
+    const auto socket_still_used = std::ranges::any_of(registrations_, [socket](const auto& r) {
+        return r.socket == socket;
     });
-    if (fd >= 0 && !fd_still_used) {
-        if (!RemoveReadEvent(fd)) {
-            GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", fd, id);
+    if (!socket_still_used) {
+        if (!RemoveReadEvent(*socket)) {
+            GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", socket->Fd(), id);
         }
-        // The caller may now close the fd; invalidate active_fd_ so DrainReadableFd stops
-        // before recvfrom on a possibly-reused descriptor.
-        if (active_fd_ == fd) {
-            active_fd_ = -1;
+        // Tell DrainReadableFd to stop before its next Receive() — the socket no longer
+        // has any registered consumers.
+        if (active_socket_ == socket) {
+            active_socket_ = nullptr;
         }
     }
 
@@ -225,7 +230,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
         return false;
     }
 
-    const auto fd = static_cast<int>(event.ident);
+    auto* socket = static_cast<PacketCaptureSocket*>(event.udata);
 #elif defined(__linux__)
     epoll_event event{};
     const auto event_count = epoll_wait(event_fd_, &event, 1, static_cast<int>(timeout.count()));
@@ -240,26 +245,27 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count == 0) {
         return false;
     }
-    const auto fd = event.data.fd;
+    auto* socket = static_cast<PacketCaptureSocket*>(event.data.ptr);
     const auto events = event.events;
     if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
-        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
+        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", socket->Fd(), events);
         return false;
     }
 #endif
 
-    return DrainReadableFd(fd);
+    return DrainReadableFd(*socket);
 }
 
-bool Dispatcher::AddReadEvent(int fd) noexcept {
-    if (event_fd_ < 0 || fd < 0) {
-        GetLogger().Error("Cannot add read event: event queue or fd is invalid");
+bool Dispatcher::AddReadEvent(PacketCaptureSocket& socket) noexcept {
+    const auto fd = socket.Fd();
+    if (event_fd_ < 0) {
+        GetLogger().Error("Cannot add read event for fd {}: event queue is invalid", fd);
         return false;
     }
 
 #if defined(__APPLE__)
     struct kevent change{};
-    EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+    EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, &socket);
     if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
         GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
         return false;
@@ -267,7 +273,7 @@ bool Dispatcher::AddReadEvent(int fd) noexcept {
 #elif defined(__linux__)
     epoll_event event{};
     event.events = EPOLLIN;
-    event.data.fd = fd;
+    event.data.ptr = &socket;
     if (epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0) {
         if (errno == EEXIST) {
             GetLogger().Debug("Read event already registered for fd {}", fd);
@@ -282,7 +288,8 @@ bool Dispatcher::AddReadEvent(int fd) noexcept {
     return true;
 }
 
-bool Dispatcher::RemoveReadEvent(int fd) noexcept {
+bool Dispatcher::RemoveReadEvent(const PacketCaptureSocket& socket) noexcept {
+    const auto fd = socket.Fd();
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
         return false;
@@ -306,92 +313,74 @@ bool Dispatcher::RemoveReadEvent(int fd) noexcept {
     return true;
 }
 
-bool Dispatcher::DrainReadableFd(int fd) noexcept {
-    active_fd_ = fd;
+bool Dispatcher::DrainReadableFd(PacketCaptureSocket& socket) noexcept {
+    active_socket_ = &socket;
     bool dispatched_any = false;
+
+#if defined(__APPLE__)
+    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
+#elif defined(__linux__)
     for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
-        const auto packet = Receive(fd);
+#endif
+        const auto packet = socket.Receive();
         if (!packet) {
+#if defined(__APPLE__)
+            if (socket.HasBufferedData()) {
+                // Drain all userland-buffered frames. kqueue/epoll only fire on kernel-side
+                // activity, so if we leave frames buffered they'll stall. Only macOS BPF
+                // buffers in userland; HasBufferedData is not defined on Linux.
+                continue;
+            }
+#endif
             break;
         }
 
-        DispatchPacket(fd, *packet);
+        DispatchPacket(socket, *packet);
         dispatched_any = true;
 
-        if (active_fd_ != fd) {
-            // A callback unregistered the last user of this fd; the descriptor may already
-            // belong to a new socket. Stop draining before recvfrom hits it.
+        if (active_socket_ != &socket) {
+            // A callback dropped the last registration for this socket; nothing wants
+            // its frames anymore. Discard any userland-buffered frames so they don't
+            // stall (kqueue won't refire on data that's already in our buffer).
+#if defined(__APPLE__)
+            socket.ClearBuffer();
+#endif
             break;
         }
     }
 
-    active_fd_ = -1;
+    active_socket_ = nullptr;
     return dispatched_any;
 }
 
-std::optional<Packet> Dispatcher::Receive(int fd) noexcept {
-    sockaddr_storage source_address{};
-    socklen_t source_address_size = sizeof(source_address);
-    // EINTR before recvfrom consumes the datagram leaves it queued — retry, don't drop.
-    ssize_t bytes_received;
-    do {
-        bytes_received = recvfrom(fd,
-            receive_buffer_.data(),
-            receive_buffer_.size(),
-            0,
-            reinterpret_cast<sockaddr*>(&source_address),
-            &source_address_size);
-    } while (bytes_received < 0 && errno == EINTR);
-    if (bytes_received < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return std::nullopt;
+void Dispatcher::DispatchPacket(const PacketCaptureSocket& socket, const Packet& packet) const {
+    // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
+    // elements, so after each dispatch we check that our slot still holds the entry we
+    // just fired; if it doesn't, we restart from the front and let last_dispatched_id
+    // skip anything we already handled. registrations_ is sorted by id (Register
+    // appends with a monotonically increasing id, Unregister preserves order), so the
+    // id filter is both necessary and sufficient to avoid duplicate dispatch.
+    //
+    // Side effect to be aware of: a callback that calls Register creates a new entry
+    // with a higher id, which this loop will reach and dispatch for the current packet.
+    RegistrationId last_dispatched_id = 0;
+    for (size_t idx = 0; idx < registrations_.size();) {
+        auto& entry = registrations_[idx];
+        if (entry.id > last_dispatched_id
+            && entry.socket == &socket
+            && Matches(entry.filter, packet)) {
+            last_dispatched_id = entry.id;
+            entry.callback(packet);
+
+            // If a callback shifted entries before us, our slot now holds a different id
+            // (or is past the end). Restart from the front; the last_dispatched_id filter
+            // above skips anything we already dispatched.
+            if (idx >= registrations_.size() || registrations_[idx].id != last_dispatched_id) {
+                idx = 0;
+                continue;
+            }
         }
-
-        GetLogger().Error("Cannot receive packet from fd {}: {}", fd, Error::FromErrno());
-        return std::nullopt;
-    }
-
-    const auto* source = reinterpret_cast<const sockaddr*>(&source_address);
-    const auto source_ip = IpAddress::FromSockaddr(source);
-    if (!source_ip) {
-        GetLogger().Error("Cannot receive packet from fd {}: unsupported source address family", fd);
-        return std::nullopt;
-    }
-
-    uint16_t source_port = 0;
-    if (source->sa_family == AF_INET) {
-        source_port = ntohs(reinterpret_cast<const sockaddr_in*>(source)->sin_port);
-    } else if (source->sa_family == AF_INET6) {
-        source_port = ntohs(reinterpret_cast<const sockaddr_in6*>(source)->sin6_port);
-    }
-
-    Packet packet{
-        .header = PacketHeader{
-            .source_ip = *source_ip,
-            .source_port = source_port,
-        },
-        .payload = std::span<const std::byte>{receive_buffer_.data(), static_cast<size_t>(bytes_received)},
-    };
-    GetLogger().Debug("Received {} bytes from {}:{}", bytes_received, packet.header.source_ip, packet.header.source_port);
-    return packet;
-}
-
-void Dispatcher::DispatchPacket(int fd, const Packet& packet) const {
-    // Snapshot IDs first: a callback may call Unregister, which modifies registrations_.
-    std::vector<RegistrationId> registration_ids;
-    for (const auto& registration : registrations_) {
-        if (registration.fd == fd && Matches(registration.filter, packet)) {
-            registration_ids.push_back(registration.id);
-        }
-    }
-
-    for (const auto registration_id : registration_ids) {
-        const auto it = std::ranges::find_if(registrations_, [registration_id](const auto& registration) {
-            return registration.id == registration_id;
-        });
-        if (it != registrations_.end()) {
-            it->callback(packet);
-        }
+        ++idx;
     }
 }
 

@@ -55,6 +55,18 @@ IpAddress IpAddress::FromV4Bytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) noe
     return IpAddress{Family::V4, bytes};
 }
 
+IpAddress IpAddress::FromV4Bytes(std::span<const std::byte, 4> bytes) noexcept {
+    ByteArray padded{};
+    std::memcpy(padded.data(), bytes.data(), bytes.size());
+    return IpAddress{Family::V4, padded};
+}
+
+IpAddress IpAddress::FromV6Bytes(std::span<const std::byte, 16> bytes) noexcept {
+    ByteArray copy{};
+    std::memcpy(copy.data(), bytes.data(), bytes.size());
+    return IpAddress{Family::V6, copy};
+}
+
 std::optional<IpAddress> IpAddress::FromString(const std::string& address) {
     in_addr v4{};
     if (inet_pton(AF_INET, address.c_str(), &v4) == 1) {

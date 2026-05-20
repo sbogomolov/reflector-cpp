@@ -14,39 +14,6 @@ Logger& GetLogger() noexcept {
     return logger;
 }
 
-IpAddress AnyAddressFor(IpAddress::Family family) noexcept {
-    return family == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4();
-}
-
-bool SetUpSocket(UdpSocket& socket, const std::string& interface, IpAddress local_ip, uint16_t port) {
-    if (!socket.IsValid()) {
-        GetLogger().Warning("Cannot create UDP socket on interface \"{}\": socket setup failed", interface);
-        return false;
-    }
-    if (!interface.empty() && !socket.SetInterface(interface)) {
-        GetLogger().Error("Cannot create UDP socket on interface \"{}\"", interface);
-        socket.Close();
-        return false;
-    }
-    if (local_ip.IsV6() && !socket.SetV6Only(true)) {
-        GetLogger().Error("Cannot create UDP socket on interface \"{}\": IPV6_V6ONLY setup failed", interface);
-        socket.Close();
-        return false;
-    }
-    if (!socket.SetReuseAddr(true)) {
-        GetLogger().Error("Cannot create UDP socket on interface \"{}\": SO_REUSEADDR setup failed", interface);
-        socket.Close();
-        return false;
-    }
-    if (!socket.Bind(local_ip, port)) {
-        GetLogger().Error("Cannot create UDP socket on interface \"{}\" bound to {}:{}",
-            interface, local_ip, port);
-        socket.Close();
-        return false;
-    }
-    return true;
-}
-
 } // namespace
 
 struct WolListener::RegistrationEntry {
@@ -94,93 +61,39 @@ bool WolListener::Registration::Reset() noexcept {
     return registration->listener->Unregister(registration);
 }
 
-WolListener::WolListener(Dispatcher& dispatcher, std::string_view interface, IpAddress::Family family)
-        : dispatcher_{&dispatcher}, interface_{interface}, family_{family} {}
+WolListener::WolListener(Dispatcher& dispatcher, PacketCaptureSocket& capture)
+        : dispatcher_{&dispatcher}, capture_{&capture} {}
 
 WolListener::~WolListener() noexcept {
     if (!registrations_.empty()) {
         GetLogger().Error("Destroying wol listener on interface \"{}\" with {} callback registration(s) still active",
-            interface_, registrations_.size());
+            capture_->Interface(), registrations_.size());
     }
     while (!registrations_.empty()) {
         Unregister(registrations_.back());
-    }
-
-    if (!listeners_.empty()) {
-        GetLogger().Error("Destroying wol listener on interface \"{}\" with {} UDP socket(s) still active",
-            interface_, listeners_.size());
     }
 }
 
 WolListener::Registration WolListener::Register(uint16_t port, const PacketCallback& callback) {
     if (port == 0) {
-        GetLogger().Error("Cannot register wol callback on interface \"{}\": port 0 is invalid", interface_);
+        GetLogger().Error("Cannot register wol callback on interface \"{}\": port 0 is invalid", capture_->Interface());
         return Registration{};
     }
 
-    const auto fd = AcquirePort(port);
-    if (fd < 0) {
-        GetLogger().Error("Cannot register wol callback on interface \"{}\": socket setup failed for port {}",
-            interface_, port);
-        return Registration{};
-    }
-
-    auto dispatcher_reg = dispatcher_->Register(fd, PacketFilter{}, callback);
+    PacketFilter filter{.dest_port = port};
+    auto dispatcher_reg = dispatcher_->Register(*capture_, filter, callback);
     if (!dispatcher_reg.IsValid()) {
         GetLogger().Error("Cannot register wol callback on interface \"{}\" port {}: dispatcher registration failed",
-            interface_, port);
-        ReleasePort(port);
+            capture_->Interface(), port);
         return Registration{};
     }
 
-    GetLogger().Debug("Registered wol callback on interface \"{}\" port {}", interface_, port);
+    GetLogger().Debug("Registered wol callback on interface \"{}\" port {}", capture_->Interface(), port);
     auto registration_entry = SharedPtrUnsynchronized<RegistrationEntry>{
         new RegistrationEntry{*this, std::move(dispatcher_reg), port}};
     Registration registration{registration_entry};
     registrations_.push_back(std::move(registration_entry));
     return registration;
-}
-
-int WolListener::AcquirePort(uint16_t port) {
-    const auto it = std::ranges::find_if(listeners_, [port](const auto& entry) {
-        return entry.port == port;
-    });
-    if (it != listeners_.end()) {
-        ++it->refcount;
-        return it->socket.Fd();
-    }
-
-    const auto local_ip = AnyAddressFor(family_);
-    UdpSocket socket{family_};
-    if (!SetUpSocket(socket, interface_, local_ip, port)) {
-        GetLogger().Error("Cannot create UDP socket on interface \"{}\" port {}", interface_, port);
-        return -1;
-    }
-
-    listeners_.push_back(PortListener{
-        .socket = std::move(socket),
-        .refcount = 1,
-        .port = port,
-    });
-    GetLogger().Debug("Created UDP socket on interface \"{}\" port {}", interface_, port);
-    return listeners_.back().socket.Fd();
-}
-
-void WolListener::ReleasePort(uint16_t port) noexcept {
-    const auto it = std::ranges::find_if(listeners_, [port](const auto& entry) {
-        return entry.port == port;
-    });
-    if (it == listeners_.end()) {
-        GetLogger().Warning("Cannot release UDP socket on interface \"{}\" port {}: not found", interface_, port);
-        return;
-    }
-
-    if (--it->refcount > 0) {
-        return;
-    }
-
-    GetLogger().Debug("Removing UDP socket on interface \"{}\" port {}", interface_, port);
-    listeners_.erase(it);
 }
 
 bool WolListener::Unregister(SharedPtrUnsynchronized<RegistrationEntry> registration) noexcept {
@@ -191,18 +104,15 @@ bool WolListener::Unregister(SharedPtrUnsynchronized<RegistrationEntry> registra
     const auto it = std::ranges::find(registrations_, registration);
     if (it == registrations_.end()) {
         GetLogger().Warning("Cannot unregister wol callback on interface \"{}\" port {}: not found",
-            interface_, registration->port);
+            capture_->Interface(), registration->port);
         return false;
     }
 
     // Pass-by-value above keeps the entry alive through the erase below — callers (e.g.
     // ~WolListener) typically hand us a SharedPtr stored *in* registrations_, and erasing
     // it would otherwise drop the last strong ref and free the entry under our feet.
-    // Tear down the dispatcher registration before releasing the port: the last release may
-    // destroy the underlying socket, and the dispatcher must not still hold its fd.
     registration->dispatcher_reg.Reset();
     registrations_.erase(it);
-    ReleasePort(registration->port);
     return true;
 }
 

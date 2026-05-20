@@ -1,17 +1,15 @@
 #pragma once
 
 #include "packet.h"
-#include "udp_socket.h"
+#include "packet_capture_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
 #include "util/shared_ptr_unsynchronized.h"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <csignal>
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 namespace reflector {
@@ -47,8 +45,11 @@ public:
     Dispatcher();
     ~Dispatcher() noexcept;
 
-    [[nodiscard]] Registration Register(const UdpSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
-    [[nodiscard]] Registration Register(int fd, const PacketFilter& filter, const PacketCallback& callback);
+    // The socket must outlive every registration returned for it and the dispatcher
+    // itself: the dispatcher keeps a raw pointer to it (in registration entries and in the
+    // kernel event queue's udata) and dereferences it on Unregister and on every poll.
+    // Destroying a socket while a registration for it is still live is undefined behavior.
+    [[nodiscard]] Registration Register(PacketCaptureSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
     bool PollOnce(std::chrono::milliseconds timeout);
@@ -60,37 +61,33 @@ private:
     friend class WolReflectorTest;
     friend class WolReflectorPerFamilyTest;
 
-    // Large enough for the maximum normal IPv4/IPv6 UDP payload. UDP datagrams can
-    // exceed link MTU via IP fragmentation, and recvfrom returns the reassembled payload.
-    // IPv6 jumbograms are not supported and would be truncated.
-    static constexpr size_t RECEIVE_BUFFER_SIZE = 64 * 1024;
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
     struct RegistrationEntry {
         RegistrationId id;
-        int fd;
+        PacketCaptureSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
     };
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
-    [[nodiscard]] bool AddReadEvent(int fd) noexcept;
-    [[nodiscard]] bool RemoveReadEvent(int fd) noexcept;
-    [[nodiscard]] bool DrainReadableFd(int fd) noexcept;
+    [[nodiscard]] bool AddReadEvent(PacketCaptureSocket& socket) noexcept;
+    [[nodiscard]] bool RemoveReadEvent(const PacketCaptureSocket& socket) noexcept;
+    [[nodiscard]] bool DrainReadableFd(PacketCaptureSocket& socket) noexcept;
     bool Unregister(RegistrationId id) noexcept;
-    [[nodiscard]] std::optional<Packet> Receive(int fd) noexcept;
-    void DispatchPacket(int fd, const Packet& packet) const;
+    void DispatchPacket(const PacketCaptureSocket& socket, const Packet& packet) const;
 
+    // Kept sorted by id: Register appends with a monotonically increasing id and
+    // Unregister erases in place. DispatchPacket relies on this for its merge walk;
+    // any insertion that breaks the order would silently corrupt dispatch.
     std::vector<RegistrationEntry> registrations_;
-    // Reused across calls; Packet::payload spans into this and is only valid during dispatch.
-    std::array<std::byte, RECEIVE_BUFFER_SIZE> receive_buffer_{};
     SharedPtrUnsynchronized<DispatcherState> dispatcher_state_;
     RegistrationId next_registration_id_ = 1;
     int event_fd_ = -1;
-    // fd currently being drained; cleared when the last registration for it is unregistered, so
-    // DrainReadableFd can bail before recvfrom on a possibly-reused descriptor.
-    int active_fd_ = -1;
+    // Socket currently being drained; cleared when its last registration is dropped, so
+    // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
+    const PacketCaptureSocket* active_socket_ = nullptr;
 };
 
 } // namespace reflector

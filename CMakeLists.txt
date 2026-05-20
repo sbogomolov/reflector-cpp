@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.20)
-project(reflector VERSION 0.1.5 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.22)
+project(reflector VERSION 0.2.0 LANGUAGES CXX)
 include(CTest)
 
 if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
@@ -61,6 +61,11 @@ function(reflector_configure_project_target target)
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
     )
+    # TODO: enable a curated set of additional warnings as a separate change:
+    # -Wshadow, -Wnon-virtual-dtor, -Wold-style-cast, -Wzero-as-null-pointer-constant,
+    # -Wnull-dereference, plus GCC: -Wcast-align=strict, -Wsuggest-override,
+    # -Wduplicated-cond, -Wduplicated-branches, -Wlogical-op; and Clang: -Wcast-align,
+    # -Winconsistent-missing-override. Each one requires touching call sites.
     target_compile_options(${target} PRIVATE
         -Werror
         -Wall

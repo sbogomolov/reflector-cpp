@@ -1,10 +1,12 @@
 #pragma once
 
 #include "reflector/dispatcher.h"
+#include "reflector/ip_address.h"
 #include "reflector/logger.h"
+#include "reflector/mac_address.h"
 #include "reflector/packet.h"
+#include "reflector/packet_capture_socket.h"
 #include "reflector/udp_socket.h"
-#include "reflector/util/delegate.h"
 
 #include <gtest/gtest.h>
 
@@ -14,12 +16,22 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
+#include <initializer_list>
 #include <netinet/in.h>
 #include <optional>
+#include <poll.h>
+#include <span>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
+
+#if defined(__APPLE__)
+#include <net/bpf.h>
+#endif
 
 namespace reflector {
 
@@ -63,11 +75,31 @@ struct PacketRecorder {
     std::optional<IpAddress> source_ip;
 };
 
-inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1), uint16_t source_port = 12345) {
+// Counts packets and, on each dispatch, resets the registration pointed at by
+// `registration_to_reset` (if any). Used to exercise the dispatcher's behaviour when a
+// callback drops its own (or another) registration mid-dispatch. `reset_result` captures
+// the return value of Reset() so callers can assert on it.
+struct UnregisteringPacketCounter {
+    void OnPacket(const Packet&) {
+        ++count;
+        if (registration_to_reset != nullptr && registration_to_reset->IsValid()) {
+            reset_result = registration_to_reset->Reset();
+        }
+    }
+
+    Dispatcher::Registration* registration_to_reset = nullptr;
+    bool reset_result = false;
+    int count = 0;
+};
+
+inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1),
+    uint16_t source_port = 12345, uint16_t dest_port = 9) {
     return Packet{
         .header = PacketHeader{
             .source_ip = source_ip,
+            .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
             .source_port = source_port,
+            .dest_port = dest_port,
         },
         .payload = {},
     };
@@ -119,22 +151,254 @@ inline uint16_t FreeLoopbackPort(IpAddress::Family family) {
     return ports.front();
 }
 
+// Loopback interface name varies by OS; "lo" on Linux, "lo0" on macOS.
+inline std::string_view LoopbackInterface() noexcept {
+#if defined(__APPLE__)
+    return "lo0";
+#else
+    return "lo";
+#endif
+}
+
+// Opens a real PacketCaptureSocket on the loopback interface to probe whether the running
+// user has the privileges needed (CAP_NET_RAW on Linux, bpf-group / root on macOS). Tests
+// that need real capture call this in SetUp and GTEST_SKIP if it returns false. Cached:
+// the probe is destructive enough (open + close) that we only want to pay it once per run.
+inline bool HasPacketCapturePrivileges() {
+    static const bool cached = [] {
+        bool valid = false;
+        (void)CaptureStdout([&] {
+            PacketCaptureSocket probe{LoopbackInterface()};
+            valid = probe.IsValid();
+        });
+        return valid;
+    }();
+    return cached;
+}
+
+// Protocol constants used by the frame helpers below. Kept here so any test that builds
+// or inspects raw Ethernet frames has a single source of truth.
+constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
+constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
+constexpr uint16_t ARP_ETHERTYPE = 0x0806;
+constexpr uint8_t IP_PROTO_UDP = 17;
+constexpr uint8_t IPV6_NEXT_HOPOPT = 0;
+
+inline void AppendBytes(std::vector<std::byte>& out, std::span<const std::byte> bytes) {
+    out.insert(out.end(), bytes.begin(), bytes.end());
+}
+
+inline void AppendU16Be(std::vector<std::byte>& out, uint16_t value) {
+    out.push_back(static_cast<std::byte>((value >> 8) & 0xff));
+    out.push_back(static_cast<std::byte>(value & 0xff));
+}
+
+inline void AppendIpv4(std::vector<std::byte>& out, const IpAddress& ip) {
+    AppendBytes(out, std::span{ip.Bytes().data(), 4});
+}
+
+inline void AppendIpv6(std::vector<std::byte>& out, const IpAddress& ip) {
+    AppendBytes(out, ip.Bytes());
+}
+
+inline void AppendMac(std::vector<std::byte>& out, const MacAddress& mac) {
+    AppendBytes(out, mac.Bytes());
+}
+
+inline std::vector<std::byte> MakeBytes(std::initializer_list<unsigned> values) {
+    std::vector<std::byte> bytes;
+    bytes.reserve(values.size());
+    for (const auto value : values) {
+        bytes.push_back(static_cast<std::byte>(value & 0xff));
+    }
+    return bytes;
+}
+
+// Builds an Ethernet/IPv4/IPv6 + UDP frame byte-by-byte for tests that need to drive
+// the PacketCaptureSocket parser end-to-end (either via the friend ParseFrame hook in
+// PacketCaptureSocketTest, or via TestCaptureSocket::WriteFrame for full PollOnce flow).
+struct FrameBuilder {
+    std::vector<std::byte> bytes;
+
+    void AppendEthernet(const MacAddress& dst, const MacAddress& src, uint16_t ethertype) {
+        AppendMac(bytes, dst);
+        AppendMac(bytes, src);
+        AppendU16Be(bytes, ethertype);
+    }
+
+    void AppendLoopback(uint32_t family) {
+        std::byte buf[4];
+        std::memcpy(buf, &family, sizeof(family));
+        AppendBytes(bytes, std::span{buf, 4});
+    }
+
+    void AppendIPv4Header(const IpAddress& src, const IpAddress& dst, uint8_t protocol,
+        uint16_t total_length, uint16_t flags_fragment = 0, uint8_t ihl_words = 5) {
+        bytes.push_back(static_cast<std::byte>((4u << 4) | (ihl_words & 0x0f))); // version+IHL
+        bytes.push_back(std::byte{0x00});                                         // DSCP/ECN
+        AppendU16Be(bytes, total_length);                                         // total length
+        AppendU16Be(bytes, 0);                                                    // identification
+        AppendU16Be(bytes, flags_fragment);                                       // flags + fragment offset
+        bytes.push_back(std::byte{64});                                           // TTL
+        bytes.push_back(static_cast<std::byte>(protocol));                        // protocol
+        AppendU16Be(bytes, 0);                                                    // header checksum (ignored)
+        AppendIpv4(bytes, src);
+        AppendIpv4(bytes, dst);
+        // Pad to ihl_words * 4 bytes if requested IHL is larger than the minimum 20.
+        const size_t want = static_cast<size_t>(ihl_words) * 4;
+        const size_t have = 20;
+        if (want > have) {
+            bytes.insert(bytes.end(), want - have, std::byte{0});
+        }
+    }
+
+    void AppendIPv6Header(const IpAddress& src, const IpAddress& dst, uint8_t next_header,
+        uint16_t payload_length, uint8_t version = 6) {
+        bytes.push_back(static_cast<std::byte>(version << 4));                    // version + traffic class hi
+        bytes.push_back(std::byte{0x00});                                         // traffic class lo + flow hi
+        AppendU16Be(bytes, 0);                                                    // flow lo
+        AppendU16Be(bytes, payload_length);                                       // payload length
+        bytes.push_back(static_cast<std::byte>(next_header));                     // next header
+        bytes.push_back(std::byte{64});                                           // hop limit
+        AppendIpv6(bytes, src);
+        AppendIpv6(bytes, dst);
+    }
+
+    void AppendUdp(uint16_t src_port, uint16_t dst_port, uint16_t udp_length) {
+        AppendU16Be(bytes, src_port);
+        AppendU16Be(bytes, dst_port);
+        AppendU16Be(bytes, udp_length);
+        AppendU16Be(bytes, 0); // checksum (ignored)
+    }
+
+    void AppendPayload(std::span<const std::byte> payload) {
+        AppendBytes(bytes, payload);
+    }
+};
+
+// Wraps a SOCK_DGRAM socketpair into a PacketCaptureSocket-shaped object so tests can
+// either: (a) register against the dispatcher and synthesize Packets via the friend
+// DispatchPacket hook, or (b) write real Ethernet frame bytes through WriteFrame and let
+// the production Receive/ParseFrame path consume them end-to-end. SOCK_DGRAM (rather than
+// pipe()) preserves message boundaries — Linux's AF_PACKET delivers one frame per recv,
+// and the socketpair mimics that. The read end is non-blocking to match production.
+struct TestCaptureSocket {
+    int write_fd = -1;
+    PacketCaptureSocket socket;
+
+    explicit TestCaptureSocket(std::string_view interface = "test") : socket{MakeSocket(interface)} {}
+
+    TestCaptureSocket(const TestCaptureSocket&) = delete;
+    TestCaptureSocket& operator=(const TestCaptureSocket&) = delete;
+
+    ~TestCaptureSocket() {
+        if (write_fd >= 0) {
+            ::close(write_fd);
+        }
+    }
+
+    // Sends one Ethernet frame to the capture socket in the format the production Receive
+    // expects. Linux: raw bytes (AF_PACKET delivers one frame per recv). macOS: prepend a
+    // synthesized bpf_hdr and BPF_WORDALIGN-pad so Receive's bpf_hdr walker consumes one
+    // record per call.
+    bool WriteFrame(std::span<const std::byte> frame) {
+        return WriteRaw(EncodeFrame(frame));
+    }
+
+#if defined(__APPLE__)
+    // Packs multiple frames into a single BPF batch so one read() returns all of them and
+    // Receive's batch walker steps through them on successive calls. macOS-only because
+    // Linux's AF_PACKET preserves message boundaries — a Linux multi-frame "batch" would
+    // need separate datagrams, which is just multiple WriteFrame calls.
+    bool WriteFrameBatch(std::span<const std::span<const std::byte>> frames) {
+        std::vector<std::byte> batch;
+        for (const auto& frame : frames) {
+            const auto encoded = EncodeFrame(frame);
+            AppendBytes(batch, encoded);
+        }
+        return WriteRaw(batch);
+    }
+#endif
+
+private:
+    PacketCaptureSocket MakeSocket(std::string_view interface) {
+        int fds[2];
+        if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) {
+            ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
+            return PacketCaptureSocket::ForTesting(interface, -1);
+        }
+        if (::fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) {
+            ADD_FAILURE() << "fcntl(O_NONBLOCK) failed: " << std::strerror(errno);
+            ::close(fds[0]);
+            ::close(fds[1]);
+            return PacketCaptureSocket::ForTesting(interface, -1);
+        }
+        write_fd = fds[1];
+        return PacketCaptureSocket::ForTesting(interface, fds[0]);
+    }
+
+    static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {
+#if defined(__APPLE__)
+        bpf_hdr header{};
+        header.bh_hdrlen = static_cast<u_short>(BPF_WORDALIGN(sizeof(bpf_hdr)));
+        header.bh_caplen = static_cast<bpf_u_int32>(frame.size());
+        header.bh_datalen = header.bh_caplen;
+        const auto record_size = BPF_WORDALIGN(header.bh_hdrlen + frame.size());
+        std::vector<std::byte> buffer(record_size, std::byte{0});
+        std::memcpy(buffer.data(), &header, sizeof(header));
+        std::memcpy(buffer.data() + header.bh_hdrlen, frame.data(), frame.size());
+        return buffer;
+#else
+        return std::vector<std::byte>{frame.begin(), frame.end()};
+#endif
+    }
+
+    bool WriteRaw(std::span<const std::byte> bytes) {
+        if (write_fd < 0) {
+            return false;
+        }
+        const auto n = ::write(write_fd, bytes.data(), bytes.size());
+        return n == static_cast<ssize_t>(bytes.size());
+    }
+};
+
 struct LoopbackReceiver {
-    Dispatcher dispatcher;
     UdpSocket socket;
     PacketRecorder recorder;
-    Dispatcher::Registration registration;
 
-    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family)
-            : socket{family} {
+    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family) : socket{family} {
         BindLoopback(socket, port);
-        registration = dispatcher.Register(
-            socket, PacketFilter{}, CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
-        EXPECT_TRUE(registration.IsValid());
     }
 
     [[nodiscard]] uint16_t Port() const { return BoundPort(socket); }
-    bool PollOnce(std::chrono::milliseconds timeout) { return dispatcher.PollOnce(timeout); }
+
+    // Polls the socket for one datagram and records it. Returns true if a packet arrived.
+    bool PollOnce(std::chrono::milliseconds timeout) {
+        pollfd pfd{.fd = socket.Fd(), .events = POLLIN, .revents = 0};
+        const auto ready = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+        if (ready <= 0) {
+            return false;
+        }
+
+        std::vector<std::byte> buffer(64 * 1024);
+        sockaddr_storage source{};
+        socklen_t source_size = sizeof(source);
+        const auto bytes = ::recvfrom(socket.Fd(), buffer.data(), buffer.size(), 0,
+            reinterpret_cast<sockaddr*>(&source), &source_size);
+        if (bytes <= 0) {
+            return false;
+        }
+        const auto source_ip = IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&source));
+        Packet packet{
+            .header = PacketHeader{
+                .source_ip = source_ip.value_or(LoopbackFor(socket.AddressFamily())),
+                .dest_ip = LoopbackFor(socket.AddressFamily()),
+            },
+            .payload = std::span<const std::byte>{buffer.data(), static_cast<size_t>(bytes)},
+        };
+        recorder.OnPacket(packet);
+        return true;
+    }
 };
 
 } // namespace reflector

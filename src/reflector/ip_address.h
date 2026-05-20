@@ -7,6 +7,7 @@
 #include <functional>
 #include <iosfwd>
 #include <optional>
+#include <span>
 #include <string>
 #include <sys/socket.h>
 
@@ -26,6 +27,8 @@ public:
     [[nodiscard]] static IpAddress LoopbackV4() noexcept;           // 127.0.0.1
     [[nodiscard]] static IpAddress LoopbackV6() noexcept;           // ::1
     [[nodiscard]] static IpAddress FromV4Bytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) noexcept;
+    [[nodiscard]] static IpAddress FromV4Bytes(std::span<const std::byte, 4> bytes) noexcept;
+    [[nodiscard]] static IpAddress FromV6Bytes(std::span<const std::byte, 16> bytes) noexcept;
     [[nodiscard]] static std::optional<IpAddress> FromString(const std::string& address);
     [[nodiscard]] static std::optional<IpAddress> FromSockaddr(const sockaddr* address) noexcept;
 
