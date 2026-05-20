@@ -11,10 +11,6 @@
 
 namespace reflector {
 
-// TODO: consider not eagerly parsing the packet header. Store the raw frame as a span
-// and provide getters that lazily extract IPs/ports/MACs on demand. Saves parsing work
-// when callbacks read only a subset of fields, and lets future code reach into the L2/L3
-// header bytes directly if needed.
 struct PacketHeader {
     IpAddress source_ip;
     IpAddress dest_ip;
