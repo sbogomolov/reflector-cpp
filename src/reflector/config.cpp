@@ -25,7 +25,9 @@ std::string_view ToStringView(const toml::key& key) {
 std::expected<std::string_view, Error> ReadStringField(const toml::node& field_node, std::string_view field_name) {
     const auto field_value = field_node.value<std::string_view>();
     if (!field_value.has_value()) {
-        return std::unexpected(Error{"wol {} is not configured", field_name});
+        // The key is present (we only reach here while iterating existing keys); it just
+        // isn't a string. Absent required fields are caught later by WolConfig::Verify.
+        return std::unexpected(Error{"wol {} must be a string", field_name});
     }
     return *field_value;
 }
