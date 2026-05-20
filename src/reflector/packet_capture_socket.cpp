@@ -173,6 +173,17 @@ uint16_t ReadU16Be(std::span<const std::byte, 2> bytes) noexcept {
         | static_cast<uint16_t>(std::to_integer<uint8_t>(bytes[1])));
 }
 
+// EAGAIN and EWOULDBLOCK may differ per POSIX but are identical on both platforms we
+// support; the guard drops the redundant comparison so GCC's -Wlogical-op stays quiet,
+// while remaining correct should a platform ever define them distinctly.
+constexpr bool IsWouldBlockErrno(int err) noexcept {
+#if EAGAIN == EWOULDBLOCK
+    return err == EAGAIN;
+#else
+    return err == EAGAIN || err == EWOULDBLOCK;
+#endif
+}
+
 } // namespace
 
 PacketCaptureSocket::PacketCaptureSocket(std::string_view interface)
@@ -366,7 +377,7 @@ std::optional<Packet> PacketCaptureSocket::Receive() noexcept {
         bytes = recv(fd_, receive_buffer_.data(), receive_buffer_.size(), 0);
     } while (bytes < 0 && errno == EINTR);
     if (bytes < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (IsWouldBlockErrno(errno)) {
             return std::nullopt;
         }
         logger_.Error("Cannot receive frame: {}", Error::FromErrno());
@@ -381,7 +392,7 @@ std::optional<Packet> PacketCaptureSocket::Receive() noexcept {
             bytes = read(fd_, receive_buffer_.data(), receive_buffer_.size());
         } while (bytes < 0 && errno == EINTR);
         if (bytes < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (IsWouldBlockErrno(errno)) {
                 return std::nullopt;
             }
             logger_.Error("Cannot receive frame: {}", Error::FromErrno());

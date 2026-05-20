@@ -59,11 +59,11 @@ TEST(DelegateTest, InstanceMethods) {
     DelegateTestClass test;
 
     auto delegate = CreateDelegate<&DelegateTestClass::Method>(&test);
-    EXPECT_EQ(delegate(1, 2.3), 1);
+    EXPECT_EQ(delegate(1, 2.3f), 1);
 
     auto delegate_no_ret = CreateDelegate<&DelegateTestClass::MethodNoReturn>(&test);
     int ret;
-    delegate_no_ret(ret, 2.3);
+    delegate_no_ret(ret, 2.3f);
     EXPECT_EQ(ret, 2);
 
     auto delegate_no_args = CreateDelegate<&DelegateTestClass::MethodNoArgs>(&test);
@@ -101,11 +101,11 @@ TEST(DelegateTest, NoexceptMethods) {
 
 TEST(DelegateTest, StaticMethods) {
     auto static_delegate = CreateDelegate<&DelegateTestClass::StaticMethod>();
-    EXPECT_EQ(static_delegate(1, 2.3), 11);
+    EXPECT_EQ(static_delegate(1, 2.3f), 11);
 
     auto static_delegate_no_ret = CreateDelegate<&DelegateTestClass::StaticMethodNoReturn>();
     int ret;
-    static_delegate_no_ret(ret, 2.3);
+    static_delegate_no_ret(ret, 2.3f);
     EXPECT_EQ(ret, 12);
 
     auto static_delegate_no_args = CreateDelegate<&DelegateTestClass::StaticMethodNoArgs>();

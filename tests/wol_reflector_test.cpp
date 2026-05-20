@@ -94,8 +94,8 @@ INSTANTIATE_TEST_SUITE_P(
     Families,
     WolReflectorPerFamilyTest,
     ::testing::Values(IpAddress::Family::V4, IpAddress::Family::V6),
-    [](const ::testing::TestParamInfo<IpAddress::Family>& info) -> std::string {
-        return std::format("{}", info.param);
+    [](const ::testing::TestParamInfo<IpAddress::Family>& param_info) -> std::string {
+        return std::format("{}", param_info.param);
     });
 
 TEST_P(WolReflectorPerFamilyTest, RegistersWithListener) {

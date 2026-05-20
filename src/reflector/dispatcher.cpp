@@ -66,9 +66,6 @@ Logger& GetLogger() noexcept {
 namespace reflector {
 
 struct Dispatcher::DispatcherState {
-    explicit DispatcherState(Dispatcher& dispatcher) noexcept
-            : dispatcher{&dispatcher} {}
-
     Dispatcher* dispatcher;
 };
 
@@ -113,7 +110,7 @@ bool Dispatcher::Registration::Reset() noexcept {
 }
 
 Dispatcher::Dispatcher()
-        : dispatcher_state_{new DispatcherState{*this}} {
+        : dispatcher_state_{new DispatcherState{this}} {
 #if defined(__APPLE__)
     event_fd_ = kqueue();
 #elif defined(__linux__)

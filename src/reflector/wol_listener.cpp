@@ -17,9 +17,6 @@ Logger& GetLogger() noexcept {
 } // namespace
 
 struct WolListener::RegistrationEntry {
-    RegistrationEntry(WolListener& listener, Dispatcher::Registration dispatcher_reg, uint16_t port) noexcept
-            : listener{&listener}, dispatcher_reg{std::move(dispatcher_reg)}, port{port} {}
-
     WolListener* listener;
     Dispatcher::Registration dispatcher_reg;
     uint16_t port;
@@ -90,7 +87,7 @@ WolListener::Registration WolListener::Register(uint16_t port, const PacketCallb
 
     GetLogger().Debug("Registered wol callback on interface \"{}\" port {}", capture_->Interface(), port);
     auto registration_entry = SharedPtrUnsynchronized<RegistrationEntry>{
-        new RegistrationEntry{*this, std::move(dispatcher_reg), port}};
+        new RegistrationEntry{this, std::move(dispatcher_reg), port}};
     Registration registration{registration_entry};
     registrations_.push_back(std::move(registration_entry));
     return registration;

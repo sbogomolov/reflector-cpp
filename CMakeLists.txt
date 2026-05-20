@@ -61,16 +61,28 @@ function(reflector_configure_project_target target)
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF
     )
-    # TODO: enable a curated set of additional warnings as a separate change:
-    # -Wshadow, -Wnon-virtual-dtor, -Wold-style-cast, -Wzero-as-null-pointer-constant,
-    # -Wnull-dereference, plus GCC: -Wcast-align=strict, -Wsuggest-override,
-    # -Wduplicated-cond, -Wduplicated-branches, -Wlogical-op; and Clang: -Wcast-align,
-    # -Winconsistent-missing-override. Each one requires touching call sites.
     target_compile_options(${target} PRIVATE
         -Werror
         -Wall
         -Wextra
         -Wpedantic
+        -Wshadow
+        -Wnon-virtual-dtor
+        -Wold-style-cast
+        -Wzero-as-null-pointer-constant
+        -Wnull-dereference
+        -Wconversion
+        -Wsign-conversion
+        -Wcast-qual
+        -Wundef
+        -Wformat=2
+        -Wswitch-enum
+        $<$<CXX_COMPILER_ID:GNU>:-Wcast-align=strict>
+        $<$<CXX_COMPILER_ID:GNU>:-Wsuggest-override>
+        $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-cond>
+        $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-branches>
+        $<$<CXX_COMPILER_ID:GNU>:-Wlogical-op>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wcast-align>
         $<$<CONFIG:Debug>:-ggdb3>
         ${_reflector_release_compile_options}
     )

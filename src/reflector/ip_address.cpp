@@ -91,17 +91,22 @@ std::optional<IpAddress> IpAddress::FromSockaddr(const sockaddr* address) noexce
         return std::nullopt;
     }
 
+    // Copy into a correctly-aligned local rather than reinterpret_cast the sockaddr*: the
+    // pointee is always a sockaddr_storage in callers, so the read is in bounds, and the
+    // copy sidesteps the alignment-increasing cast that -Wcast-align rejects.
     if (address->sa_family == AF_INET) {
-        const auto* v4 = reinterpret_cast<const sockaddr_in*>(address);
+        sockaddr_in v4{};
+        std::memcpy(&v4, address, sizeof(v4));
         ByteArray bytes{};
-        std::memcpy(bytes.data(), &v4->sin_addr, sizeof(v4->sin_addr));
+        std::memcpy(bytes.data(), &v4.sin_addr, sizeof(v4.sin_addr));
         return IpAddress{Family::V4, bytes};
     }
 
     if (address->sa_family == AF_INET6) {
-        const auto* v6 = reinterpret_cast<const sockaddr_in6*>(address);
+        sockaddr_in6 v6{};
+        std::memcpy(&v6, address, sizeof(v6));
         ByteArray bytes{};
-        std::memcpy(bytes.data(), &v6->sin6_addr, sizeof(v6->sin6_addr));
+        std::memcpy(bytes.data(), &v6.sin6_addr, sizeof(v6.sin6_addr));
         return IpAddress{Family::V6, bytes};
     }
 
@@ -150,7 +155,8 @@ std::string IpAddress::ToString() const {
 
     std::string result;
     result.resize(buffer_size);
-    if (inet_ntop(address_family, bytes_.data(), result.data(), result.size()) == nullptr) {
+    if (inet_ntop(address_family, bytes_.data(), result.data(),
+            static_cast<socklen_t>(result.size())) == nullptr) {
         GetLogger().Error("Cannot convert IP address to string: {}", Error::FromErrno());
         return "<invalid_ip>";
     }
