@@ -13,9 +13,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <net/if.h>
 #include <optional>
 #include <poll.h>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace {
@@ -188,6 +190,14 @@ TEST_F(PacketCaptureSocketTest, RejectsLoopbackWithUnsupportedFamily) {
     f.AppendLoopback(/*AF_UNIX-ish*/ 1);
 
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+TEST_F(PacketCaptureSocketTest, RejectsTooLongInterfaceName) {
+    const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
+    const auto output = CaptureStdout([&] {
+        const PacketCaptureSocket socket{too_long};
+        EXPECT_FALSE(socket.IsValid());
+    });
+    EXPECT_NE(output.find("too long"), std::string::npos) << output;
 }
 #endif  // defined(__APPLE__)
 

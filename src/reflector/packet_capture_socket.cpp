@@ -229,6 +229,11 @@ PacketCaptureSocket::PacketCaptureSocket(std::string_view interface)
     logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_);
 
 #elif defined(__APPLE__)
+    if (interface_.size() >= IFNAMSIZ) {
+        logger_.Error("Interface name \"{}\" is too long (max {} characters)", interface_, IFNAMSIZ - 1);
+        return;
+    }
+
     for (int n = 0; n < 256 && fd_ < 0; ++n) {
         const auto path = std::format("/dev/bpf{}", n);
         fd_ = open(path.c_str(), O_RDWR);
