@@ -20,8 +20,8 @@ struct PacketHeader {
     IpAddress dest_ip;
     uint16_t source_port = 0;
     uint16_t dest_port = 0;
-    MacAddress source_mac;
-    MacAddress dest_mac;
+    MacAddress source_mac{};
+    MacAddress dest_mac{};
 };
 
 struct Packet {
