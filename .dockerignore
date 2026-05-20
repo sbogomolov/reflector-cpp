@@ -7,7 +7,6 @@ build/
 Dockerfile
 docker_build.sh
 README.md
-TODO.md
 config.toml
 cmake_gen.sh
 e2e/
