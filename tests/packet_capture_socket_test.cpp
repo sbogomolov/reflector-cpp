@@ -389,6 +389,46 @@ TEST(PacketCaptureSocketBatchTest, ReceiveWalksMultiFrameBpfBatch) {
     EXPECT_FALSE(capture.socket.Receive().has_value())
         << "Expected no more frames after draining the batch";
 }
+
+TEST(PacketCaptureSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
+    TestCaptureSocket capture;
+    const auto payload = MakeBytes({0xab, 0xcd});
+
+    auto build_udp = [&](uint16_t source_port) {
+        FrameBuilder f;
+        f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+        f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(),
+            IP_PROTO_UDP, /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+        f.AppendUdp(source_port, 9, static_cast<uint16_t>(8 + payload.size()));
+        f.AppendPayload(payload);
+        return std::move(f.bytes);
+    };
+
+    // ARP-ethertype frame: well-framed at the bpf_hdr level so the walker can advance,
+    // but ParseFrame rejects it. The walker must still surface the frame that follows.
+    FrameBuilder bad;
+    bad.AppendEthernet(MacAddress{}, MacAddress{}, ARP_ETHERTYPE);
+    bad.bytes.resize(64, std::byte{0});
+
+    std::vector<std::vector<std::byte>> storage;
+    storage.push_back(build_udp(11111));
+    storage.push_back(std::move(bad.bytes));
+    storage.push_back(build_udp(22222));
+    std::vector<std::span<const std::byte>> spans{storage[0], storage[1], storage[2]};
+    ASSERT_TRUE(capture.WriteFrameBatch(spans));
+
+    const auto first = capture.socket.Receive();
+    ASSERT_TRUE(first.has_value());
+    EXPECT_EQ(first->header.source_port, 11111);
+
+    CaptureStdout([&] {
+        EXPECT_FALSE(capture.socket.Receive().has_value());
+    });
+
+    const auto last = capture.socket.Receive();
+    ASSERT_TRUE(last.has_value());
+    EXPECT_EQ(last->header.source_port, 22222);
+}
 #endif  // defined(__APPLE__)
 
 } // namespace reflector
