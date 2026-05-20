@@ -370,4 +370,22 @@ TEST_F(DispatcherTest, PollOnceDispatchesFrameWrittenToTestSocket) {
     EXPECT_EQ(recorder.source_ip, src_ip);
 }
 
+TEST_F(DispatcherTest, PollOnceReturnsFalseForUnparseableFrame) {
+    TestCaptureSocket capture;
+    PacketCounter counter;
+    const auto registration = dispatcher.Register(capture.socket, PacketFilter{},
+        CreateDelegate<&PacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+
+    // Three bytes — shorter than the 14-byte Ethernet header, so ParseFrame rejects.
+    ASSERT_TRUE(capture.WriteFrame(MakeBytes({0x00, 0x01, 0x02})));
+
+    bool poll_result = true;
+    const auto output = CaptureStdout([&] {
+        poll_result = dispatcher.PollOnce(std::chrono::milliseconds{100});
+    });
+    EXPECT_FALSE(poll_result) << output;
+    EXPECT_EQ(counter.count, 0);
+}
+
 } // namespace reflector
