@@ -104,6 +104,11 @@ void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
         v6_sender_ ? "enabled" : "disabled");
 }
 
+// The 6x 0xFF prefix + 16x target-MAC sequence must begin at payload offset 0. The AMD
+// spec allows the sequence at any offset within a frame, but every real UDP WoL sender
+// anchors it at the start of the datagram (a trailing SecureOn password is fine — extra
+// bytes after the 102 are ignored here and forwarded as-is). Anchoring keeps the match a
+// single memcmp and narrows what this reflector will re-broadcast onto target_if.
 bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
     if (payload.size() < MAGIC_PACKET_SIZE) {
         logger_.Debug("Ignoring wol packet: payload is too short: {} bytes", payload.size());
