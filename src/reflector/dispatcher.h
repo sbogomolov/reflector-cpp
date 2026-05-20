@@ -45,6 +45,10 @@ public:
     Dispatcher();
     ~Dispatcher() noexcept;
 
+    // The socket must outlive every registration returned for it and the dispatcher
+    // itself: the dispatcher keeps a raw pointer to it (in registration entries and in the
+    // kernel event queue's udata) and dereferences it on Unregister and on every poll.
+    // Destroying a socket while a registration for it is still live is undefined behavior.
     [[nodiscard]] Registration Register(PacketCaptureSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);

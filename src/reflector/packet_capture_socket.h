@@ -18,6 +18,12 @@ namespace reflector {
 // frames into Packet. Fragmented IP datagrams and frames with VLAN tags or IPv6 extension
 // headers are dropped — out of scope for the WoL/mDNS/SSDP traffic this serves.
 //
+// Unlike the kernel UDP stack, this path does NOT validate the UDP checksum: capture
+// happens below the layer that would verify it, and captured frames legitimately carry a
+// zero/unset checksum (loopback, TX/RX checksum offload). Checksum-invalid datagrams are
+// therefore reflected as-is; downstream consumers (e.g. WoL magic-packet matching) are the
+// integrity gate, and the re-emitted packet gets a fresh kernel-computed checksum anyway.
+//
 // Requires CAP_NET_RAW on Linux or BPF device permissions on macOS.
 //
 // Immovable so registered instances stay put: Dispatcher caches the socket address in its
