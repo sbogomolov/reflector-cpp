@@ -7,7 +7,6 @@
 #include "reflector/packet.h"
 #include "reflector/packet_capture_socket.h"
 #include "reflector/udp_socket.h"
-#include "reflector/util/delegate.h"
 
 #include <gtest/gtest.h>
 
