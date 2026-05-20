@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <memory>
 #include <tuple>
 #include <fcntl.h>
 #include <net/if.h>
@@ -338,6 +339,10 @@ PacketCaptureSocket::PacketCaptureSocket(TestingTag, std::string_view interface,
 
 PacketCaptureSocket PacketCaptureSocket::ForTesting(std::string_view interface, int owned_fd) {
     return PacketCaptureSocket{TestingTag{}, interface, owned_fd};
+}
+
+std::unique_ptr<PacketCaptureSocket> PacketCaptureSocket::ForTestingPtr(std::string_view interface, int owned_fd) {
+    return std::unique_ptr<PacketCaptureSocket>(new PacketCaptureSocket{TestingTag{}, interface, owned_fd});
 }
 
 PacketCaptureSocket::~PacketCaptureSocket() noexcept {

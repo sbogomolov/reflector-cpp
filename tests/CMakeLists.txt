@@ -1,4 +1,5 @@
 add_executable(reflector_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/application_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/delegate_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher_test.cpp

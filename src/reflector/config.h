@@ -61,6 +61,9 @@ public:
     [[nodiscard]] LogLevel MinLogLevel() const noexcept { return log_level_; }
 
 private:
+    // Test-only: builds a Config programmatically, bypassing TOML parsing.
+    friend class TestConfigBuilder;
+
     Config() noexcept = default;
     [[nodiscard]] size_t ReflectorCount() const noexcept { return wol_configs_.size(); }
 

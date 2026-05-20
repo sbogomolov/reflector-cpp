@@ -1,5 +1,6 @@
 #pragma once
 
+#include "reflector/config.h"
 #include "reflector/dispatcher.h"
 #include "reflector/ip_address.h"
 #include "reflector/logger.h"
@@ -34,6 +35,21 @@
 #endif
 
 namespace reflector {
+
+// Builds a Config programmatically for tests, bypassing TOML parsing. Declared a friend of
+// Config so it can populate the otherwise file-only fields directly.
+class TestConfigBuilder {
+public:
+    TestConfigBuilder& Add(WolConfig wol) {
+        config_.wol_configs_.push_back(std::move(wol));
+        return *this;
+    }
+
+    [[nodiscard]] Config Build() const { return config_; }
+
+private:
+    Config config_;
+};
 
 class ScopedMinLogLevel {
 public:

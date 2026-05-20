@@ -5,6 +5,7 @@
 #include "util/no_move.h"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,6 +42,10 @@ public:
     // (when nothing is written to the fd) or drive real frames end-to-end via
     // TestCaptureSocket::WriteFrame.
     [[nodiscard]] static PacketCaptureSocket ForTesting(std::string_view interface, int owned_fd);
+
+    // unique_ptr counterpart to ForTesting, for owners that hold the (immovable) socket
+    // behind a pointer — e.g. Application's injectable capture-socket factory.
+    [[nodiscard]] static std::unique_ptr<PacketCaptureSocket> ForTestingPtr(std::string_view interface, int owned_fd);
 
     [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
     [[nodiscard]] int Fd() const noexcept { return fd_; }
