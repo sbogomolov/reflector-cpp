@@ -297,6 +297,59 @@ TEST_F(PacketCaptureSocketTest, RejectsUdpLengthExceedingL4Size) {
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
 }
 
+TEST_F(PacketCaptureSocketTest, RejectsIpv4TotalLengthBelowHeader) {
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::AnyV4(), IpAddress::AnyV4(), IP_PROTO_UDP, /*total_length=*/10);
+    f.AppendUdp(1, 2, 8);
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+TEST_F(PacketCaptureSocketTest, RejectsIpv4TotalLengthExceedingCapturedFrame) {
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::AnyV4(), IpAddress::AnyV4(), IP_PROTO_UDP, /*total_length=*/200);
+    f.AppendUdp(1, 2, 8);
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+// total_length=28 declares only the UDP header (20 + 8); udp_length=20 claims 12 bytes
+// of data the IP datagram says don't exist. Twelve trailing Ethernet-pad bytes follow.
+// Without trimming l4 by total_length the parser would extract those 12 padding bytes
+// as the UDP payload.
+TEST_F(PacketCaptureSocketTest, RejectsIpv4UdpLengthExceedingIpDatagram) {
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::AnyV4(), IpAddress::AnyV4(), IP_PROTO_UDP, /*total_length=*/28);
+    f.AppendUdp(1, 2, /*udp_length=*/20);
+    f.bytes.resize(f.bytes.size() + 12, std::byte{0});
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+TEST_F(PacketCaptureSocketTest, RejectsIpv6PayloadLengthExceedingCapturedFrame) {
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV6_ETHERTYPE);
+    f.AppendIPv6Header(IpAddress::AnyV6(), IpAddress::AnyV6(), IP_PROTO_UDP, /*payload_length=*/200);
+    f.AppendUdp(1, 2, 8);
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+// Mirror of RejectsIpv4UdpLengthExceedingIpDatagram for IPv6: payload_length=8 covers
+// just the UDP header, udp_length=20 claims 12 bytes that aren't in the IPv6 payload.
+TEST_F(PacketCaptureSocketTest, RejectsIpv6UdpLengthExceedingIpDatagram) {
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV6_ETHERTYPE);
+    f.AppendIPv6Header(IpAddress::AnyV6(), IpAddress::AnyV6(), IP_PROTO_UDP, /*payload_length=*/8);
+    f.AppendUdp(1, 2, /*udp_length=*/20);
+    f.bytes.resize(f.bytes.size() + 12, std::byte{0});
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
 #if defined(__APPLE__)
 // Packs N bpf_hdr-prefixed frames into a single batch (one read returns all of them),
 // then verifies Receive() walks them one at a time. Mirrors what

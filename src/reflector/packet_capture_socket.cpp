@@ -514,10 +514,19 @@ std::optional<Packet> PacketCaptureSocket::ParseFrame(std::span<const std::byte>
                     std::to_integer<uint8_t>(l3[9]));
                 return std::nullopt;
             }
+            // Trim by IPv4 total_length so trailing bytes (Ethernet pad, BPF capture
+            // slack) don't get fed to UDP — otherwise a frame with a lying udp_length
+            // could pull padding into the payload.
+            const auto total_length = ReadU16Be(l3.subspan<2, 2>());
+            if (total_length < header_size || total_length > l3.size()) {
+                logger_.Error("IPv4 total_length {} invalid (header_size {}, l3 size {})",
+                    total_length, header_size, l3.size());
+                return std::nullopt;
+            }
             return std::tuple{
                 IpAddress::FromV4Bytes(l3.subspan<12, 4>()),
                 IpAddress::FromV4Bytes(l3.subspan<16, 4>()),
-                l3.subspan(header_size),
+                l3.subspan(header_size, total_length - header_size),
             };
         }
         if (ethertype == IPV6_ETHERTYPE) {
@@ -536,10 +545,17 @@ std::optional<Packet> PacketCaptureSocket::ParseFrame(std::span<const std::byte>
                 logger_.Debug("Dropping IPv6 packet with next-header {} (extension header or non-UDP)", next_header);
                 return std::nullopt;
             }
+            // Trim by payload_length for the same reason as IPv4 total_length above.
+            const auto payload_length = ReadU16Be(l3.subspan<4, 2>());
+            if (IPV6_HEADER_SIZE + payload_length > l3.size()) {
+                logger_.Error("IPv6 payload_length {} exceeds captured size (l3 size {})",
+                    payload_length, l3.size());
+                return std::nullopt;
+            }
             return std::tuple{
                 IpAddress::FromV6Bytes(l3.subspan<8, 16>()),
                 IpAddress::FromV6Bytes(l3.subspan<24, 16>()),
-                l3.subspan(IPV6_HEADER_SIZE),
+                l3.subspan(IPV6_HEADER_SIZE, payload_length),
             };
         }
         logger_.Error("Frame ethertype {:#x} reached parser; BPF filter should have dropped it", ethertype);
