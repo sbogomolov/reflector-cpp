@@ -24,7 +24,8 @@ Default: run unit tests against a Debug build with ASan/UBSan on. Before trustin
 
 ```sh
 ctest --test-dir build -L unit --output-on-failure
-docker build --target test .                          # docker test
+docker build --target test-debug .                    # docker test (Debug)
+docker build --target test-release .                  # docker test (Release)
 python3 e2e/run.py                                    # docker e2e
 ```
 

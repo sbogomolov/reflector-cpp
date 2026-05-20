@@ -126,7 +126,7 @@ ctest --test-dir build -L unit --output-on-failure
 
 `--output-on-failure` prints the full test log for any failing test (ctest hides output for passing tests by default). Several tests open loopback UDP sockets and exchange real packets, so they need to run outside any sandbox that blocks local networking.
 
-A subset of tests exercises real packet capture on the loopback interface and needs the same privileges the reflector itself does (see [Runtime privileges](#runtime-privileges)). They carry an extra `root` label and probe for the privilege at startup — if it's missing they `GTEST_SKIP` cleanly, so the default `ctest` run is green on an under-privileged box. Select or exclude them explicitly with:
+A subset of tests does privileged loopback networking — real packet capture, or binding a UDP sender to the loopback interface — and needs the same privileges the reflector itself does (see [Runtime privileges](#runtime-privileges)). They carry an extra `root` label and probe for the privilege at startup — if it's missing they `GTEST_SKIP` cleanly, so the default `ctest` run is green on an under-privileged box. Select or exclude them explicitly with:
 
 ```sh
 ctest --test-dir build -L root --output-on-failure         # only the capture-using tests

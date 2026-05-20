@@ -18,8 +18,9 @@ target_link_libraries(reflector_test PRIVATE reflector GTest::gtest_main)
 
 # Every test carries the "unit" label so a plain `ctest -L unit` runs the full suite. The
 # subset whose fixture names contain "RequiresRoot" additionally carries the "root" label
-# — those need elevated capture privileges (CAP_NET_RAW on Linux, bpf group / root on
-# macOS). The fixtures probe at SetUp and GTEST_SKIP when privileges are missing, so the
+# — those need the privileges the reflector itself uses for loopback I/O: packet capture
+# (CAP_NET_RAW on Linux, bpf group / root on macOS) or a SO_BINDTODEVICE sender. The
+# fixtures probe at SetUp and GTEST_SKIP when privileges are missing, so the
 # default `ctest` run is green on an under-privileged box. Use `ctest -L root` to require
 # them or `ctest -LE root` to skip them outright.
 include(GoogleTest)
