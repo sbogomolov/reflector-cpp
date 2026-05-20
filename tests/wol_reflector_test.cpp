@@ -114,8 +114,8 @@ TEST_P(WolReflectorPerFamilyTest, CreatedLogUsesConfigNameInLoggerName) {
         EXPECT_TRUE(reflector.IsValid());
     });
 
-    EXPECT_NE(output.find("[WolReflector:tv]"), std::string::npos) << output;
-    EXPECT_NE(output.find("Created wol reflector \"tv\""), std::string::npos) << output;
+    EXPECT_NE(output.find("[WolReflector:tv:src->dst]"), std::string::npos) << output;
+    EXPECT_NE(output.find("Created wol reflector"), std::string::npos) << output;
 }
 
 TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromListener) {
@@ -204,6 +204,44 @@ TEST_F(WolReflectorTest, LogsErrorWhenSenderRejectsPacket) {
     EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
     EXPECT_EQ(receiver.recorder.count, 0);
     EXPECT_NE(output.find("Cannot reflect wol packet"), std::string::npos) << output;
+}
+
+TEST_F(WolReflectorTest, ReflectedLogShowsMacAndInterfaces) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V4};
+    const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
+
+    const std::string output = CaptureStdout([&] {
+        Dispatch(reflector, receiver.Port(),
+            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    });
+
+    EXPECT_NE(output.find("src"), std::string::npos) << output;
+    EXPECT_NE(output.find("dst"), std::string::npos) << output;
+    EXPECT_NE(output.find("00:11:22:33:44:55"), std::string::npos) << output;
+}
+
+// The logged MAC is taken from the payload, not config.mac: in any-MAC mode there is no
+// configured MAC, so a payload MAC distinct from any config value proves the source.
+TEST_F(WolReflectorTest, ReflectedLogShowsPayloadMacInAnyMacMode) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.mac.reset();
+    auto reflector = BuildV4Reflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    LoopbackReceiver receiver{0, IpAddress::Family::V4};
+    const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+
+    const std::string output = CaptureStdout([&] {
+        Dispatch(reflector, receiver.Port(),
+            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    });
+
+    EXPECT_NE(output.find("66:55:44:33:22:11"), std::string::npos) << output;
 }
 
 TEST_F(WolReflectorTest, IgnoresPacketWithUnsupportedFamily) {

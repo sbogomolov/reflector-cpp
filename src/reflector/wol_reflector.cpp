@@ -11,7 +11,7 @@ namespace reflector {
 namespace {
 
 std::string LoggerName(const WolConfig& config) {
-    return std::format("WolReflector:{}", config.name);
+    return std::format("WolReflector:{}:{}->{}", config.name, config.source_if, config.target_if);
 }
 
 } // namespace
@@ -99,8 +99,7 @@ void WolReflector::Initialize(WolListener& listener, const WolConfig& config) {
         registrations_.push_back(std::move(registration));
     }
 
-    logger_.Info("Created wol reflector \"{}\" from interface \"{}\" to interface \"{}\" (IPv4: {}, IPv6: {})",
-        config.name, config.source_if, config.target_if,
+    logger_.Info("Created wol reflector (IPv4: {}, IPv6: {})",
         v4_sender_ ? "enabled" : "disabled",
         v6_sender_ ? "enabled" : "disabled");
 }
@@ -183,10 +182,11 @@ void WolReflector::HandlePacket(const Packet& packet, uint16_t port) noexcept {
         return;
     }
 
-    // TODO: include source MAC in this log line so operators can identify the originating
-    // device, not just its (often DHCP'd) IP.
-    logger_.Info("Reflected wol packet from {}:{} to {}:{}",
-        packet.header.source_ip, packet.header.source_port, sender->DestinationAddress(), port);
+    // The MAC comes from the payload, not the frame's L2 header: it names the device that
+    // will wake, and IsMagicPacket has already validated the payload is long enough.
+    const auto target = MacAddress::FromBytes(packet.payload.subspan<PREFIX_SIZE, MAC_SIZE>());
+    logger_.Info("Reflected WoL packet for {} from {}:{} to {}:{}",
+        target, packet.header.source_ip, packet.header.source_port, sender->DestinationAddress(), port);
 }
 
 void WolReflector::Reset() noexcept {
