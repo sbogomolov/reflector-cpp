@@ -100,55 +100,6 @@ TEST_F(PacketCaptureSocketTest, ParsesEthernetIpv6Udp) {
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()), payload);
 }
 
-// DLT_NULL is macOS-only — on Linux AF_PACKET delivers Ethernet frames for every
-// interface, lo included, so the parser never encounters loopback framing there.
-#if defined(__APPLE__)
-TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv4UdpWithZeroMacs) {
-    SetLinkType(LinkType::Loopback);
-    const auto src_ip = IpAddress::LoopbackV4();
-    const auto dst_ip = IpAddress::LoopbackV4();
-    const auto payload = MakeBytes({0xff});
-
-    FrameBuilder f;
-    f.AppendLoopback(AF_INET);
-    f.AppendIPv4Header(src_ip, dst_ip, IP_PROTO_UDP,
-        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
-    f.AppendUdp(40000, 9, static_cast<uint16_t>(8 + payload.size()));
-    f.AppendPayload(payload);
-
-    const auto packet = Parse(f.bytes);
-    ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 40000);
-    EXPECT_EQ(packet->header.dest_port, 9);
-    // DLT_NULL frames carry no L2 — both MACs report as all-zeros.
-    EXPECT_EQ(packet->header.source_mac, MacAddress{});
-    EXPECT_EQ(packet->header.dest_mac, MacAddress{});
-}
-
-TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv6Udp) {
-    SetLinkType(LinkType::Loopback);
-    const auto src_ip = IpAddress::LoopbackV6();
-    const auto dst_ip = IpAddress::LoopbackV6();
-    const auto payload = MakeBytes({0x10, 0x20});
-
-    FrameBuilder f;
-    f.AppendLoopback(AF_INET6);
-    f.AppendIPv6Header(src_ip, dst_ip, IP_PROTO_UDP,
-        /*payload_length=*/static_cast<uint16_t>(8 + payload.size()));
-    f.AppendUdp(1234, 5678, static_cast<uint16_t>(8 + payload.size()));
-    f.AppendPayload(payload);
-
-    const auto packet = Parse(f.bytes);
-    ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 1234);
-    EXPECT_EQ(packet->header.dest_port, 5678);
-}
-#endif  // defined(__APPLE__)
-
 TEST_F(PacketCaptureSocketTest, TrimsPayloadToUdpLength) {
     const auto src_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
     const auto dst_mac = *MacAddress::FromString("11:22:33:44:55:66");
@@ -175,31 +126,6 @@ TEST_F(PacketCaptureSocketTest, RejectsFrameShorterThanEthernetHeader) {
 
     EXPECT_FALSE(ParseQuietly(frame).has_value());
 }
-
-#if defined(__APPLE__)
-TEST_F(PacketCaptureSocketTest, RejectsFrameShorterThanLoopbackHeader) {
-    SetLinkType(LinkType::Loopback);
-    const auto frame = MakeBytes({0x02, 0x00});
-
-    EXPECT_FALSE(ParseQuietly(frame).has_value());
-}
-
-TEST_F(PacketCaptureSocketTest, RejectsLoopbackWithUnsupportedFamily) {
-    SetLinkType(LinkType::Loopback);
-    FrameBuilder f;
-    f.AppendLoopback(/*AF_UNIX-ish*/ 1);
-
-    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
-}
-TEST_F(PacketCaptureSocketTest, RejectsTooLongInterfaceName) {
-    const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
-    const auto output = CaptureStdout([&] {
-        const PacketCaptureSocket socket{too_long};
-        EXPECT_FALSE(socket.IsValid());
-    });
-    EXPECT_NE(output.find("too long"), std::string::npos) << output;
-}
-#endif  // defined(__APPLE__)
 
 TEST_F(PacketCaptureSocketTest, RejectsUnknownEthertype) {
     FrameBuilder f;
@@ -367,6 +293,77 @@ TEST_F(PacketCaptureSocketTest, RejectsIpv6UdpLengthExceedingIpDatagram) {
 }
 
 #if defined(__APPLE__)
+// DLT_NULL is macOS-only — on Linux AF_PACKET delivers Ethernet frames for every
+// interface, lo included, so the parser never encounters loopback framing there.
+TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv4UdpWithZeroMacs) {
+    SetLinkType(LinkType::Loopback);
+    const auto src_ip = IpAddress::LoopbackV4();
+    const auto dst_ip = IpAddress::LoopbackV4();
+    const auto payload = MakeBytes({0xff});
+
+    FrameBuilder f;
+    f.AppendLoopback(AF_INET);
+    f.AppendIPv4Header(src_ip, dst_ip, IP_PROTO_UDP,
+        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+    f.AppendUdp(40000, 9, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+
+    const auto packet = Parse(f.bytes);
+    ASSERT_TRUE(packet.has_value());
+    EXPECT_EQ(packet->header.source_ip, src_ip);
+    EXPECT_EQ(packet->header.dest_ip, dst_ip);
+    EXPECT_EQ(packet->header.source_port, 40000);
+    EXPECT_EQ(packet->header.dest_port, 9);
+    // DLT_NULL frames carry no L2 — both MACs report as all-zeros.
+    EXPECT_EQ(packet->header.source_mac, MacAddress{});
+    EXPECT_EQ(packet->header.dest_mac, MacAddress{});
+}
+
+TEST_F(PacketCaptureSocketTest, ParsesLoopbackIpv6Udp) {
+    SetLinkType(LinkType::Loopback);
+    const auto src_ip = IpAddress::LoopbackV6();
+    const auto dst_ip = IpAddress::LoopbackV6();
+    const auto payload = MakeBytes({0x10, 0x20});
+
+    FrameBuilder f;
+    f.AppendLoopback(AF_INET6);
+    f.AppendIPv6Header(src_ip, dst_ip, IP_PROTO_UDP,
+        /*payload_length=*/static_cast<uint16_t>(8 + payload.size()));
+    f.AppendUdp(1234, 5678, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+
+    const auto packet = Parse(f.bytes);
+    ASSERT_TRUE(packet.has_value());
+    EXPECT_EQ(packet->header.source_ip, src_ip);
+    EXPECT_EQ(packet->header.dest_ip, dst_ip);
+    EXPECT_EQ(packet->header.source_port, 1234);
+    EXPECT_EQ(packet->header.dest_port, 5678);
+}
+
+TEST_F(PacketCaptureSocketTest, RejectsFrameShorterThanLoopbackHeader) {
+    SetLinkType(LinkType::Loopback);
+    const auto frame = MakeBytes({0x02, 0x00});
+
+    EXPECT_FALSE(ParseQuietly(frame).has_value());
+}
+
+TEST_F(PacketCaptureSocketTest, RejectsLoopbackWithUnsupportedFamily) {
+    SetLinkType(LinkType::Loopback);
+    FrameBuilder f;
+    f.AppendLoopback(/*AF_UNIX-ish*/ 1);
+
+    EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+TEST_F(PacketCaptureSocketTest, RejectsTooLongInterfaceName) {
+    const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
+    const auto output = CaptureStdout([&] {
+        const PacketCaptureSocket socket{too_long};
+        EXPECT_FALSE(socket.IsValid());
+    });
+    EXPECT_NE(output.find("too long"), std::string::npos) << output;
+}
+
 // Packs N bpf_hdr-prefixed frames into a single batch (one read returns all of them),
 // then verifies Receive() walks them one at a time. Mirrors what
 // PacketCaptureSocketRequiresRootTest::DrainsBatchedFramesFromOneRead exercises against
