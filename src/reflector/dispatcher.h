@@ -1,7 +1,7 @@
 #pragma once
 
 #include "packet.h"
-#include "packet_capture_socket.h"
+#include "raw_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
 #include "util/shared_ptr_unsynchronized.h"
@@ -49,7 +49,7 @@ public:
     // itself: the dispatcher keeps a raw pointer to it (in registration entries and in the
     // kernel event queue's udata) and dereferences it on Unregister and on every poll.
     // Destroying a socket while a registration for it is still live is undefined behavior.
-    [[nodiscard]] Registration Register(PacketCaptureSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
+    [[nodiscard]] Registration Register(RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
     bool PollOnce(std::chrono::milliseconds timeout);
@@ -65,18 +65,18 @@ private:
 
     struct RegistrationEntry {
         RegistrationId id;
-        PacketCaptureSocket* socket;
+        RawSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
     };
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
-    [[nodiscard]] bool AddReadEvent(PacketCaptureSocket& socket) noexcept;
-    [[nodiscard]] bool RemoveReadEvent(const PacketCaptureSocket& socket) noexcept;
-    [[nodiscard]] bool DrainReadableFd(PacketCaptureSocket& socket) noexcept;
+    [[nodiscard]] bool AddReadEvent(RawSocket& socket) noexcept;
+    [[nodiscard]] bool RemoveReadEvent(const RawSocket& socket) noexcept;
+    [[nodiscard]] bool DrainReadableFd(RawSocket& socket) noexcept;
     bool Unregister(RegistrationId id) noexcept;
-    void DispatchPacket(const PacketCaptureSocket& socket, const Packet& packet) const;
+    void DispatchPacket(const RawSocket& socket, const Packet& packet) const;
 
     // Kept sorted by id: Register appends with a monotonically increasing id and
     // Unregister erases in place. DispatchPacket relies on this for its merge walk;
@@ -87,7 +87,7 @@ private:
     int event_fd_ = -1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
-    const PacketCaptureSocket* active_socket_ = nullptr;
+    const RawSocket* active_socket_ = nullptr;
 };
 
 } // namespace reflector

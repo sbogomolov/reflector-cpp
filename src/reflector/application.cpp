@@ -8,7 +8,7 @@ namespace reflector {
 
 Application::Application()
         : Application{[](std::string_view interface) {
-              return std::make_unique<PacketCaptureSocket>(interface);
+              return std::make_unique<RawSocket>(interface);
           }} {}
 
 Application::Application(CaptureSocketFactory capture_socket_factory)

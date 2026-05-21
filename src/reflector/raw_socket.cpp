@@ -1,4 +1,4 @@
-#include "packet_capture_socket.h"
+#include "raw_socket.h"
 
 #include "error.h"
 #include "ip_address.h"
@@ -22,7 +22,7 @@
 #include <utility>
 
 #if !defined(__APPLE__) && !defined(__linux__)
-#error "PacketCaptureSocket only supports macOS and Linux"
+#error "RawSocket only supports macOS and Linux"
 #endif
 
 #if defined(__linux__)
@@ -187,8 +187,8 @@ constexpr bool IsWouldBlockErrno(int err) noexcept {
 
 } // namespace
 
-PacketCaptureSocket::PacketCaptureSocket(std::string_view interface)
-        : logger_{std::format("PacketCaptureSocket:{}", interface)}
+RawSocket::RawSocket(std::string_view interface)
+        : logger_{std::format("RawSocket:{}", interface)}
         , interface_{interface} {
 #if defined(__linux__)
     fd_ = socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(ETH_P_ALL));
@@ -332,8 +332,8 @@ PacketCaptureSocket::PacketCaptureSocket(std::string_view interface)
 #endif
 }
 
-PacketCaptureSocket::PacketCaptureSocket(TestingTag, std::string_view interface, int owned_fd) noexcept
-        : logger_{std::format("PacketCaptureSocket:{}", interface)}
+RawSocket::RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept
+        : logger_{std::format("RawSocket:{}", interface)}
         , interface_{interface}
         , fd_{owned_fd} {
     // Production sizes receive_buffer_ during setup (constant on Linux, BIOCGBLEN on macOS);
@@ -342,30 +342,30 @@ PacketCaptureSocket::PacketCaptureSocket(TestingTag, std::string_view interface,
     receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
 }
 
-PacketCaptureSocket PacketCaptureSocket::ForTesting(std::string_view interface, int owned_fd) {
-    return PacketCaptureSocket{TestingTag{}, interface, owned_fd};
+RawSocket RawSocket::ForTesting(std::string_view interface, int owned_fd) {
+    return RawSocket{TestingTag{}, interface, owned_fd};
 }
 
-std::unique_ptr<PacketCaptureSocket> PacketCaptureSocket::ForTestingPtr(std::string_view interface, int owned_fd) {
-    return std::unique_ptr<PacketCaptureSocket>(new PacketCaptureSocket{TestingTag{}, interface, owned_fd});
+std::unique_ptr<RawSocket> RawSocket::ForTestingPtr(std::string_view interface, int owned_fd) {
+    return std::unique_ptr<RawSocket>(new RawSocket{TestingTag{}, interface, owned_fd});
 }
 
-PacketCaptureSocket::~PacketCaptureSocket() noexcept {
+RawSocket::~RawSocket() noexcept {
     Close();
 }
 
 #if defined(__APPLE__)
-bool PacketCaptureSocket::HasBufferedData() const noexcept {
+bool RawSocket::HasBufferedData() const noexcept {
     return receive_buffer_offset_ < receive_buffer_filled_;
 }
 
-void PacketCaptureSocket::ClearBuffer() noexcept {
+void RawSocket::ClearBuffer() noexcept {
     receive_buffer_filled_ = 0;
     receive_buffer_offset_ = 0;
 }
 #endif
 
-void PacketCaptureSocket::Close() noexcept {
+void RawSocket::Close() noexcept {
     if (fd_ >= 0) {
         logger_.Debug("Closing capture socket fd {}", fd_);
         close(fd_);
@@ -376,7 +376,7 @@ void PacketCaptureSocket::Close() noexcept {
 #endif
 }
 
-std::optional<Packet> PacketCaptureSocket::Receive() noexcept {
+std::optional<Packet> RawSocket::Receive() noexcept {
     if (fd_ < 0) {
         return std::nullopt;
     }
@@ -438,7 +438,7 @@ std::optional<Packet> PacketCaptureSocket::Receive() noexcept {
 #endif
 }
 
-std::optional<Packet> PacketCaptureSocket::ParseFrame(std::span<const std::byte> frame) noexcept {
+std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) noexcept {
     uint16_t ethertype = 0;
     MacAddress source_mac{};
     MacAddress dest_mac{};

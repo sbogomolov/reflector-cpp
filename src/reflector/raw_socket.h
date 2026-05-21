@@ -31,21 +31,21 @@ namespace reflector {
 // kernel event queue (epoll data.ptr / kqueue udata) and in registration entries; a move
 // would silently invalidate those pointers. Hold instances in storage that preserves
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
-class PacketCaptureSocket : NoMove {
+class RawSocket : NoMove {
 public:
-    explicit PacketCaptureSocket(std::string_view interface);
-    ~PacketCaptureSocket() noexcept;
+    explicit RawSocket(std::string_view interface);
+    ~RawSocket() noexcept;
 
     // Test-only: wrap an arbitrary fd without performing any OS-level capture setup.
     // Receive() consumes bytes from that fd the same way the production socket would,
     // so tests can either synthesize Packets via Dispatcher::DispatchPacket directly
     // (when nothing is written to the fd) or drive real frames end-to-end via
     // TestCaptureSocket::WriteFrame.
-    [[nodiscard]] static PacketCaptureSocket ForTesting(std::string_view interface, int owned_fd);
+    [[nodiscard]] static RawSocket ForTesting(std::string_view interface, int owned_fd);
 
     // unique_ptr counterpart to ForTesting, for owners that hold the (immovable) socket
     // behind a pointer — e.g. Application's injectable capture-socket factory.
-    [[nodiscard]] static std::unique_ptr<PacketCaptureSocket> ForTestingPtr(std::string_view interface, int owned_fd);
+    [[nodiscard]] static std::unique_ptr<RawSocket> ForTestingPtr(std::string_view interface, int owned_fd);
 
     [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
     [[nodiscard]] int Fd() const noexcept { return fd_; }
@@ -75,10 +75,10 @@ public:
 #endif
 
 private:
-    friend class PacketCaptureSocketTest;
+    friend class RawSocketTest;
 
     enum class TestingTag {};
-    PacketCaptureSocket(TestingTag, std::string_view interface, int owned_fd) noexcept;
+    RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept;
 
     void Close() noexcept;
 

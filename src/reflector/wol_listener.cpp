@@ -58,7 +58,7 @@ bool WolListener::Registration::Reset() noexcept {
     return registration->listener->Unregister(registration);
 }
 
-WolListener::WolListener(Dispatcher& dispatcher, PacketCaptureSocket& capture)
+WolListener::WolListener(Dispatcher& dispatcher, RawSocket& capture)
         : dispatcher_{&dispatcher}, capture_{&capture} {}
 
 WolListener::~WolListener() noexcept {

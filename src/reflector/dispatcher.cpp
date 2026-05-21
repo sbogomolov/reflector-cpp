@@ -139,7 +139,7 @@ Dispatcher::~Dispatcher() noexcept {
 }
 
 Dispatcher::Registration Dispatcher::Register(
-    PacketCaptureSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
+    RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
         GetLogger().Error("Cannot register packet callback: capture socket is invalid");
         return Registration{};
@@ -227,7 +227,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
         return false;
     }
 
-    auto* socket = static_cast<PacketCaptureSocket*>(event.udata);
+    auto* socket = static_cast<RawSocket*>(event.udata);
 #elif defined(__linux__)
     epoll_event event{};
     const auto event_count = epoll_wait(event_fd_, &event, 1, static_cast<int>(timeout.count()));
@@ -242,7 +242,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count == 0) {
         return false;
     }
-    auto* socket = static_cast<PacketCaptureSocket*>(event.data.ptr);
+    auto* socket = static_cast<RawSocket*>(event.data.ptr);
     const auto events = event.events;
     if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
         GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", socket->Fd(), events);
@@ -253,7 +253,7 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     return DrainReadableFd(*socket);
 }
 
-bool Dispatcher::AddReadEvent(PacketCaptureSocket& socket) noexcept {
+bool Dispatcher::AddReadEvent(RawSocket& socket) noexcept {
     const auto fd = socket.Fd();
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot add read event for fd {}: event queue is invalid", fd);
@@ -285,7 +285,7 @@ bool Dispatcher::AddReadEvent(PacketCaptureSocket& socket) noexcept {
     return true;
 }
 
-bool Dispatcher::RemoveReadEvent(const PacketCaptureSocket& socket) noexcept {
+bool Dispatcher::RemoveReadEvent(const RawSocket& socket) noexcept {
     const auto fd = socket.Fd();
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
@@ -310,7 +310,7 @@ bool Dispatcher::RemoveReadEvent(const PacketCaptureSocket& socket) noexcept {
     return true;
 }
 
-bool Dispatcher::DrainReadableFd(PacketCaptureSocket& socket) noexcept {
+bool Dispatcher::DrainReadableFd(RawSocket& socket) noexcept {
     active_socket_ = &socket;
     bool dispatched_any = false;
 
@@ -350,7 +350,7 @@ bool Dispatcher::DrainReadableFd(PacketCaptureSocket& socket) noexcept {
     return dispatched_any;
 }
 
-void Dispatcher::DispatchPacket(const PacketCaptureSocket& socket, const Packet& packet) const {
+void Dispatcher::DispatchPacket(const RawSocket& socket, const Packet& packet) const {
     // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
     // elements, so after each dispatch we check that our slot still holds the entry we
     // just fired; if it doesn't, we restart from the front and let last_dispatched_id

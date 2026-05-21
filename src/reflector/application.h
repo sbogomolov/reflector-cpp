@@ -3,7 +3,7 @@
 #include "config.h"
 #include "dispatcher.h"
 #include "logger.h"
-#include "packet_capture_socket.h"
+#include "raw_socket.h"
 #include "util/no_move.h"
 #include "wol_listener.h"
 #include "wol_reflector.h"
@@ -27,9 +27,9 @@ namespace reflector {
 class Application : NoMove {
 public:
     // Creates the capture socket for an interface. Production opens a real
-    // PacketCaptureSocket; tests inject one wrapping a fake fd.
+    // RawSocket; tests inject one wrapping a fake fd.
     using CaptureSocketFactory =
-        std::function<std::unique_ptr<PacketCaptureSocket>(std::string_view interface)>;
+        std::function<std::unique_ptr<RawSocket>(std::string_view interface)>;
 
     // TODO: when mDNS/SSDP reflectors land, give Application a sender factory too, mirroring
     // the capture-socket factory — Application would build the sender (as it builds the
@@ -63,9 +63,9 @@ private:
     // registrations first, listeners then drop their dispatcher registrations, the
     // dispatcher tears down its event queue (dropping cached socket pointers), and only
     // then the capture sockets close their fds. The dispatcher caches each
-    // PacketCaptureSocket* (epoll data.ptr / kqueue udata), so the sockets live behind
+    // RawSocket* (epoll data.ptr / kqueue udata), so the sockets live behind
     // unique_ptr to keep their addresses stable across map rehashing.
-    std::unordered_map<std::string, std::unique_ptr<PacketCaptureSocket>> capture_sockets_;
+    std::unordered_map<std::string, std::unique_ptr<RawSocket>> capture_sockets_;
     Dispatcher dispatcher_;
     std::unordered_map<std::string, WolListener> wol_listeners_;
     std::vector<std::unique_ptr<WolReflector>> reflectors_;

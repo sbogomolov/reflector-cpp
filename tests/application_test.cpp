@@ -3,7 +3,7 @@
 #include "reflector/config.h"
 #include "reflector/ip_address.h"
 #include "reflector/mac_address.h"
-#include "reflector/packet_capture_socket.h"
+#include "reflector/raw_socket.h"
 #include "reflector/udp_link_fanout_sender.h"
 
 #include <gtest/gtest.h>
@@ -39,7 +39,7 @@ protected:
 
     // Factory that hands out capture sockets wrapping real AF_UNIX fds (so the dispatcher
     // can register them) without needing CAP_NET_RAW. Counts calls so tests can assert how
-    // many distinct interfaces were opened. The PacketCaptureSocket owns and closes the fd.
+    // many distinct interfaces were opened. The RawSocket owns and closes the fd.
     struct CountingCaptureFactory {
         int calls = 0;
 
@@ -47,7 +47,7 @@ protected:
             return [this](std::string_view interface) {
                 ++calls;
                 const int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
-                return PacketCaptureSocket::ForTestingPtr(interface, fd);
+                return RawSocket::ForTestingPtr(interface, fd);
             };
         }
     };
@@ -62,7 +62,7 @@ protected:
 
 TEST_F(ApplicationTest, InvalidCaptureSocketFailsConfigure) {
     Application app{[](std::string_view interface) {
-        return PacketCaptureSocket::ForTestingPtr(interface, -1);
+        return RawSocket::ForTestingPtr(interface, -1);
     }};
     const Config config = TestConfigBuilder{}
         .Add(MakeConfig("tv", "captest", LoopbackInterface(), {9}))

@@ -6,7 +6,7 @@
 #include "reflector/logger.h"
 #include "reflector/mac_address.h"
 #include "reflector/packet.h"
-#include "reflector/packet_capture_socket.h"
+#include "reflector/raw_socket.h"
 #include "reflector/udp_socket.h"
 
 #include <gtest/gtest.h>
@@ -155,7 +155,7 @@ inline std::string_view LoopbackInterface() noexcept {
 #endif
 }
 
-// Opens a real PacketCaptureSocket on the loopback interface to probe whether the running
+// Opens a real RawSocket on the loopback interface to probe whether the running
 // user has the privileges needed (CAP_NET_RAW on Linux, bpf-group / root on macOS). Tests
 // that need real capture call this in SetUp and GTEST_SKIP if it returns false. Cached:
 // the probe is destructive enough (open + close) that we only want to pay it once per run.
@@ -163,7 +163,7 @@ inline bool HasPacketCapturePrivileges() {
     static const bool cached = [] {
         bool valid = false;
         (void)CaptureStdout([&] {
-            PacketCaptureSocket probe{LoopbackInterface()};
+            RawSocket probe{LoopbackInterface()};
             valid = probe.IsValid();
         });
         return valid;
@@ -210,8 +210,8 @@ inline std::vector<std::byte> MakeBytes(std::initializer_list<unsigned> values) 
 }
 
 // Builds an Ethernet/IPv4/IPv6 + UDP frame byte-by-byte for tests that need to drive
-// the PacketCaptureSocket parser end-to-end (either via the friend ParseFrame hook in
-// PacketCaptureSocketTest, or via TestCaptureSocket::WriteFrame for full PollOnce flow).
+// the RawSocket parser end-to-end (either via the friend ParseFrame hook in
+// RawSocketTest, or via TestCaptureSocket::WriteFrame for full PollOnce flow).
 struct FrameBuilder {
     std::vector<std::byte> bytes;
 
@@ -271,7 +271,7 @@ struct FrameBuilder {
     }
 };
 
-// Wraps a SOCK_DGRAM socketpair into a PacketCaptureSocket-shaped object so tests can
+// Wraps a SOCK_DGRAM socketpair into a RawSocket-shaped object so tests can
 // either: (a) register against the dispatcher and synthesize Packets via the friend
 // DispatchPacket hook, or (b) write real Ethernet frame bytes through WriteFrame and let
 // the production Receive/ParseFrame path consume them end-to-end. SOCK_DGRAM (rather than
@@ -279,7 +279,7 @@ struct FrameBuilder {
 // and the socketpair mimics that. The read end is non-blocking to match production.
 struct TestCaptureSocket {
     int write_fd = -1;
-    PacketCaptureSocket socket;
+    RawSocket socket;
 
     explicit TestCaptureSocket(std::string_view interface = "test") : socket{MakeSocket(interface)} {}
 
@@ -316,20 +316,20 @@ struct TestCaptureSocket {
 #endif
 
 private:
-    PacketCaptureSocket MakeSocket(std::string_view interface) {
+    RawSocket MakeSocket(std::string_view interface) {
         int fds[2];
         if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) {
             ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
-            return PacketCaptureSocket::ForTesting(interface, -1);
+            return RawSocket::ForTesting(interface, -1);
         }
         if (::fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) {
             ADD_FAILURE() << "fcntl(O_NONBLOCK) failed: " << std::strerror(errno);
             ::close(fds[0]);
             ::close(fds[1]);
-            return PacketCaptureSocket::ForTesting(interface, -1);
+            return RawSocket::ForTesting(interface, -1);
         }
         write_fd = fds[1];
-        return PacketCaptureSocket::ForTesting(interface, fds[0]);
+        return RawSocket::ForTesting(interface, fds[0]);
     }
 
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {

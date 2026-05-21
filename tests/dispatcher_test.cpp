@@ -1,7 +1,7 @@
 #include "reflector/dispatcher.h"
 #include "reflector/ip_address.h"
 #include "reflector/packet.h"
-#include "reflector/packet_capture_socket.h"
+#include "reflector/raw_socket.h"
 #include "reflector/udp_socket.h"
 
 #include "reflector/util/delegate.h"
@@ -32,7 +32,7 @@ class DispatcherTest : public ::testing::Test {
 protected:
     Dispatcher dispatcher;
 
-    void Dispatch(const PacketCaptureSocket& socket, const Packet& packet) {
+    void Dispatch(const RawSocket& socket, const Packet& packet) {
         dispatcher.DispatchPacket(socket, packet);
     }
 
@@ -54,7 +54,7 @@ struct RegisteringPacketCounter {
     }
 
     Dispatcher* dispatcher = nullptr;
-    PacketCaptureSocket* socket = nullptr;
+    RawSocket* socket = nullptr;
     PacketCounter* target = nullptr;
     Dispatcher::Registration new_registration;
     int count = 0;
@@ -72,7 +72,7 @@ TEST_F(DispatcherTest, RegistersCallback) {
 }
 
 TEST_F(DispatcherTest, RegisterRejectsInvalidCaptureSocket) {
-    auto invalid = PacketCaptureSocket::ForTesting("invalid", -1);
+    auto invalid = RawSocket::ForTesting("invalid", -1);
     PacketCounter counter;
 
     const auto registration = dispatcher.Register(
@@ -394,14 +394,14 @@ TEST_F(DispatcherTest, PollOnceReturnsFalseForUnparseableFrame) {
 class DispatcherRequiresRootTest : public ::testing::Test {
 protected:
     Dispatcher dispatcher;
-    std::optional<PacketCaptureSocket> capture;
+    std::optional<RawSocket> capture;
     UdpSocket listener_socket{IpAddress::Family::V4};
     uint16_t listener_port = 0;
     UdpSocket sender_socket{IpAddress::Family::V4};
 
     void SetUp() override {
         if (!HasPacketCapturePrivileges()) {
-            GTEST_SKIP() << "PacketCaptureSocket on " << LoopbackInterface()
+            GTEST_SKIP() << "RawSocket on " << LoopbackInterface()
                 << " requires CAP_NET_RAW (Linux) or bpf group / root (macOS)";
         }
         capture.emplace(LoopbackInterface());
