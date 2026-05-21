@@ -325,6 +325,8 @@ RawSocket::RawSocket(std::string_view interface)
 
     logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_, blen);
 #endif
+
+    addresses_ = ResolveInterfaceAddresses(interface_);
 }
 
 RawSocket::RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept
@@ -347,6 +349,10 @@ std::unique_ptr<RawSocket> RawSocket::ForTestingPtr(std::string_view interface, 
 
 RawSocket::~RawSocket() noexcept {
     Close();
+}
+
+bool RawSocket::CanSend(IpAddress::Family family) const noexcept {
+    return (family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6).has_value();
 }
 
 #if defined(__APPLE__)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "interface_address.h"
 #include "logger.h"
 #include "packet.h"
 #include "util/no_move.h"
@@ -51,6 +52,10 @@ public:
     [[nodiscard]] int Fd() const noexcept { return fd_; }
     [[nodiscard]] std::string_view Interface() const noexcept { return interface_; }
 
+    // True if the bound interface has a usable source address for `family` (resolved at open).
+    // The raw egress path and the Application's family gating consult this instead of probing.
+    [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept;
+
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
     // Returns nullopt when no datagram is currently available (EAGAIN), or when the next
@@ -87,6 +92,10 @@ private:
     Logger logger_;
     std::string interface_;
     int fd_ = -1;
+
+    // Source MAC and per-family source IPs of interface_, resolved once at open; the raw egress
+    // path must supply these itself (the kernel UDP stack used to). Empty for test-only sockets.
+    InterfaceAddresses addresses_;
 
     // Linux: holds one frame per recv() into receive_buffer_.
     // macOS: holds a batch of bpf_hdr-prefixed frames per read(); receive_buffer_filled_

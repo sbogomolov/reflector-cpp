@@ -6,6 +6,7 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/interface_address_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/logger_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address_test.cpp
