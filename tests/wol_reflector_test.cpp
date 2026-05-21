@@ -25,7 +25,7 @@ protected:
             .mac = *MacAddress::FromString("00:11:22:33:44:55"),
             .source_if = "src",
             .target_if = "dst",
-            .ports = {FreeLoopbackPort(family)},
+            .ports = {9},
             .address_family = family == IpAddress::Family::V4
                 ? WolAddressFamily::IPv4
                 : WolAddressFamily::IPv6,
@@ -130,8 +130,8 @@ TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromListener) {
 
 TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     const auto family = GetParam();
-    const auto port = FreeLoopbackPort(family);
-    LoopbackReceiver receiver{port, family};
+    LoopbackReceiver receiver{0, family};
+    const auto port = receiver.Port();
 
     auto config = MakeConfig(family);
     config.ports = {port};

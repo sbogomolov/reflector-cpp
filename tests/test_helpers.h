@@ -146,27 +146,6 @@ inline uint16_t BindLoopback(UdpSocket& socket, uint16_t port = 0) {
     return bound_port;
 }
 
-inline std::vector<uint16_t> FreeLoopbackPorts(size_t count, IpAddress::Family family) {
-    std::vector<UdpSocket> sockets;
-    std::vector<uint16_t> ports;
-    sockets.reserve(count);
-    ports.reserve(count);
-
-    for (size_t i = 0; i < count; ++i) {
-        auto& socket = sockets.emplace_back(family);
-        EXPECT_TRUE(socket.SetReuseAddr(true));
-        EXPECT_TRUE(socket.Bind(LoopbackFor(family), 0));
-        ports.push_back(BoundPort(socket));
-    }
-
-    return ports;
-}
-
-inline uint16_t FreeLoopbackPort(IpAddress::Family family) {
-    const auto ports = FreeLoopbackPorts(1, family);
-    return ports.front();
-}
-
 // Loopback interface name varies by OS; "lo" on Linux, "lo0" on macOS.
 inline std::string_view LoopbackInterface() noexcept {
 #if defined(__APPLE__)
