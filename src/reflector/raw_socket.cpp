@@ -3,6 +3,7 @@
 #include "error.h"
 #include "ip_address.h"
 #include "mac_address.h"
+#include "util/byte_order.h"
 
 #include <array>
 #include <arpa/inet.h>
@@ -167,12 +168,6 @@ constexpr uint8_t IP_PROTO_UDP = 17;
 constexpr size_t IPV4_MIN_HEADER_SIZE = 20;
 constexpr size_t IPV6_HEADER_SIZE = 40;
 constexpr size_t UDP_HEADER_SIZE = 8;
-
-uint16_t ReadU16Be(std::span<const std::byte, 2> bytes) noexcept {
-    return static_cast<uint16_t>(
-        (static_cast<uint16_t>(std::to_integer<uint8_t>(bytes[0])) << 8)
-        | static_cast<uint16_t>(std::to_integer<uint8_t>(bytes[1])));
-}
 
 // EAGAIN and EWOULDBLOCK may differ per POSIX but are identical on both platforms we
 // support; the guard drops the redundant comparison so GCC's -Wlogical-op stays quiet,
