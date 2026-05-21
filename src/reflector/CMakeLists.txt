@@ -1,5 +1,6 @@
 add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/application.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/checksum.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error.cpp
