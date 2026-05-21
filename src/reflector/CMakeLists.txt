@@ -4,6 +4,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/config.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/raw_socket.cpp
