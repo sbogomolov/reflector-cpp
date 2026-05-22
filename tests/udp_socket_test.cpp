@@ -232,3 +232,19 @@ TEST(UdpSocketTest, SetMulticastInterfaceWithUnknownNameFailsOnV6Socket) {
     ASSERT_TRUE(sock.IsValid());
     EXPECT_FALSE(sock.SetMulticastInterface("nonexistent-iface-xyz"));
 }
+
+// The join succeeds only on a multicast-capable interface, which loopback isn't on Linux (lo has
+// no MULTICAST flag); that path is covered by the cross-platform RawSocket inject test on a
+// veth/feth pair. Here we cover the deterministic rejection paths.
+TEST(UdpSocketTest, JoinMulticastGroupFailsOnFamilyMismatch) {
+    UdpSocket sock{IpAddress::Family::V4};
+    ASSERT_TRUE(sock.IsValid());
+    EXPECT_FALSE(sock.JoinMulticastGroup(IpAddress::AllNodesLinkLocalV6(),
+        std::string{LoopbackInterface()}));
+}
+
+TEST(UdpSocketTest, JoinMulticastGroupWithUnknownInterfaceFails) {
+    UdpSocket sock{IpAddress::Family::V6};
+    ASSERT_TRUE(sock.IsValid());
+    EXPECT_FALSE(sock.JoinMulticastGroup(IpAddress::AllNodesLinkLocalV6(), "nonexistent-iface-xyz"));
+}

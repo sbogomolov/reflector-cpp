@@ -2,6 +2,7 @@
 #include "udp_socket.h"
 
 #include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <format>
 #include <net/if.h>
@@ -209,6 +210,47 @@ bool UdpSocket::SetMulticastInterface(const std::string& interface) {
     }
 
     interface_index_ = idx;
+    return true;
+}
+
+bool UdpSocket::JoinMulticastGroup(IpAddress group, const std::string& interface) {
+    if (!IsValid()) {
+        logger_.Error("Cannot join multicast group {}: socket is invalid", group);
+        return false;
+    }
+    if (group.AddressFamily() != family_) {
+        logger_.Error("Cannot join multicast group {}: address family does not match the socket",
+                      group);
+        return false;
+    }
+
+    const unsigned int idx = if_nametoindex(interface.c_str());
+    if (idx == 0) {
+        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        return false;
+    }
+
+    // group.Bytes() is network-order with the first 4 octets significant for IPv4, all 16 for IPv6.
+    if (family_ == IpAddress::Family::V6) {
+        ipv6_mreq request{};
+        std::memcpy(&request.ipv6mr_multiaddr, group.Bytes().data(), sizeof(request.ipv6mr_multiaddr));
+        request.ipv6mr_interface = idx;
+        if (setsockopt(fd_, IPPROTO_IPV6, IPV6_JOIN_GROUP, &request, sizeof(request)) != 0) {
+            logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
+                          Error::FromErrno());
+            return false;
+        }
+    } else {
+        ip_mreqn request{};
+        std::memcpy(&request.imr_multiaddr, group.Bytes().data(), sizeof(request.imr_multiaddr));
+        request.imr_ifindex = static_cast<int>(idx);
+        if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &request, sizeof(request)) != 0) {
+            logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
+                          Error::FromErrno());
+            return false;
+        }
+    }
+
     return true;
 }
 

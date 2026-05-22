@@ -30,6 +30,11 @@ public:
     [[nodiscard]] bool SetReuseAddr(bool enabled) noexcept;
     [[nodiscard]] bool SetV6Only(bool enabled) noexcept;
     [[nodiscard]] bool SetMulticastInterface(const std::string& interface);
+
+    // Subscribes to `group` on `interface` (IP_ADD_MEMBERSHIP / IPV6_JOIN_GROUP), so datagrams
+    // sent to that group and arriving on the interface are delivered to this socket. `group`'s
+    // family must match the socket's.
+    [[nodiscard]] bool JoinMulticastGroup(IpAddress group, const std::string& interface);
     [[nodiscard]] bool Bind(uint16_t port);
     [[nodiscard]] bool Bind(IpAddress address, uint16_t port);
     [[nodiscard]] bool SendTo(std::span<const std::byte> payload, IpAddress address, uint16_t port) noexcept;
