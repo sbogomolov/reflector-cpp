@@ -21,7 +21,7 @@ namespace reflector {
 
 class ApplicationTest : public ::testing::Test {
 protected:
-    static size_t CaptureSocketCount(const Application& app) { return app.CaptureSocketCount(); }
+    static size_t SocketCount(const Application& app) { return app.SocketCount(); }
     static size_t ReflectorCount(const Application& app) { return app.ReflectorCount(); }
 
     static WolConfig MakeConfig(std::string_view name, std::string_view source_if,
@@ -36,13 +36,13 @@ protected:
         };
     }
 
-    // Factory that hands out capture sockets wrapping real AF_UNIX fds (so the dispatcher
+    // Factory that hands out sockets wrapping real AF_UNIX fds (so the dispatcher
     // can register them) without needing CAP_NET_RAW. Counts calls so tests can assert how
     // many distinct interfaces were opened. The RawSocket owns and closes the fd.
-    struct CountingCaptureFactory {
+    struct CountingSocketFactory {
         int calls = 0;
 
-        Application::CaptureSocketFactory Make() {
+        Application::SocketFactory Make() {
             return [this](std::string_view interface) {
                 ++calls;
                 const int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
@@ -59,7 +59,7 @@ protected:
     }
 };
 
-TEST_F(ApplicationTest, InvalidCaptureSocketFailsConfigure) {
+TEST_F(ApplicationTest, InvalidSocketFailsConfigure) {
     Application app{[](std::string_view interface) {
         return RawSocket::ForTestingPtr(interface, -1);
     }};
@@ -72,14 +72,14 @@ TEST_F(ApplicationTest, InvalidCaptureSocketFailsConfigure) {
     });
 
     EXPECT_EQ(ReflectorCount(app), 0);
-    EXPECT_NE(output.find("capture socket on interface \"captest\" is invalid"), std::string::npos) << output;
+    EXPECT_NE(output.find("socket on interface \"captest\" is invalid"), std::string::npos) << output;
 }
 
 TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
-    CountingCaptureFactory factory;
+    CountingSocketFactory factory;
     Application app{factory.Make()};
 
-    // The injected capture socket is valid, so Configure gets past the capture check and on
+    // The injected socket is valid, so Configure gets past the socket check and on
     // to building the reflector, whose sender then fails to resolve a nonexistent target
     // interface. if_nametoindex fails for a missing interface regardless of privileges, so
     // this exercises the reflector-failure branch deterministically on every platform.
@@ -107,12 +107,12 @@ protected:
     }
 };
 
-TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesCaptureForSameInterface) {
-    CountingCaptureFactory factory;
+TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesSocketForSameInterface) {
+    CountingSocketFactory factory;
     Application app{factory.Make()};
 
     // Two reflectors on the same source interface, different ports: they must share one
-    // capture socket and one listener while producing two reflectors.
+    // socket (the packet dispatcher watches its fd once) while producing two reflectors.
     const Config config = TestConfigBuilder{}
         .Add(MakeConfig("tv", "captest", LoopbackInterface(), {7}))
         .Add(MakeConfig("console", "captest", LoopbackInterface(), {9}))
@@ -120,12 +120,12 @@ TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesCaptureForSameInterf
 
     ASSERT_TRUE(app.Configure(config));
     EXPECT_EQ(factory.calls, 1);
-    EXPECT_EQ(CaptureSocketCount(app), 1);
+    EXPECT_EQ(SocketCount(app), 1);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 
-TEST_F(ApplicationRequiresRootTest, WiresSeparateCaptureSocketsForDistinctInterfaces) {
-    CountingCaptureFactory factory;
+TEST_F(ApplicationRequiresRootTest, WiresSeparateSocketsForDistinctInterfaces) {
+    CountingSocketFactory factory;
     Application app{factory.Make()};
 
     const Config config = TestConfigBuilder{}
@@ -135,7 +135,7 @@ TEST_F(ApplicationRequiresRootTest, WiresSeparateCaptureSocketsForDistinctInterf
 
     ASSERT_TRUE(app.Configure(config));
     EXPECT_EQ(factory.calls, 2);
-    EXPECT_EQ(CaptureSocketCount(app), 2);
+    EXPECT_EQ(SocketCount(app), 2);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 
