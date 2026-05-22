@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cerrno>
 #include <format>
 #include <string>
 #include <string_view>
@@ -27,6 +28,17 @@ public:
 private:
     std::string message_;
 };
+
+// EAGAIN and EWOULDBLOCK may differ per POSIX but are identical on both platforms we support;
+// the guard drops the redundant comparison so GCC's -Wlogical-op stays quiet, while remaining
+// correct should a platform ever define them distinctly.
+[[nodiscard]] constexpr bool IsWouldBlockErrno(int err) noexcept {
+#if EAGAIN == EWOULDBLOCK
+    return err == EAGAIN;
+#else
+    return err == EAGAIN || err == EWOULDBLOCK;
+#endif
+}
 
 } // namespace reflector
 

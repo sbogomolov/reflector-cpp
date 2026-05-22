@@ -169,17 +169,6 @@ constexpr size_t IPV4_MIN_HEADER_SIZE = 20;
 constexpr size_t IPV6_HEADER_SIZE = 40;
 constexpr size_t UDP_HEADER_SIZE = 8;
 
-// EAGAIN and EWOULDBLOCK may differ per POSIX but are identical on both platforms we
-// support; the guard drops the redundant comparison so GCC's -Wlogical-op stays quiet,
-// while remaining correct should a platform ever define them distinctly.
-constexpr bool IsWouldBlockErrno(int err) noexcept {
-#if EAGAIN == EWOULDBLOCK
-    return err == EAGAIN;
-#else
-    return err == EAGAIN || err == EWOULDBLOCK;
-#endif
-}
-
 } // namespace
 
 RawSocket::RawSocket(std::string_view interface)
