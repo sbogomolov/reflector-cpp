@@ -162,7 +162,7 @@ inline std::string_view LoopbackInterface() noexcept {
 inline bool HasPacketCapturePrivileges() {
     static const bool cached = [] {
         bool valid = false;
-        (void)CaptureStdout([&] {
+        CaptureStdout([&] {
             RawSocket probe{LoopbackInterface()};
             valid = probe.IsValid();
         });

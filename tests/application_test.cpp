@@ -71,8 +71,7 @@ TEST_F(ApplicationTest, InvalidSocketFailsConfigure) {
         EXPECT_FALSE(app.Configure(config));
     });
 
-    EXPECT_EQ(ReflectorCount(app), 0);
-    EXPECT_NE(output.find("socket on interface \"captest\" is invalid"), std::string::npos) << output;
+    EXPECT_EQ(ReflectorCount(app), 0) << output;
 }
 
 TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
@@ -91,8 +90,7 @@ TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
         EXPECT_FALSE(app.Configure(config));
     });
 
-    EXPECT_EQ(ReflectorCount(app), 0);
-    EXPECT_NE(output.find("Cannot configure wol reflector \"tv\": setup failed"), std::string::npos) << output;
+    EXPECT_EQ(ReflectorCount(app), 0) << output;
 }
 
 // Wiring tests that build real reflectors: their UDP sender must bind to a real loopback

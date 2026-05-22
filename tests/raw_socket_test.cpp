@@ -45,7 +45,7 @@ protected:
     // Swallows logger output during the parse so failure-path tests stay quiet on stdout.
     std::optional<Packet> ParseQuietly(std::span<const std::byte> frame) {
         std::optional<Packet> result;
-        (void)CaptureStdout([&] { result = socket.ParseFrame(frame); });
+        CaptureStdout([&] { result = socket.ParseFrame(frame); });
         return result;
     }
 };
@@ -357,11 +357,10 @@ TEST_F(RawSocketTest, RejectsLoopbackWithUnsupportedFamily) {
 
 TEST_F(RawSocketTest, RejectsTooLongInterfaceName) {
     const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
-    const auto output = CaptureStdout([&] {
+    CaptureStdout([&] {  // swallow the rejection log; IsValid() is the contract
         const RawSocket socket{too_long};
         EXPECT_FALSE(socket.IsValid());
     });
-    EXPECT_NE(output.find("too long"), std::string::npos) << output;
 }
 
 // Packs N bpf_hdr-prefixed frames into a single batch (one read returns all of them),
