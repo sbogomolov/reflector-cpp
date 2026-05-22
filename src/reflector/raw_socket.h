@@ -52,9 +52,20 @@ public:
     [[nodiscard]] int Fd() const noexcept { return fd_; }
     [[nodiscard]] std::string_view Interface() const noexcept { return interface_; }
 
-    // True if the bound interface has a usable source address for `family` (resolved at open).
-    // The raw egress path and the Application's family gating consult this instead of probing.
+    // The interface's kernel index, resolved at open (0 for test-only sockets or if the
+    // lookup failed). The address monitor reports changes by index, so Application can map
+    // a changed index back to the socket whose addresses need refreshing.
+    [[nodiscard]] unsigned InterfaceIndex() const noexcept { return interface_index_; }
+
+    // True if the bound interface has a usable source address for `family` (resolved at open
+    // and on RefreshAddresses). The raw egress path and Application's family gating consult
+    // this instead of probing.
     [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept;
+
+    // Re-resolves the interface's source addresses. The address monitor calls this when the
+    // kernel reports an address change on this interface, so a long-running daemon's cached
+    // source addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
+    void RefreshAddresses() noexcept;
 
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
@@ -92,6 +103,7 @@ private:
     Logger logger_;
     std::string interface_;
     int fd_ = -1;
+    unsigned interface_index_ = 0;
 
     // Source MAC and per-family source IPs of interface_, resolved once at open; the raw egress
     // path must supply these itself (the kernel UDP stack used to). Empty for test-only sockets.

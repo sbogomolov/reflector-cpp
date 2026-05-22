@@ -533,4 +533,12 @@ TEST_F(RawSocketRequiresRootTest, DrainsBatchedFramesFromOneRead) {
 #endif
 }
 
+TEST_F(RawSocketRequiresRootTest, ResolvesInterfaceIndexAndAddresses) {
+    EXPECT_NE(socket->InterfaceIndex(), 0u);
+    // Loopback always has 127.0.0.1, so the v4 source resolves and survives a refresh.
+    EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
+    socket->RefreshAddresses();
+    EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
+}
+
 } // namespace reflector

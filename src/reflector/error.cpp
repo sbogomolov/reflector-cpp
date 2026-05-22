@@ -6,7 +6,10 @@
 namespace reflector {
 
 Error Error::FromErrno() {
-    const int err = errno;
+    return FromErrno(errno);
+}
+
+Error Error::FromErrno(int err) {
     return Error{"({}) {}", err, std::system_category().message(err)};
 }
 

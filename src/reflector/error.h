@@ -20,6 +20,7 @@ public:
     Error(std::format_string<Args...> fmt, Args&&... args) : message_{std::format(std::move(fmt), std::forward<Args>(args)...)} {}
 
     [[nodiscard]] static Error FromErrno();
+    [[nodiscard]] static Error FromErrno(int err);
 
     [[nodiscard]] std::string_view Message() const noexcept { return message_; }
 

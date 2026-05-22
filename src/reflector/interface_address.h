@@ -17,10 +17,17 @@ struct InterfaceAddresses {
     std::optional<IpAddress> v6;  // the interface's IPv6 link-local (fe80::) address, if any
 };
 
-// Resolves `interface`'s MAC and per-family source addresses; fields are left empty for
-// anything the interface lacks (or if the interface is unknown). The IPv6 result is the
-// link-local address, which is the correct source for the link-local multicast we send. Needs
-// no special privilege.
+// Resolves an interface's MAC and per-family source addresses; fields are left empty for
+// anything it lacks (or if it's unknown). The IPv6 result prefers a link-local address (the
+// correct source for the link-local multicast we send), falling back to ULA then GUA, and skips
+// tentative/deprecated/duplicated addresses. Needs no special privilege.
+//
+// Keyed by the identifier each platform resolves natively — and that RawSocket already holds:
+// the kernel interface index on Linux (netlink), the interface name on macOS (getifaddrs).
+#if defined(__linux__)
+[[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(unsigned interface_index) noexcept;
+#elif defined(__APPLE__)
 [[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(std::string_view interface) noexcept;
+#endif
 
 } // namespace reflector

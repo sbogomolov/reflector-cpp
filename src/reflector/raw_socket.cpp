@@ -185,6 +185,20 @@ constexpr bool IsWouldBlockErrno(int err) noexcept {
 RawSocket::RawSocket(std::string_view interface)
         : logger_{std::format("RawSocket:{}", interface)}
         , interface_{interface} {
+    // Guard before any name lookup: if_nametoindex (and BPF's BIOCSETIF) copy into a fixed
+    // IFNAMSIZ buffer, so an over-long name would be silently truncated and could match the
+    // wrong interface.
+    if (interface_.size() >= IFNAMSIZ) {
+        logger_.Error("Interface name \"{}\" is too long (max {} characters)", interface_, IFNAMSIZ - 1);
+        return;
+    }
+
+    interface_index_ = if_nametoindex(interface_.c_str());
+    if (interface_index_ == 0) {
+        logger_.Error("Cannot resolve interface index: {}", Error::FromErrno());
+        return;
+    }
+
 #if defined(__linux__)
     fd_ = socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(ETH_P_ALL));
     if (fd_ < 0) {
@@ -192,17 +206,10 @@ RawSocket::RawSocket(std::string_view interface)
         return;
     }
 
-    const auto ifindex = if_nametoindex(interface_.c_str());
-    if (ifindex == 0) {
-        logger_.Error("Cannot resolve interface index: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
     addr.sll_protocol = htons(ETH_P_ALL);
-    addr.sll_ifindex = static_cast<int>(ifindex);
+    addr.sll_ifindex = static_cast<int>(interface_index_);
     if (bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         Close();
@@ -224,11 +231,6 @@ RawSocket::RawSocket(std::string_view interface)
     logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_);
 
 #elif defined(__APPLE__)
-    if (interface_.size() >= IFNAMSIZ) {
-        logger_.Error("Interface name \"{}\" is too long (max {} characters)", interface_, IFNAMSIZ - 1);
-        return;
-    }
-
     for (int n = 0; n < 256 && fd_ < 0; ++n) {
         const auto path = std::format("/dev/bpf{}", n);
         fd_ = open(path.c_str(), O_RDWR);
@@ -326,7 +328,7 @@ RawSocket::RawSocket(std::string_view interface)
     logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_, blen);
 #endif
 
-    addresses_ = ResolveInterfaceAddresses(interface_);
+    RefreshAddresses();
 }
 
 RawSocket::RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept
@@ -353,6 +355,18 @@ RawSocket::~RawSocket() noexcept {
 
 bool RawSocket::CanSend(IpAddress::Family family) const noexcept {
     return (family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6).has_value();
+}
+
+void RawSocket::RefreshAddresses() noexcept {
+#if defined(__linux__)
+    addresses_ = ResolveInterfaceAddresses(interface_index_);
+#elif defined(__APPLE__)
+    addresses_ = ResolveInterfaceAddresses(interface_);
+#endif
+    // logger_ is prefixed with the interface name, so this ties name (prefix) and index together.
+    logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}", interface_index_,
+        addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
+        addresses_.v6 ? addresses_.v6->ToString() : "none");
 }
 
 #if defined(__APPLE__)
