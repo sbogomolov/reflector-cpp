@@ -22,7 +22,6 @@ namespace reflector {
 class ApplicationTest : public ::testing::Test {
 protected:
     static size_t CaptureSocketCount(const Application& app) { return app.CaptureSocketCount(); }
-    static size_t ListenerCount(const Application& app) { return app.ListenerCount(); }
     static size_t ReflectorCount(const Application& app) { return app.ReflectorCount(); }
 
     static WolConfig MakeConfig(std::string_view name, std::string_view source_if,
@@ -122,7 +121,6 @@ TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesCaptureForSameInterf
     ASSERT_TRUE(app.Configure(config));
     EXPECT_EQ(factory.calls, 1);
     EXPECT_EQ(CaptureSocketCount(app), 1);
-    EXPECT_EQ(ListenerCount(app), 1);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 
@@ -138,7 +136,6 @@ TEST_F(ApplicationRequiresRootTest, WiresSeparateCaptureSocketsForDistinctInterf
     ASSERT_TRUE(app.Configure(config));
     EXPECT_EQ(factory.calls, 2);
     EXPECT_EQ(CaptureSocketCount(app), 2);
-    EXPECT_EQ(ListenerCount(app), 2);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 

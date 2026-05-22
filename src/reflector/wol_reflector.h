@@ -3,14 +3,13 @@
 #include "config.h"
 #include "logger.h"
 #include "mac_address.h"
+#include "packet_dispatcher.h"
+#include "raw_socket.h"
 #include "udp_link_fanout_sender.h"
 #include "util/no_move.h"
-#include "wol_listener.h"
 
 #include <array>
 #include <cstddef>
-#include <cstdint>
-#include <deque>
 #include <optional>
 #include <span>
 #include <vector>
@@ -19,7 +18,7 @@ namespace reflector {
 
 class WolReflector : NoMove {
 public:
-    WolReflector(WolListener& listener, const WolConfig& config);
+    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config);
     ~WolReflector() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
@@ -32,22 +31,16 @@ private:
     static constexpr size_t MAC_REPETITIONS = 16;
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
-    WolReflector(WolListener& listener, const WolConfig& config,
+    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config,
         std::optional<UdpLinkFanoutSender> v4_sender, std::optional<UdpLinkFanoutSender> v6_sender);
 
-    struct PortHandler {
-        WolReflector* parent;
-        uint16_t port;
-        void OnPacket(const Packet& packet) noexcept;
-    };
-
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
-    void Initialize(WolListener& listener, const WolConfig& config);
+    void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
-    void HandlePacket(const Packet& packet, uint16_t port) noexcept;
+    void OnPacket(const Packet& packet) noexcept;
     [[nodiscard]] UdpLinkFanoutSender* SenderFor(IpAddress::Family family) noexcept;
     void Reset() noexcept;
 
@@ -58,10 +51,7 @@ private:
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
-    // std::deque keeps element addresses stable across growth — Delegate stores raw PortHandler*
-    // pointers into this container, so reallocating storage would dangle them.
-    std::deque<PortHandler> port_handlers_;
-    std::vector<WolListener::Registration> registrations_;
+    std::vector<PacketDispatcher::Registration> registrations_;
 };
 
 } // namespace reflector

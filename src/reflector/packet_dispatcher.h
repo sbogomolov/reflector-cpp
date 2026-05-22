@@ -52,7 +52,6 @@ public:
 
 private:
     friend class PacketDispatcherTest;
-    friend class WolListenerTest;
     friend class WolReflectorTest;
     friend class WolReflectorPerFamilyTest;
 

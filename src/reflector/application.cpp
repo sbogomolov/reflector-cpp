@@ -17,23 +17,20 @@ Application::Application(CaptureSocketFactory capture_socket_factory)
 
 bool Application::Configure(const Config& config) {
     for (const auto& wol_config : config.WolConfigs()) {
-        // One capture socket per source interface, shared by every reflector that listens
-        // on it; created lazily on first use via the (overridable) factory.
+        // One capture socket per source interface, shared by every reflector registered on
+        // it; created lazily on first use via the (overridable) factory.
         auto [entry, inserted] = capture_sockets_.try_emplace(wol_config.source_if);
         if (inserted) {
             entry->second = capture_socket_factory_(wol_config.source_if);
         }
-        auto& capture = entry->second;
-        if (!capture || !capture->IsValid()) {
+        auto& socket = entry->second;
+        if (!socket || !socket->IsValid()) {
             logger_.Error("Cannot configure wol reflector \"{}\": capture socket on interface \"{}\" is invalid",
                 wol_config.name, wol_config.source_if);
             return false;
         }
 
-        auto& listener = wol_listeners_.try_emplace(
-            wol_config.source_if, packet_dispatcher_, *capture).first->second;
-
-        auto reflector = std::make_unique<WolReflector>(listener, wol_config);
+        auto reflector = std::make_unique<WolReflector>(packet_dispatcher_, *socket, wol_config);
         if (!reflector->IsValid()) {
             logger_.Error("Cannot configure wol reflector \"{}\": setup failed", wol_config.name);
             return false;
