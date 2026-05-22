@@ -24,6 +24,8 @@ namespace {
 
 constexpr auto WAIT_BUDGET = std::chrono::milliseconds{2000};
 constexpr auto POLL_SLICE_MS = 100;
+constexpr uint16_t INJECT_SRC_PORT = 40000;
+constexpr uint16_t INJECT_DST_PORT = 40009;
 
 } // namespace
 
@@ -539,5 +541,58 @@ TEST_F(RawSocketRequiresRootTest, ResolvesInterfaceIndexAndAddresses) {
     socket->RefreshAddresses();
     EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
 }
+
+// Injects on the real loopback socket and asserts the kernel accepted the frame for transmission:
+// the source address resolves, BuildUdpFrame/BuildLoopbackUdpFrame produce a frame, and the
+// sendto/write syscall takes it. This is the only direct test of the actual macOS BPF write path
+// — macOS won't loop the frame back for a reception check (see below) — so it runs on both
+// platforms. Frame-byte correctness is covered by the frame-builder tests.
+TEST_F(RawSocketRequiresRootTest, InjectsUdpDatagram) {
+    const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
+
+    EXPECT_TRUE(socket->SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+        payload, /*ttl=*/64));
+}
+
+// Round-trips the injected datagram: the broadcast frame loops back on lo and the same socket
+// captures it (the BPF filter drops only the outgoing copy, so the looped-back broadcast
+// survives), verifying the on-the-wire frame's source/destination and payload.
+//
+// Linux only — compiled out of the macOS build rather than skipped at runtime: macOS never loops
+// BPF-injected frames on lo0 back to the input path (the same reason pcap_inject on lo0 is a no-op
+// there; confirmed that neither a UDP socket nor the injecting BPF device itself observes them), so
+// this can never run there. The macOS inject path is asserted by InjectsUdpDatagram above and its
+// framing by the frame-builder tests.
+#if defined(__linux__)
+TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
+    const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
+
+    ASSERT_TRUE(socket->SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+        payload, /*ttl=*/64));
+
+    // lo carries unrelated traffic too; drain until we see the frame we just injected.
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_BUDGET;
+    std::optional<Packet> captured;
+    while (!captured && std::chrono::steady_clock::now() < deadline) {
+        auto packet = socket->Receive();
+        if (packet && packet->header.source_port == INJECT_SRC_PORT
+                && packet->header.dest_ip == IpAddress::BroadcastV4()) {
+            captured = std::move(packet);
+            break;
+        }
+        if (!packet) {
+            pollfd pfd{.fd = socket->Fd(), .events = POLLIN, .revents = 0};
+            ::poll(&pfd, 1, POLL_SLICE_MS);
+        }
+    }
+
+    ASSERT_TRUE(captured.has_value()) << "did not capture the injected frame";
+    EXPECT_EQ(captured->header.source_ip, IpAddress::LoopbackV4());  // lo's cached v4 source
+    EXPECT_EQ(captured->header.dest_ip, IpAddress::BroadcastV4());
+    EXPECT_EQ(captured->header.dest_port, INJECT_DST_PORT);
+    EXPECT_EQ(std::vector<std::byte>(captured->payload.begin(), captured->payload.end()),
+        std::vector<std::byte>(payload.begin(), payload.end()));
+}
+#endif
 
 } // namespace reflector

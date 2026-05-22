@@ -1,6 +1,7 @@
 #include "raw_socket.h"
 
 #include "error.h"
+#include "frame_builder.h"
 #include "ip_address.h"
 #include "mac_address.h"
 #include "util/byte_order.h"
@@ -152,6 +153,12 @@ std::array<BpfInsn, 9> LOOPBACK_UDP_FILTER{{
 // constructor and by the test-only ForTesting constructor on both platforms; macOS
 // production instead sizes the buffer from BPF's own preferred size via BIOCGBLEN.
 constexpr size_t DEFAULT_RECEIVE_BUFFER_SIZE = 4 * 1024;
+
+// The frame to send is assembled into a stack buffer this size. Same rationale as the receive
+// buffer: one datagram at a typical MTU plus headers, with headroom; the traffic we emit (WoL,
+// later mDNS/SSDP) stays well under it and we don't fragment. BuildUdpFrame fails cleanly if a
+// caller ever exceeds it.
+constexpr size_t SEND_BUFFER_SIZE = 4 * 1024;
 
 #if defined(__APPLE__)
 // DLT_NULL framing: 4 bytes of address family in host byte order, then the IP packet.
@@ -356,6 +363,50 @@ void RawSocket::RefreshAddresses() noexcept {
     logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}", interface_index_,
         addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
         addresses_.v6 ? addresses_.v6->ToString() : "none");
+}
+
+bool RawSocket::SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept {
+    const auto family = dst_ip.AddressFamily();
+    const auto& source = family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
+    if (!source.has_value()) {
+        logger_.Error("Cannot send to {}: interface has no source address for that family",
+            dst_ip.ToString());
+        return false;
+    }
+
+    std::array<std::byte, SEND_BUFFER_SIZE> frame{};
+#if defined(__linux__)
+    const size_t length = BuildUdpFrame(MulticastMacFor(dst_ip), addresses_.mac, *source, dst_ip,
+        src_port, dst_port, payload, ttl, frame);
+#elif defined(__APPLE__)
+    const size_t length = link_type_ == LinkType::Loopback
+        ? BuildLoopbackUdpFrame(*source, dst_ip, src_port, dst_port, payload, ttl, frame)
+        : BuildUdpFrame(MulticastMacFor(dst_ip), addresses_.mac, *source, dst_ip, src_port,
+              dst_port, payload, ttl, frame);
+#endif
+    if (length == 0) {
+        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst_ip.ToString(),
+            payload.size());
+        return false;
+    }
+
+#if defined(__linux__)
+    // SOCK_RAW carries the full L2 frame, so the kernel only needs the egress interface; the
+    // destination MAC already lives in the frame, so sll_addr/sll_halen stay zero.
+    sockaddr_ll addr{};
+    addr.sll_family = AF_PACKET;
+    addr.sll_ifindex = static_cast<int>(interface_index_);
+    const auto sent = sendto(fd_, frame.data(), length, 0,
+        reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+#elif defined(__APPLE__)
+    const auto sent = write(fd_, frame.data(), length);
+#endif
+    if (sent < 0 || static_cast<size_t>(sent) != length) {
+        logger_.Error("Cannot inject datagram to {}: {}", dst_ip.ToString(), Error::FromErrno());
+        return false;
+    }
+    return true;
 }
 
 #if defined(__APPLE__)

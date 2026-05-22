@@ -67,6 +67,15 @@ public:
     // source addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
     void RefreshAddresses() noexcept;
 
+    // Injects a UDP datagram out this interface as a raw L2 frame: builds the Ethernet/IP/UDP
+    // headers and checksums from the interface's cached source MAC/IP, derives the destination
+    // MAC from `dst_ip`, and writes the frame to the kernel. `dst_ip` must be multicast or the
+    // IPv4 limited broadcast — unicast neighbour resolution is out of scope. `ttl` sets the IPv4
+    // TTL / IPv6 hop limit. Fails (after logging) if the interface has no source address for
+    // `dst_ip`'s family; gate callers with CanSend(dst_ip.AddressFamily()).
+    [[nodiscard]] bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept;
+
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
     // Returns nullopt when no datagram is currently available (EAGAIN), or when the next
