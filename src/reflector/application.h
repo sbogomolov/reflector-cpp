@@ -3,6 +3,7 @@
 #include "config.h"
 #include "dispatcher.h"
 #include "logger.h"
+#include "packet_dispatcher.h"
 #include "raw_socket.h"
 #include "util/no_move.h"
 #include "wol_listener.h"
@@ -60,13 +61,14 @@ private:
     Logger logger_;
 
     // Declaration order is the teardown order in reverse: reflectors drop their listener
-    // registrations first, listeners then drop their dispatcher registrations, the
-    // dispatcher tears down its event queue (dropping cached socket pointers), and only
-    // then the capture sockets close their fds. The dispatcher caches each
-    // RawSocket* (epoll data.ptr / kqueue udata), so the sockets live behind
-    // unique_ptr to keep their addresses stable across map rehashing.
+    // registrations first, listeners then drop their packet-dispatcher registrations, the
+    // packet dispatcher drops its per-socket dispatcher registrations, the dispatcher tears
+    // down its event queue, and only then the capture sockets close their fds. The packet
+    // dispatcher caches each RawSocket*, so the sockets live behind unique_ptr to keep their
+    // addresses stable across map rehashing.
     std::unordered_map<std::string, std::unique_ptr<RawSocket>> capture_sockets_;
     Dispatcher dispatcher_;
+    PacketDispatcher packet_dispatcher_{dispatcher_};
     std::unordered_map<std::string, WolListener> wol_listeners_;
     std::vector<std::unique_ptr<WolReflector>> reflectors_;
 };

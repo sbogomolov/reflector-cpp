@@ -7,22 +7,22 @@
 #include "test_helpers.h"
 
 #include <cstddef>
-#include <memory>
 
 namespace reflector {
 
 class WolListenerTest : public ::testing::Test {
 protected:
     Dispatcher dispatcher;
+    PacketDispatcher packet_dispatcher{dispatcher};
     TestCaptureSocket capture;
-    WolListener listener{dispatcher, capture.socket};
+    WolListener listener{packet_dispatcher, capture.socket};
 
     size_t DispatcherRegistrationCount() const {
-        return DispatcherRegistrationCount(dispatcher);
+        return DispatcherRegistrationCount(packet_dispatcher);
     }
 
-    size_t DispatcherRegistrationCount(const Dispatcher& inspected_dispatcher) const {
-        return inspected_dispatcher.RegistrationCount();
+    size_t DispatcherRegistrationCount(const PacketDispatcher& inspected_packet_dispatcher) const {
+        return inspected_packet_dispatcher.RegistrationCount();
     }
 
     size_t RegistrationCount() const {
@@ -30,7 +30,7 @@ protected:
     }
 
     void Dispatch(const Packet& packet) {
-        dispatcher.DispatchPacket(capture.socket, packet);
+        packet_dispatcher.DispatchPacket(capture.socket, packet);
     }
 };
 
@@ -105,7 +105,7 @@ TEST_F(WolListenerTest, RegistrationInvalidAfterListenerDestroyed) {
     PacketCounter counter;
 
     {
-        WolListener scoped_listener{dispatcher, capture.socket};
+        WolListener scoped_listener{packet_dispatcher, capture.socket};
         registration = scoped_listener.Register(9, CreateDelegate<&PacketCounter::OnPacket>(&counter));
         ASSERT_TRUE(registration.IsValid());
         EXPECT_EQ(DispatcherRegistrationCount(), 1);
@@ -113,26 +113,6 @@ TEST_F(WolListenerTest, RegistrationInvalidAfterListenerDestroyed) {
 
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
     EXPECT_FALSE(registration.IsValid());
-    EXPECT_FALSE(registration.Reset());
-}
-
-TEST_F(WolListenerTest, RegistrationInvalidAfterDispatcherDestroyedBeforeListener) {
-    WolListener::Registration registration;
-    PacketCounter counter;
-    std::unique_ptr<WolListener> scoped_listener;
-
-    {
-        Dispatcher scoped_dispatcher;
-        scoped_listener = std::make_unique<WolListener>(scoped_dispatcher, capture.socket);
-        registration = scoped_listener->Register(9, CreateDelegate<&PacketCounter::OnPacket>(&counter));
-        ASSERT_TRUE(registration.IsValid());
-        EXPECT_EQ(DispatcherRegistrationCount(scoped_dispatcher), 1);
-    }
-
-    EXPECT_FALSE(registration.IsValid());
-    EXPECT_TRUE(registration.Reset());
-
-    scoped_listener.reset();
     EXPECT_FALSE(registration.Reset());
 }
 

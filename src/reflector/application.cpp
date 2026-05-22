@@ -31,7 +31,7 @@ bool Application::Configure(const Config& config) {
         }
 
         auto& listener = wol_listeners_.try_emplace(
-            wol_config.source_if, dispatcher_, *capture).first->second;
+            wol_config.source_if, packet_dispatcher_, *capture).first->second;
 
         auto reflector = std::make_unique<WolReflector>(listener, wol_config);
         if (!reflector->IsValid()) {

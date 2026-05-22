@@ -8,6 +8,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/interface_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/packet_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/raw_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_link_fanout_sender.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_socket.cpp

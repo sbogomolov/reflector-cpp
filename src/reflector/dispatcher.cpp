@@ -3,13 +3,10 @@
 #include "error.h"
 #include "logger.h"
 
-#include <algorithm>
 #include <cerrno>
 #include <ctime>
-#include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
-#include <vector>
 
 #if !defined(__APPLE__) && !defined(__linux__)
 #error "Dispatcher only supports macOS and Linux"
@@ -34,28 +31,6 @@ timespec ToTimespec(std::chrono::milliseconds timeout) noexcept {
 }
 #endif
 
-bool Matches(const PacketFilter& filter, const Packet& packet) {
-    if (filter.source_ip && *filter.source_ip != packet.header.source_ip) {
-        return false;
-    }
-    if (filter.dest_ip && *filter.dest_ip != packet.header.dest_ip) {
-        return false;
-    }
-    if (filter.source_port && *filter.source_port != packet.header.source_port) {
-        return false;
-    }
-    if (filter.dest_port && *filter.dest_port != packet.header.dest_port) {
-        return false;
-    }
-    if (filter.source_mac && *filter.source_mac != packet.header.source_mac) {
-        return false;
-    }
-    if (filter.dest_mac && *filter.dest_mac != packet.header.dest_mac) {
-        return false;
-    }
-    return true;
-}
-
 Logger& GetLogger() noexcept {
     static Logger logger{"Dispatcher"};
     return logger;
@@ -65,20 +40,16 @@ Logger& GetLogger() noexcept {
 
 namespace reflector {
 
-struct Dispatcher::DispatcherState {
-    Dispatcher* dispatcher;
-};
-
-Dispatcher::Registration::Registration(WeakPtrUnsynchronized<DispatcherState> dispatcher_state, RegistrationId id) noexcept
-        : dispatcher_state_{std::move(dispatcher_state)}, id_{id} {}
+Dispatcher::Registration::Registration(Dispatcher* dispatcher, int fd) noexcept
+        : dispatcher_{dispatcher}, fd_{fd} {}
 
 Dispatcher::Registration::~Registration() noexcept {
     Reset();
 }
 
 Dispatcher::Registration::Registration(Registration&& other) noexcept
-        : dispatcher_state_{std::move(other.dispatcher_state_)}
-        , id_{std::exchange(other.id_, 0)} {}
+        : dispatcher_{std::exchange(other.dispatcher_, nullptr)}
+        , fd_{std::exchange(other.fd_, -1)} {}
 
 Dispatcher::Registration& Dispatcher::Registration::operator=(Registration&& other) noexcept {
     if (this == &other) {
@@ -86,31 +57,28 @@ Dispatcher::Registration& Dispatcher::Registration::operator=(Registration&& oth
     }
 
     Reset();
-    dispatcher_state_ = std::move(other.dispatcher_state_);
-    id_ = std::exchange(other.id_, 0);
+    dispatcher_ = std::exchange(other.dispatcher_, nullptr);
+    fd_ = std::exchange(other.fd_, -1);
     return *this;
 }
 
 bool Dispatcher::Registration::IsValid() const noexcept {
-    const auto dispatcher_state = dispatcher_state_.lock();
-    return id_ != 0 && dispatcher_state;
+    return dispatcher_ != nullptr && fd_ >= 0;
 }
 
 bool Dispatcher::Registration::Reset() noexcept {
-    const auto dispatcher_state = dispatcher_state_.lock();
-    if (id_ == 0 || !dispatcher_state) {
-        dispatcher_state_.reset();
-        id_ = 0;
+    if (dispatcher_ == nullptr || fd_ < 0) {
+        dispatcher_ = nullptr;
+        fd_ = -1;
         return false;
     }
 
-    const auto id = std::exchange(id_, 0);
-    dispatcher_state_.reset();
-    return dispatcher_state->dispatcher->Unregister(id);
+    auto* dispatcher = std::exchange(dispatcher_, nullptr);
+    const auto fd = std::exchange(fd_, -1);
+    return dispatcher->Unregister(fd);
 }
 
-Dispatcher::Dispatcher()
-        : dispatcher_state_{new DispatcherState{this}} {
+Dispatcher::Dispatcher() {
 #if defined(__APPLE__)
     event_fd_ = kqueue();
 #elif defined(__linux__)
@@ -125,11 +93,9 @@ Dispatcher::Dispatcher()
 }
 
 Dispatcher::~Dispatcher() noexcept {
-    if (!registrations_.empty()) {
-        GetLogger().Error("Destroying dispatcher with {} packet callback registration(s) still active", registrations_.size());
+    if (!callbacks_.empty()) {
+        GetLogger().Error("Destroying dispatcher with {} fd callback registration(s) still active", callbacks_.size());
     }
-    dispatcher_state_.reset();
-    registrations_.clear();
 
     if (event_fd_ >= 0) {
         GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_);
@@ -138,58 +104,38 @@ Dispatcher::~Dispatcher() noexcept {
     }
 }
 
-Dispatcher::Registration Dispatcher::Register(
-    RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
-    if (!socket.IsValid()) {
-        GetLogger().Error("Cannot register packet callback: capture socket is invalid");
+Dispatcher::Registration Dispatcher::Register(int fd, const OnReadableCallback& on_readable) {
+    if (fd < 0) {
+        GetLogger().Error("Cannot register fd callback: fd is invalid");
         return Registration{};
     }
-    const auto fd = socket.Fd();
-    if (!AddReadEvent(socket)) {
-        GetLogger().Error("Cannot register packet callback: read event registration failed for fd {}", fd);
+    if (callbacks_.contains(fd)) {
+        GetLogger().Error("Cannot register fd callback: a callback for fd {} is already registered", fd);
+        return Registration{};
+    }
+    if (!AddReadEvent(fd)) {
+        GetLogger().Error("Cannot register fd callback: read event registration failed for fd {}", fd);
         return Registration{};
     }
 
-    // Must append (never insert in the middle) so registrations_ stays sorted by id —
-    // DispatchPacket's merge walk depends on it.
-    const auto id = next_registration_id_++;
-    registrations_.push_back(RegistrationEntry{
-        .id = id,
-        .socket = &socket,
-        .filter = filter,
-        .callback = callback,
-    });
-    GetLogger().Debug("Registered packet callback {} for fd {}", id, fd);
-    return Registration{dispatcher_state_, id};
+    callbacks_.emplace(fd, on_readable);
+    GetLogger().Debug("Registered fd callback for fd {}", fd);
+    return Registration{this, fd};
 }
 
-bool Dispatcher::Unregister(RegistrationId id) noexcept {
-    const auto it = std::ranges::find_if(registrations_, [id](const auto& registration) {
-        return registration.id == id;
-    });
-    if (it == registrations_.end()) {
-        GetLogger().Warning("Cannot unregister packet callback {}: not found", id);
+bool Dispatcher::Unregister(int fd) noexcept {
+    const auto it = callbacks_.find(fd);
+    if (it == callbacks_.end()) {
+        GetLogger().Warning("Cannot unregister fd callback for fd {}: not found", fd);
         return false;
     }
 
-    const auto* socket = it->socket;
-    registrations_.erase(it);
-
-    const auto socket_still_used = std::ranges::any_of(registrations_, [socket](const auto& r) {
-        return r.socket == socket;
-    });
-    if (!socket_still_used) {
-        if (!RemoveReadEvent(*socket)) {
-            GetLogger().Error("Cannot remove read event for fd {} after unregistering callback {}", socket->Fd(), id);
-        }
-        // Tell DrainReadableFd to stop before its next Receive() — the socket no longer
-        // has any registered consumers.
-        if (active_socket_ == socket) {
-            active_socket_ = nullptr;
-        }
+    callbacks_.erase(it);
+    if (!RemoveReadEvent(fd)) {
+        GetLogger().Error("Cannot remove read event for fd {} after unregistering its callback", fd);
     }
 
-    GetLogger().Debug("Unregistered packet callback {}", id);
+    GetLogger().Debug("Unregistered fd callback for fd {}", fd);
     return true;
 }
 
@@ -222,12 +168,11 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count == 0) {
         return false;
     }
+    const auto fd = static_cast<int>(event.ident);
     if ((event.flags & EV_ERROR) != 0) {
-        GetLogger().Error("Dispatcher read event failed for fd {}: {}", static_cast<int>(event.ident), event.data);
+        GetLogger().Error("Dispatcher read event failed for fd {}: {}", fd, event.data);
         return false;
     }
-
-    auto* socket = static_cast<RawSocket*>(event.udata);
 #elif defined(__linux__)
     epoll_event event{};
     const auto event_count = epoll_wait(event_fd_, &event, 1, static_cast<int>(timeout.count()));
@@ -242,19 +187,27 @@ bool Dispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count == 0) {
         return false;
     }
-    auto* socket = static_cast<RawSocket*>(event.data.ptr);
+    const auto fd = event.data.fd;
     const auto events = event.events;
     if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
-        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", socket->Fd(), events);
+        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
         return false;
     }
 #endif
 
-    return DrainReadableFd(*socket);
+    const auto it = callbacks_.find(fd);
+    if (it == callbacks_.end()) {
+        GetLogger().Warning("Dispatcher woke for unwatched fd {}", fd);
+        return false;
+    }
+    // Copy the callback before invoking: it may unregister this fd (erasing the map entry),
+    // which would otherwise dangle the reference we are calling through.
+    auto on_readable = it->second;
+    on_readable(fd);
+    return true;
 }
 
-bool Dispatcher::AddReadEvent(RawSocket& socket) noexcept {
-    const auto fd = socket.Fd();
+bool Dispatcher::AddReadEvent(int fd) noexcept {
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot add read event for fd {}: event queue is invalid", fd);
         return false;
@@ -262,7 +215,7 @@ bool Dispatcher::AddReadEvent(RawSocket& socket) noexcept {
 
 #if defined(__APPLE__)
     struct kevent change{};
-    EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, &socket);
+    EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
         GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
         return false;
@@ -270,7 +223,7 @@ bool Dispatcher::AddReadEvent(RawSocket& socket) noexcept {
 #elif defined(__linux__)
     epoll_event event{};
     event.events = EPOLLIN;
-    event.data.ptr = &socket;
+    event.data.fd = fd;
     if (epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0) {
         if (errno == EEXIST) {
             GetLogger().Debug("Read event already registered for fd {}", fd);
@@ -285,8 +238,7 @@ bool Dispatcher::AddReadEvent(RawSocket& socket) noexcept {
     return true;
 }
 
-bool Dispatcher::RemoveReadEvent(const RawSocket& socket) noexcept {
-    const auto fd = socket.Fd();
+bool Dispatcher::RemoveReadEvent(int fd) noexcept {
     if (event_fd_ < 0) {
         GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
         return false;
@@ -308,77 +260,6 @@ bool Dispatcher::RemoveReadEvent(const RawSocket& socket) noexcept {
 
     GetLogger().Debug("Removed read event for fd {}", fd);
     return true;
-}
-
-bool Dispatcher::DrainReadableFd(RawSocket& socket) noexcept {
-    active_socket_ = &socket;
-    bool dispatched_any = false;
-
-#if defined(__APPLE__)
-    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
-#elif defined(__linux__)
-    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
-#endif
-        const auto packet = socket.Receive();
-        if (!packet) {
-#if defined(__APPLE__)
-            if (socket.HasBufferedData()) {
-                // Drain all userland-buffered frames. kqueue/epoll only fire on kernel-side
-                // activity, so if we leave frames buffered they'll stall. Only macOS BPF
-                // buffers in userland; HasBufferedData is not defined on Linux.
-                continue;
-            }
-#endif
-            break;
-        }
-
-        DispatchPacket(socket, *packet);
-        dispatched_any = true;
-
-        if (active_socket_ != &socket) {
-            // A callback dropped the last registration for this socket; nothing wants
-            // its frames anymore. Discard any userland-buffered frames so they don't
-            // stall (kqueue won't refire on data that's already in our buffer).
-#if defined(__APPLE__)
-            socket.ClearBuffer();
-#endif
-            break;
-        }
-    }
-
-    active_socket_ = nullptr;
-    return dispatched_any;
-}
-
-void Dispatcher::DispatchPacket(const RawSocket& socket, const Packet& packet) const {
-    // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
-    // elements, so after each dispatch we check that our slot still holds the entry we
-    // just fired; if it doesn't, we restart from the front and let last_dispatched_id
-    // skip anything we already handled. registrations_ is sorted by id (Register
-    // appends with a monotonically increasing id, Unregister preserves order), so the
-    // id filter is both necessary and sufficient to avoid duplicate dispatch.
-    //
-    // Side effect to be aware of: a callback that calls Register creates a new entry
-    // with a higher id, which this loop will reach and dispatch for the current packet.
-    RegistrationId last_dispatched_id = 0;
-    for (size_t idx = 0; idx < registrations_.size();) {
-        auto& entry = registrations_[idx];
-        if (entry.id > last_dispatched_id
-            && entry.socket == &socket
-            && Matches(entry.filter, packet)) {
-            last_dispatched_id = entry.id;
-            entry.callback(packet);
-
-            // If a callback shifted entries before us, our slot now holds a different id
-            // (or is past the end). Restart from the front; the last_dispatched_id filter
-            // above skips anything we already dispatched.
-            if (idx >= registrations_.size() || registrations_[idx].id != last_dispatched_id) {
-                idx = 0;
-                continue;
-            }
-        }
-        ++idx;
-    }
 }
 
 } // namespace reflector

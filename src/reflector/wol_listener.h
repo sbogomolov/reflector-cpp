@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dispatcher.h"
+#include "packet_dispatcher.h"
 #include "raw_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
@@ -36,7 +36,7 @@ public:
         WeakPtrUnsynchronized<RegistrationEntry> registration_entry_;
     };
 
-    WolListener(Dispatcher& dispatcher, RawSocket& capture);
+    WolListener(PacketDispatcher& packet_dispatcher, RawSocket& capture);
     ~WolListener() noexcept;
 
     [[nodiscard]] Registration Register(uint16_t port, const PacketCallback& callback);
@@ -48,7 +48,7 @@ private:
     bool Unregister(SharedPtrUnsynchronized<RegistrationEntry> registration) noexcept;
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
-    Dispatcher* dispatcher_;
+    PacketDispatcher* packet_dispatcher_;
     RawSocket* capture_;
     std::vector<SharedPtrUnsynchronized<RegistrationEntry>> registrations_;
 };

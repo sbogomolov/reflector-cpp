@@ -451,7 +451,7 @@ TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
 
 class RawSocketRequiresRootTest : public ::testing::Test {
 protected:
-    std::optional<RawSocket> capture;
+    std::optional<RawSocket> socket;
     UdpSocket listener_socket{IpAddress::Family::V4};
     uint16_t listener_port = 0;
     UdpSocket sender_socket{IpAddress::Family::V4};
@@ -461,8 +461,8 @@ protected:
             GTEST_SKIP() << "RawSocket on " << LoopbackInterface()
                 << " requires CAP_NET_RAW (Linux) or bpf group / root (macOS)";
         }
-        capture.emplace(LoopbackInterface());
-        ASSERT_TRUE(capture->IsValid());
+        socket.emplace(LoopbackInterface());
+        ASSERT_TRUE(socket->IsValid());
         listener_port = BindLoopback(listener_socket);
     }
 
@@ -472,7 +472,7 @@ protected:
     std::optional<Packet> ReceiveOurDatagram(std::chrono::milliseconds budget = WAIT_BUDGET) {
         const auto deadline = std::chrono::steady_clock::now() + budget;
         while (std::chrono::steady_clock::now() < deadline) {
-            auto packet = capture->Receive();
+            auto packet = socket->Receive();
             if (packet) {
                 if (packet->header.dest_port == listener_port
                         && packet->header.dest_ip == IpAddress::LoopbackV4()) {
@@ -480,7 +480,7 @@ protected:
                 }
                 continue;
             }
-            pollfd pfd{.fd = capture->Fd(), .events = POLLIN, .revents = 0};
+            pollfd pfd{.fd = socket->Fd(), .events = POLLIN, .revents = 0};
             ::poll(&pfd, 1, POLL_SLICE_MS);
         }
         return std::nullopt;
@@ -520,7 +520,7 @@ TEST_F(RawSocketRequiresRootTest, DrainsBatchedFramesFromOneRead) {
         const auto packet = ReceiveOurDatagram();
         ASSERT_TRUE(packet.has_value()) << "missing packet " << (i + 1);
 #if defined(__APPLE__)
-        if (capture->HasBufferedData()) {
+        if (socket->HasBufferedData()) {
             observed_buffered_read = true;
         }
 #endif

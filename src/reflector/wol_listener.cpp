@@ -18,7 +18,7 @@ Logger& GetLogger() noexcept {
 
 struct WolListener::RegistrationEntry {
     WolListener* listener;
-    Dispatcher::Registration dispatcher_reg;
+    PacketDispatcher::Registration dispatcher_reg;
     uint16_t port;
 };
 
@@ -58,8 +58,8 @@ bool WolListener::Registration::Reset() noexcept {
     return registration->listener->Unregister(registration);
 }
 
-WolListener::WolListener(Dispatcher& dispatcher, RawSocket& capture)
-        : dispatcher_{&dispatcher}, capture_{&capture} {}
+WolListener::WolListener(PacketDispatcher& packet_dispatcher, RawSocket& capture)
+        : packet_dispatcher_{&packet_dispatcher}, capture_{&capture} {}
 
 WolListener::~WolListener() noexcept {
     if (!registrations_.empty()) {
@@ -78,7 +78,7 @@ WolListener::Registration WolListener::Register(uint16_t port, const PacketCallb
     }
 
     PacketFilter filter{.dest_port = port};
-    auto dispatcher_reg = dispatcher_->Register(*capture_, filter, callback);
+    auto dispatcher_reg = packet_dispatcher_->Register(*capture_, filter, callback);
     if (!dispatcher_reg.IsValid()) {
         GetLogger().Error("Cannot register wol callback on interface \"{}\" port {}: dispatcher registration failed",
             capture_->Interface(), port);

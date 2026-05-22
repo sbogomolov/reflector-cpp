@@ -1,26 +1,25 @@
 #pragma once
 
-#include "packet.h"
-#include "raw_socket.h"
+#include "util/delegate.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
-#include "util/shared_ptr_unsynchronized.h"
 
 #include <chrono>
-#include <cstddef>
 #include <csignal>
-#include <cstdint>
-#include <vector>
+#include <cstddef>
+#include <unordered_map>
 
 namespace reflector {
 
+// Invoked with the fd that became readable. PacketDispatcher binds one of these per capture
+// socket; other readable fds (e.g. the interface-address monitor) bind their own.
+using OnReadableCallback = Delegate<void(int)>;
+
+// A minimal readiness reactor over kqueue (macOS) / epoll (Linux): callers register a
+// callback per fd, and Run/PollOnce invoke it whenever that fd becomes readable. It knows
+// nothing about packets — PacketDispatcher layers the capture/parse/filter logic on top by
+// registering one fd callback per capture socket. One callback per fd; the fd is the key.
 class Dispatcher : NoMove {
-private:
-    struct DispatcherState;
-
-public:
-    using RegistrationId = uint64_t;
-
 public:
     class Registration : NoCopy {
     public:
@@ -36,58 +35,39 @@ public:
     private:
         friend class Dispatcher;
 
-        Registration(WeakPtrUnsynchronized<DispatcherState> dispatcher_state, RegistrationId id) noexcept;
+        Registration(Dispatcher* dispatcher, int fd) noexcept;
 
-        WeakPtrUnsynchronized<DispatcherState> dispatcher_state_;
-        RegistrationId id_ = 0;
+        Dispatcher* dispatcher_ = nullptr;
+        int fd_ = -1;
     };
 
     Dispatcher();
     ~Dispatcher() noexcept;
 
-    // The socket must outlive every registration returned for it and the dispatcher
-    // itself: the dispatcher keeps a raw pointer to it (in registration entries and in the
-    // kernel event queue's udata) and dereferences it on Unregister and on every poll.
-    // Destroying a socket while a registration for it is still live is undefined behavior.
-    [[nodiscard]] Registration Register(RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
+    // Watches `fd` for readability and invokes `on_readable(fd)` whenever it has data; one
+    // registration per fd (re-registering an already-watched fd fails). The returned
+    // Registration must not outlive this Dispatcher — its destructor unregisters through a
+    // raw pointer, and the owning subscriber is always torn down before the Dispatcher.
+    [[nodiscard]] Registration Register(int fd, const OnReadableCallback& on_readable);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
     bool PollOnce(std::chrono::milliseconds timeout);
 
 private:
     friend class DispatcherTest;
-    friend class WolListenerTest;
-    friend class WolListenerPerFamilyTest;
-    friend class WolReflectorTest;
-    friend class WolReflectorPerFamilyTest;
 
-    static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
+    [[nodiscard]] size_t RegistrationCount() const noexcept { return callbacks_.size(); }
 
-    struct RegistrationEntry {
-        RegistrationId id;
-        RawSocket* socket;
-        PacketFilter filter;
-        PacketCallback callback;
-    };
+    [[nodiscard]] bool AddReadEvent(int fd) noexcept;
+    [[nodiscard]] bool RemoveReadEvent(int fd) noexcept;
+    bool Unregister(int fd) noexcept;
 
-    [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
-
-    [[nodiscard]] bool AddReadEvent(RawSocket& socket) noexcept;
-    [[nodiscard]] bool RemoveReadEvent(const RawSocket& socket) noexcept;
-    [[nodiscard]] bool DrainReadableFd(RawSocket& socket) noexcept;
-    bool Unregister(RegistrationId id) noexcept;
-    void DispatchPacket(const RawSocket& socket, const Packet& packet) const;
-
-    // Kept sorted by id: Register appends with a monotonically increasing id and
-    // Unregister erases in place. DispatchPacket relies on this for its merge walk;
-    // any insertion that breaks the order would silently corrupt dispatch.
-    std::vector<RegistrationEntry> registrations_;
-    SharedPtrUnsynchronized<DispatcherState> dispatcher_state_;
-    RegistrationId next_registration_id_ = 1;
+    // fd -> callback. The kernel reports the ready fd (kqueue ident / epoll data.fd) and we
+    // look the callback up here rather than stashing a pointer in the event's user-data: a
+    // stale event for an already-unregistered fd then fails the lookup safely instead of
+    // dereferencing freed state — which a batched read could otherwise deliver.
+    std::unordered_map<int, OnReadableCallback> callbacks_;
     int event_fd_ = -1;
-    // Socket currently being drained; cleared when its last registration is dropped, so
-    // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
-    const RawSocket* active_socket_ = nullptr;
 };
 
 } // namespace reflector

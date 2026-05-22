@@ -75,10 +75,11 @@ class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Fam
                                   public WolReflectorTestBase {
 protected:
     Dispatcher dispatcher;
+    PacketDispatcher packet_dispatcher{dispatcher};
     TestCaptureSocket capture;
-    WolListener listener{dispatcher, capture.socket};
+    WolListener listener{packet_dispatcher, capture.socket};
 
-    size_t DispatcherRegistrationCount() const { return dispatcher.RegistrationCount(); }
+    size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildReflector(const WolConfig& config) {
         if (GetParam() == IpAddress::Family::V4) {
@@ -150,10 +151,11 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
 class WolReflectorTest : public ::testing::Test, public WolReflectorTestBase {
 protected:
     Dispatcher dispatcher;
+    PacketDispatcher packet_dispatcher{dispatcher};
     TestCaptureSocket capture;
-    WolListener listener{dispatcher, capture.socket};
+    WolListener listener{packet_dispatcher, capture.socket};
 
-    size_t DispatcherRegistrationCount() const { return dispatcher.RegistrationCount(); }
+    size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildV4Reflector(const WolConfig& config) {
         return MakeReflector(listener, config,
