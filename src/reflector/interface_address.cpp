@@ -40,33 +40,19 @@ Logger& GetLogger() noexcept {
 
 constexpr size_t MAC_SIZE = MacAddress::ByteArray{}.size();
 
-bool IsIpv6LinkLocal(const IpAddress& address) noexcept {  // fe80::/10
-    const auto& bytes = address.Bytes();
-    return std::to_integer<uint8_t>(bytes[0]) == 0xfe
-        && (std::to_integer<uint8_t>(bytes[1]) & 0xc0) == 0x80;
-}
-
-bool IsIpv6UniqueLocal(const IpAddress& address) noexcept {  // fc00::/7
-    return (std::to_integer<uint8_t>(address.Bytes()[0]) & 0xfe) == 0xfc;
-}
-
-bool IsIpv6Global(const IpAddress& address) noexcept {  // 2000::/3
-    return (std::to_integer<uint8_t>(address.Bytes()[0]) & 0xe0) == 0x20;
-}
-
 // Preference rank of an IPv6 source address: lower is better. We prefer a link-local source
 // because everything we currently send is link-local-scoped multicast (ff02::), then ULA, then
 // GUA (which matter for the future site/global-scoped SSDP ff05:: path), and finally anything
 // else (loopback ::1, etc.) as a last resort — so an interface that has only an unusual address
 // still resolves something rather than nothing.
 int Ipv6Rank(const IpAddress& address) noexcept {
-    if (IsIpv6LinkLocal(address)) {
+    if (address.IsLinkLocal()) {
         return 0;
     }
-    if (IsIpv6UniqueLocal(address)) {
+    if (address.IsUniqueLocal()) {
         return 1;
     }
-    if (IsIpv6Global(address)) {
+    if (address.IsGlobalUnicast()) {
         return 2;
     }
     return 3;
@@ -334,7 +320,7 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
                 break;
             }
             if (auto address = IpAddress::FromSockaddr(ifa->ifa_addr); address) {
-                if (IsIpv6LinkLocal(*address)) {
+                if (address->IsLinkLocal()) {
                     address = CanonicalizeLinkLocal(*address);
                 }
                 Consider(result,*address);

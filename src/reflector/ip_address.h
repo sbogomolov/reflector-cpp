@@ -36,6 +36,19 @@ public:
     [[nodiscard]] constexpr bool IsV4() const noexcept { return family_ == Family::V4; }
     [[nodiscard]] constexpr bool IsV6() const noexcept { return family_ == Family::V6; }
 
+    // IPv6 scope classification (all false for IPv4): link-local fe80::/10, unique-local fc00::/7,
+    // global unicast 2000::/3.
+    [[nodiscard]] constexpr bool IsLinkLocal() const noexcept {
+        return IsV6() && std::to_integer<uint8_t>(bytes_[0]) == 0xfe
+            && (std::to_integer<uint8_t>(bytes_[1]) & 0xc0) == 0x80;
+    }
+    [[nodiscard]] constexpr bool IsUniqueLocal() const noexcept {
+        return IsV6() && (std::to_integer<uint8_t>(bytes_[0]) & 0xfe) == 0xfc;
+    }
+    [[nodiscard]] constexpr bool IsGlobalUnicast() const noexcept {
+        return IsV6() && (std::to_integer<uint8_t>(bytes_[0]) & 0xe0) == 0x20;
+    }
+
     // `scope_id` populates sin6_scope_id for IPv6; ignored for IPv4.
     [[nodiscard]] socklen_t ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id = 0) const noexcept;
 
