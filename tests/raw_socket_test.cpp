@@ -10,14 +10,19 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <net/if.h>
 #include <optional>
 #include <poll.h>
 #include <span>
 #include <string>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -26,6 +31,136 @@ constexpr auto WAIT_BUDGET = std::chrono::milliseconds{2000};
 constexpr auto POLL_SLICE_MS = 100;
 constexpr uint16_t INJECT_SRC_PORT = 40000;
 constexpr uint16_t INJECT_DST_PORT = 40009;
+
+// Creates a connected virtual-interface pair for the test's lifetime (veth on Linux, feth on
+// macOS) so a frame injected on the first interface is received on the second. Needs root
+// (interface creation is CAP_NET_ADMIN), so IsValid() is false otherwise — and on any setup
+// failure — for callers to GTEST_SKIP. We shell out to ip/ifconfig because there is no portable
+// syscall for macOS feth peering. Only interfaces we created are torn down.
+class InterfacePair {
+public:
+    InterfacePair() {
+        if (geteuid() != 0) {
+            return;  // interface creation needs root
+        }
+#if defined(__linux__)
+        // veth names are arbitrary, so make them unique per process to avoid colliding with an
+        // existing interface.
+        const auto suffix = std::to_string(getpid());
+        inject_ = "rflv" + suffix + "a";
+        receive_ = "rflv" + suffix + "b";
+        if (!Run("ip link add " + inject_ + " type veth peer name " + receive_)) {
+            return;
+        }
+        created_ = true;  // one command creates the pair; deleting `inject_` removes both
+        // Manual link-locals with nodad so both ends are usable immediately, no DAD wait; the
+        // inject side also needs IPv4 for the broadcast test.
+        valid_ = Run("ip addr add 10.99.0.1/24 dev " + inject_)
+            && Run("ip -6 addr add fe80::1/64 dev " + inject_ + " nodad")
+            && Run("ip -6 addr add fe80::2/64 dev " + receive_ + " nodad")
+            && Run("ip link set " + inject_ + " up")
+            && Run("ip link set " + receive_ + " up");
+#elif defined(__APPLE__)
+        // feth interfaces are numbered; let the kernel assign the next free unit (its name is
+        // printed by `ifconfig feth create`) so we never collide with an existing feth.
+        inject_ = RunCapture("ifconfig feth create");
+        if (inject_.empty()) {
+            return;
+        }
+        created_inject_ = true;
+        receive_ = RunCapture("ifconfig feth create");
+        if (receive_.empty()) {
+            Destroy();
+            return;
+        }
+        created_receive_ = true;
+        // feth has no automatic IPv6 link-local, so assign one on each end explicitly: the inject
+        // side for a correctly-scoped source for ff02::, the receive side so a link-local-scoped
+        // multicast join can resolve to it.
+        valid_ = Run("ifconfig " + inject_ + " peer " + receive_)
+            && Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
+            && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + receive_ + " up")
+            && Run("ifconfig " + receive_ + " inet6 fe80::2 prefixlen 64");
+#endif
+        if (!valid_) {
+            Destroy();
+        }
+    }
+
+    InterfacePair(const InterfacePair&) = delete;
+    InterfacePair& operator=(const InterfacePair&) = delete;
+
+    ~InterfacePair() { Destroy(); }
+
+    [[nodiscard]] bool IsValid() const noexcept { return valid_; }
+    [[nodiscard]] const std::string& InjectInterface() const noexcept { return inject_; }
+    [[nodiscard]] const std::string& ReceiveInterface() const noexcept { return receive_; }
+
+private:
+    static bool Run(const std::string& command) {
+        // POSIX std::system returns the wait status; a command that exits 0 yields 0.
+        return std::system((command + " >/dev/null 2>&1").c_str()) == 0;
+    }
+
+#if defined(__APPLE__)
+    // Runs `command` and returns its stdout with trailing whitespace trimmed (empty on failure) —
+    // used to capture the interface name `ifconfig feth create` prints.
+    static std::string RunCapture(const std::string& command) {
+        std::string output;
+        FILE* pipe = ::popen((command + " 2>/dev/null").c_str(), "r");
+        if (pipe == nullptr) {
+            return output;
+        }
+        char chunk[256];
+        while (std::fgets(chunk, sizeof(chunk), pipe) != nullptr) {
+            output += chunk;
+        }
+        ::pclose(pipe);
+        while (!output.empty() && std::isspace(static_cast<unsigned char>(output.back()))) {
+            output.pop_back();
+        }
+        return output;
+    }
+#endif
+
+    void Destroy() {
+#if defined(__linux__)
+        if (created_) {
+            Run("ip link del " + inject_);
+        }
+#elif defined(__APPLE__)
+        if (created_inject_) {
+            Run("ifconfig " + inject_ + " destroy");
+        }
+        if (created_receive_) {
+            Run("ifconfig " + receive_ + " destroy");
+        }
+#endif
+    }
+
+    // assigned at construction (unique per process / kernel-assigned)
+    std::string inject_;
+    std::string receive_;
+#if defined(__linux__)
+    bool created_ = false;
+#elif defined(__APPLE__)
+    bool created_inject_ = false;
+    bool created_receive_ = false;
+#endif
+    bool valid_ = false;
+};
+
+// Polls `receiver` for one UDP datagram and asserts its payload matches `expected`.
+void ExpectReceived(reflector::UdpSocket& receiver, std::span<const std::byte> expected) {
+    pollfd pfd{.fd = receiver.Fd(), .events = POLLIN, .revents = 0};
+    ASSERT_GT(::poll(&pfd, 1, static_cast<int>(WAIT_BUDGET.count())), 0) << "no datagram arrived";
+    std::array<std::byte, 2048> buffer{};
+    const auto received = ::recv(receiver.Fd(), buffer.data(), buffer.size(), 0);
+    ASSERT_GT(received, 0);
+    EXPECT_EQ(std::vector<std::byte>(buffer.begin(), buffer.begin() + received),
+        std::vector<std::byte>(expected.begin(), expected.end()));
+}
 
 } // namespace
 
@@ -594,5 +729,115 @@ TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
         std::vector<std::byte>(payload.begin(), payload.end()));
 }
 #endif
+
+// Injects on one interface of a virtual pair and confirms the datagram arrives on the other,
+// validating SendUdpDatagram's framing and source selection on a real (non-loopback) interface.
+// Cross-platform: veth on Linux, feth on macOS. Needs root for interface creation, so it carries
+// the "root" label and skips otherwise; run with `sudo ctest -L root` (or a privileged container
+// with NET_ADMIN).
+//
+// IPv4 is received with a RawSocket capture on the peer; the kernel drops an IPv4 datagram whose
+// source is one of our own addresses arriving over the wire (a local "martian"), so a UDP socket
+// can't see it without privileged sysctl overrides, but a capture taps below IP. IPv6 multicast
+// isn't subject to that check, so it uses a real UDP socket — which additionally validates the
+// checksum, since the kernel drops bad-checksum UDP.
+class RawSocketInterfacePairRequiresRootTest : public ::testing::Test {
+protected:
+    InterfacePair pair;
+
+    void SetUp() override {
+        if (!pair.IsValid()) {
+            GTEST_SKIP() << "creating a veth/feth pair requires root (CAP_NET_ADMIN)";
+        }
+    }
+
+    // Re-resolves the injector's addresses until the requested family has a usable source,
+    // waiting out IPv6 DAD (the freshly-assigned address is briefly tentative).
+    static void WaitForSource(RawSocket& injector, IpAddress::Family family) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+        while (!injector.CanSend(family) && std::chrono::steady_clock::now() < deadline) {
+            ::poll(nullptr, 0, POLL_SLICE_MS);  // brief wait for the address to leave DAD
+            injector.RefreshAddresses();
+        }
+    }
+
+    // Drains `peer` until it captures the datagram we injected (matched by source port and
+    // destination), or the budget runs out. lo and real interfaces carry unrelated traffic too.
+    static std::optional<Packet> CaptureInjected(RawSocket& peer, IpAddress dest_ip) {
+        const auto deadline = std::chrono::steady_clock::now() + WAIT_BUDGET;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto frame = peer.Receive();
+            if (frame && frame->header.source_port == INJECT_SRC_PORT
+                    && frame->header.dest_ip == dest_ip) {
+                return frame;
+            }
+            if (!frame) {
+                pollfd pfd{.fd = peer.Fd(), .events = POLLIN, .revents = 0};
+                ::poll(&pfd, 1, POLL_SLICE_MS);
+            }
+        }
+        return std::nullopt;
+    }
+
+    // Waits for the receive interface to have a DAD-complete IPv6 link-local address (a
+    // freshly-created feth/veth needs one before a link-local-scoped multicast join succeeds on
+    // it). Returns false if none appears within the budget.
+    [[nodiscard]] bool WaitForReceiverLinkLocal() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+        while (std::chrono::steady_clock::now() < deadline) {
+#if defined(__linux__)
+            const auto addresses =
+                ResolveInterfaceAddresses(if_nametoindex(pair.ReceiveInterface().c_str()));
+#elif defined(__APPLE__)
+            const auto addresses = ResolveInterfaceAddresses(pair.ReceiveInterface());
+#endif
+            if (addresses.v6 && addresses.v6->IsLinkLocal()) {
+                return true;
+            }
+            ::poll(nullptr, 0, POLL_SLICE_MS);
+        }
+        return false;
+    }
+};
+
+TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPeer) {
+    RawSocket injector{pair.InjectInterface()};
+    ASSERT_TRUE(injector.IsValid());
+    ASSERT_TRUE(injector.CanSend(IpAddress::Family::V4));
+    RawSocket peer{pair.ReceiveInterface()};
+    ASSERT_TRUE(peer.IsValid());
+
+    const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
+    ASSERT_TRUE(injector.SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+        payload, /*ttl=*/64));
+
+    const auto captured = CaptureInjected(peer, IpAddress::BroadcastV4());
+    ASSERT_TRUE(captured.has_value()) << "peer did not capture the injected broadcast";
+    EXPECT_EQ(captured->header.dest_port, INJECT_DST_PORT);
+    EXPECT_EQ(std::vector<std::byte>(captured->payload.begin(), captured->payload.end()),
+        std::vector<std::byte>(payload.begin(), payload.end()));
+}
+
+TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdpSocket) {
+    RawSocket injector{pair.InjectInterface()};
+    ASSERT_TRUE(injector.IsValid());
+    WaitForSource(injector, IpAddress::Family::V6);
+    ASSERT_TRUE(injector.CanSend(IpAddress::Family::V6)) << "no usable IPv6 source after DAD";
+
+    // The join needs the peer's link-local to be DAD-complete.
+    ASSERT_TRUE(WaitForReceiverLinkLocal()) << "receive interface never got an IPv6 link-local";
+
+    UdpSocket receiver{IpAddress::Family::V6};
+    ASSERT_TRUE(receiver.SetReuseAddr(true));
+    ASSERT_TRUE(receiver.Bind(0));
+    ASSERT_TRUE(receiver.JoinMulticastGroup(IpAddress::AllNodesLinkLocalV6(),
+        pair.ReceiveInterface()));
+
+    const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
+    ASSERT_TRUE(injector.SendUdpDatagram(IpAddress::AllNodesLinkLocalV6(), BoundPort(receiver),
+        INJECT_SRC_PORT, payload, /*ttl=*/64));
+
+    ExpectReceived(receiver, payload);
+}
 
 } // namespace reflector

@@ -133,6 +133,16 @@ ctest --test-dir build -L root --output-on-failure         # only the capture-us
 ctest --test-dir build -LE root --output-on-failure        # skip them outright
 ```
 
+Two of the `root` tests go further: they **create a virtual interface pair** (`veth` on Linux,
+`feth` on macOS) to inject a frame on one interface and observe it on the other, which validates the
+raw send path against the real kernel. Creating interfaces needs full root (`CAP_NET_ADMIN`) — more
+than the `CAP_NET_RAW` that capture uses, and a `setcap` grant is not enough — so they only run when
+invoked with `sudo` (and `GTEST_SKIP` otherwise):
+
+```sh
+sudo ctest --test-dir build -L root --output-on-failure
+```
+
 ### Docker-backed tests
 
 Docker-backed coverage is opt-in because it builds/runs containers and, for e2e, creates temporary Docker networks. Run the Dockerfile unit-test targets directly with:
@@ -140,6 +150,16 @@ Docker-backed coverage is opt-in because it builds/runs containers and, for e2e,
 ```sh
 docker build --target test-debug .
 docker build --target test-release .
+```
+
+The interface-pair tests skip during these builds: the `docker build` sandbox grants `CAP_NET_RAW`
+(so the loopback `root` tests run) but not `CAP_NET_ADMIN`, which creating `veth` needs. To exercise
+them in a container, tag the image and re-run ctest from a container started with that capability:
+
+```sh
+docker build --target test-debug -t reflector-test .
+docker run --rm --cap-add NET_ADMIN reflector-test \
+    ctest --test-dir build-test-debug -L root --output-on-failure
 ```
 
 Run the e2e suite directly with:

@@ -14,6 +14,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ccache \
         cmake \
         git \
+        iproute2 \
         ninja-build
 
 WORKDIR /src
