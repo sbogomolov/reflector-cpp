@@ -1,6 +1,6 @@
 #include "reflector/address_monitor.h"
 
-#include "reflector/dispatcher.h"
+#include "reflector/event_loop_dispatcher.h"
 #include "reflector/util/delegate.h"
 
 #include <gtest/gtest.h>
@@ -90,7 +90,7 @@ protected:
 };
 
 TEST_F(AddressMonitorTest, OpensKernelSocket) {
-    Dispatcher dispatcher;
+    EventLoopDispatcher dispatcher;
     AddressMonitor real{dispatcher, CreateDelegate<&ChangeSink::OnChange>(&sink)};
     EXPECT_TRUE(real.IsValid());
 }

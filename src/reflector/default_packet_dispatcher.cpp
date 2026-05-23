@@ -75,7 +75,7 @@ bool DefaultPacketDispatcher::Unregister(PacketRegistrationId id) noexcept {
         return r.socket == socket;
     });
     if (!socket_still_used) {
-        // Dropping the CaptureSource resets its Dispatcher::Registration, which removes the
+        // Dropping the CaptureSource resets its DispatcherRegistration, which removes the
         // read event for this fd.
         capture_sources_.erase(socket->Fd());
         // Tell DrainReadableFd to stop before its next Receive() — the socket no longer has

@@ -1,4 +1,4 @@
-#include "reflector/dispatcher.h"
+#include "reflector/event_loop_dispatcher.h"
 
 #include "reflector/util/delegate.h"
 
@@ -11,9 +11,9 @@
 
 namespace reflector {
 
-class DispatcherTest : public ::testing::Test {
+class EventLoopDispatcherTest : public ::testing::Test {
 protected:
-    Dispatcher dispatcher;
+    EventLoopDispatcher dispatcher;
 
     size_t RegistrationCount() const {
         return dispatcher.RegistrationCount();
@@ -64,12 +64,12 @@ struct SelfUnregisteringReadable {
             reset_result = registration_to_reset->Reset();
         }
     }
-    Dispatcher::Registration* registration_to_reset = nullptr;
+    DispatcherRegistration* registration_to_reset = nullptr;
     bool reset_result = false;
     int count = 0;
 };
 
-TEST_F(DispatcherTest, PollOnceInvokesCallbackWithItsFd) {
+TEST_F(EventLoopDispatcherTest, PollOnceInvokesCallbackWithItsFd) {
     ReadablePipe pipe;
     ASSERT_GE(pipe.ReadEnd(), 0);
     ReadableCounter counter;
@@ -85,7 +85,7 @@ TEST_F(DispatcherTest, PollOnceInvokesCallbackWithItsFd) {
     EXPECT_EQ(counter.last_fd, pipe.ReadEnd());
 }
 
-TEST_F(DispatcherTest, RegisterRejectsInvalidFd) {
+TEST_F(EventLoopDispatcherTest, RegisterRejectsInvalidFd) {
     ReadableCounter counter;
 
     const auto registration = dispatcher.Register(
@@ -95,7 +95,7 @@ TEST_F(DispatcherTest, RegisterRejectsInvalidFd) {
     EXPECT_EQ(RegistrationCount(), 0);
 }
 
-TEST_F(DispatcherTest, RegisterRejectsAlreadyWatchedFd) {
+TEST_F(EventLoopDispatcherTest, RegisterRejectsAlreadyWatchedFd) {
     ReadablePipe pipe;
     ASSERT_GE(pipe.ReadEnd(), 0);
     ReadableCounter first;
@@ -112,7 +112,7 @@ TEST_F(DispatcherTest, RegisterRejectsAlreadyWatchedFd) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
-TEST_F(DispatcherTest, UnregisterStopsCallback) {
+TEST_F(EventLoopDispatcherTest, UnregisterStopsCallback) {
     ReadablePipe pipe;
     ASSERT_GE(pipe.ReadEnd(), 0);
     ReadableCounter counter;
@@ -130,7 +130,7 @@ TEST_F(DispatcherTest, UnregisterStopsCallback) {
     EXPECT_EQ(counter.count, 0);
 }
 
-TEST_F(DispatcherTest, CallbackCanUnregisterItself) {
+TEST_F(EventLoopDispatcherTest, CallbackCanUnregisterItself) {
     ReadablePipe pipe;
     ASSERT_GE(pipe.ReadEnd(), 0);
     SelfUnregisteringReadable counter;
@@ -149,7 +149,7 @@ TEST_F(DispatcherTest, CallbackCanUnregisterItself) {
     EXPECT_EQ(RegistrationCount(), 0);
 }
 
-TEST_F(DispatcherTest, EachFdInvokesItsOwnCallback) {
+TEST_F(EventLoopDispatcherTest, EachFdInvokesItsOwnCallback) {
     ReadablePipe first_pipe;
     ReadablePipe second_pipe;
     ASSERT_GE(first_pipe.ReadEnd(), 0);
@@ -173,7 +173,7 @@ TEST_F(DispatcherTest, EachFdInvokesItsOwnCallback) {
     EXPECT_EQ(second.last_fd, second_pipe.ReadEnd());
 }
 
-TEST_F(DispatcherTest, PollOnceWithoutRegistrationsReturnsFalse) {
+TEST_F(EventLoopDispatcherTest, PollOnceWithoutRegistrationsReturnsFalse) {
     EXPECT_FALSE(dispatcher.PollOnce(std::chrono::milliseconds{0}));
 }
 

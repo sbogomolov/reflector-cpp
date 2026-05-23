@@ -4,6 +4,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/checksum.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dispatcher.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/event_loop_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/interface_address.cpp

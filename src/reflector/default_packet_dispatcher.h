@@ -42,7 +42,7 @@ private:
     // last, so the fd is watched exactly while something wants its frames.
     struct CaptureSource {
         ReceiveSocket* socket;
-        Dispatcher::Registration dispatcher_reg;
+        DispatcherRegistration dispatcher_reg;
     };
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }

@@ -2,7 +2,7 @@
 
 #include "address_monitor.h"
 #include "config.h"
-#include "dispatcher.h"
+#include "event_loop_dispatcher.h"
 #include "logger.h"
 #include "default_packet_dispatcher.h"
 #include "raw_socket.h"
@@ -68,7 +68,7 @@ private:
     // sockets close their fds. The packet dispatcher caches a raw pointer to each socket, so the
     // sockets live behind unique_ptr to keep their addresses stable across map rehashing.
     std::unordered_map<std::string, std::unique_ptr<RawSocket>> sockets_;
-    Dispatcher dispatcher_;
+    EventLoopDispatcher dispatcher_;
     DefaultPacketDispatcher packet_dispatcher_{dispatcher_};
     std::vector<std::unique_ptr<WolReflector>> reflectors_;
     AddressMonitor address_monitor_{dispatcher_, CreateDelegate<&Application::OnInterfaceChanged>(this)};

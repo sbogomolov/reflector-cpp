@@ -1,6 +1,6 @@
 #include "reflector/default_packet_dispatcher.h"
 
-#include "reflector/dispatcher.h"
+#include "reflector/event_loop_dispatcher.h"
 #include "reflector/ip_address.h"
 #include "reflector/packet.h"
 #include "reflector/raw_socket.h"
@@ -31,7 +31,7 @@ namespace reflector {
 
 class DefaultPacketDispatcherTest : public ::testing::Test {
 protected:
-    Dispatcher dispatcher;
+    EventLoopDispatcher dispatcher;
     DefaultPacketDispatcher packet_dispatcher{dispatcher};
 
     void Dispatch(const RawSocket& socket, const Packet& packet) {
@@ -377,7 +377,7 @@ TEST_F(DefaultPacketDispatcherTest, DispatchesNothingForUnparseableFrame) {
 
 class DefaultPacketDispatcherRequiresRootTest : public ::testing::Test {
 protected:
-    Dispatcher dispatcher;
+    EventLoopDispatcher dispatcher;
     DefaultPacketDispatcher packet_dispatcher{dispatcher};
     std::optional<RawSocket> socket;
     UdpSocket listener_socket{IpAddress::Family::V4};
