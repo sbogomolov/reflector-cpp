@@ -65,8 +65,8 @@ private:
     // Declaration order is teardown order in reverse. Within the packet pipeline: reflectors drop
     // their packet-dispatcher registrations first, the packet dispatcher then drops its per-socket
     // dispatcher registrations, the dispatcher tears down its event queue, and only then the
-    // sockets close their fds. The packet dispatcher caches each RawSocket*, so the sockets
-    // live behind unique_ptr to keep their addresses stable across map rehashing.
+    // sockets close their fds. The packet dispatcher caches a raw pointer to each socket, so the
+    // sockets live behind unique_ptr to keep their addresses stable across map rehashing.
     std::unordered_map<std::string, std::unique_ptr<RawSocket>> sockets_;
     Dispatcher dispatcher_;
     DefaultPacketDispatcher packet_dispatcher_{dispatcher_};

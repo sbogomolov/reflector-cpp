@@ -2,12 +2,11 @@
 
 #include "dispatcher.h"
 #include "packet.h"
+#include "packet_dispatcher.h"
 #include "receive_socket.h"
-#include "util/no_copy.h"
 #include "util/no_move.h"
 
 #include <cstddef>
-#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -18,37 +17,13 @@ namespace reflector {
 // becomes readable it drains every queued frame and dispatches each to the registrations
 // whose filter matches. Packet subscribers register their interest here, not with the
 // Dispatcher — keeping the Dispatcher a plain fd reactor.
-class DefaultPacketDispatcher : NoMove {
+class DefaultPacketDispatcher : public PacketDispatcher, NoMove {
 public:
-    using RegistrationId = uint64_t;
-
-    class Registration : NoCopy {
-    public:
-        Registration() noexcept = default;
-        ~Registration() noexcept;
-
-        Registration(Registration&& other) noexcept;
-        Registration& operator=(Registration&& other) noexcept;
-
-        [[nodiscard]] bool IsValid() const noexcept;
-        bool Reset() noexcept;
-
-    private:
-        friend class DefaultPacketDispatcher;
-
-        Registration(DefaultPacketDispatcher* packet_dispatcher, RegistrationId id) noexcept;
-
-        DefaultPacketDispatcher* packet_dispatcher_ = nullptr;
-        RegistrationId id_ = 0;
-    };
-
     explicit DefaultPacketDispatcher(Dispatcher& dispatcher);
-    ~DefaultPacketDispatcher() noexcept;
+    ~DefaultPacketDispatcher() noexcept override;
 
-    // The socket must outlive every registration returned for it and this DefaultPacketDispatcher:
-    // we keep a raw pointer to it and dereference it on Unregister and on every drain.
-    // The returned Registration must not outlive this DefaultPacketDispatcher.
-    [[nodiscard]] Registration Register(ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
+    [[nodiscard]] PacketRegistration Register(
+        ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) override;
 
 private:
     friend class DefaultPacketDispatcherTest;
@@ -58,7 +33,7 @@ private:
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
     struct RegistrationEntry {
-        RegistrationId id;
+        PacketRegistrationId id;
         ReceiveSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
@@ -74,7 +49,7 @@ private:
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
-    bool Unregister(RegistrationId id) noexcept;
+    bool Unregister(PacketRegistrationId id) noexcept override;
     void OnReadable(int fd) noexcept;
     void DrainReadableFd(ReceiveSocket& socket) noexcept;
     void DispatchPacket(const ReceiveSocket& socket, const Packet& packet) const;
@@ -85,7 +60,7 @@ private:
     // breaks the order would silently corrupt dispatch.
     std::vector<RegistrationEntry> registrations_;
     std::unordered_map<int, CaptureSource> capture_sources_;
-    RegistrationId next_registration_id_ = 1;
+    PacketRegistrationId next_registration_id_ = 1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
     const ReceiveSocket* active_socket_ = nullptr;

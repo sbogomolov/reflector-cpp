@@ -41,44 +41,6 @@ Logger& GetLogger() noexcept {
 
 namespace reflector {
 
-DefaultPacketDispatcher::Registration::Registration(DefaultPacketDispatcher* packet_dispatcher, RegistrationId id) noexcept
-        : packet_dispatcher_{packet_dispatcher}, id_{id} {}
-
-DefaultPacketDispatcher::Registration::~Registration() noexcept {
-    Reset();
-}
-
-DefaultPacketDispatcher::Registration::Registration(Registration&& other) noexcept
-        : packet_dispatcher_{std::exchange(other.packet_dispatcher_, nullptr)}
-        , id_{std::exchange(other.id_, 0)} {}
-
-DefaultPacketDispatcher::Registration& DefaultPacketDispatcher::Registration::operator=(Registration&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
-
-    Reset();
-    packet_dispatcher_ = std::exchange(other.packet_dispatcher_, nullptr);
-    id_ = std::exchange(other.id_, 0);
-    return *this;
-}
-
-bool DefaultPacketDispatcher::Registration::IsValid() const noexcept {
-    return packet_dispatcher_ != nullptr && id_ != 0;
-}
-
-bool DefaultPacketDispatcher::Registration::Reset() noexcept {
-    if (packet_dispatcher_ == nullptr || id_ == 0) {
-        packet_dispatcher_ = nullptr;
-        id_ = 0;
-        return false;
-    }
-
-    auto* packet_dispatcher = std::exchange(packet_dispatcher_, nullptr);
-    const auto id = std::exchange(id_, 0);
-    return packet_dispatcher->Unregister(id);
-}
-
 DefaultPacketDispatcher::DefaultPacketDispatcher(Dispatcher& dispatcher)
         : dispatcher_{&dispatcher} {}
 
@@ -88,11 +50,11 @@ DefaultPacketDispatcher::~DefaultPacketDispatcher() noexcept {
     }
 }
 
-DefaultPacketDispatcher::Registration DefaultPacketDispatcher::Register(
+PacketRegistration DefaultPacketDispatcher::Register(
     ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
         GetLogger().Error("Cannot register packet callback: capture socket is invalid");
-        return Registration{};
+        return {};
     }
 
     const auto fd = socket.Fd();
@@ -101,7 +63,7 @@ DefaultPacketDispatcher::Registration DefaultPacketDispatcher::Register(
         auto dispatcher_reg = dispatcher_->Register(fd, CreateDelegate<&DefaultPacketDispatcher::OnReadable>(this));
         if (!dispatcher_reg.IsValid()) {
             GetLogger().Error("Cannot register packet callback: dispatcher registration failed for fd {}", fd);
-            return Registration{};
+            return {};
         }
         capture_sources_.emplace(fd, CaptureSource{.socket = &socket, .dispatcher_reg = std::move(dispatcher_reg)});
     }
@@ -116,10 +78,10 @@ DefaultPacketDispatcher::Registration DefaultPacketDispatcher::Register(
         .callback = callback,
     });
     GetLogger().Debug("Registered packet callback {} for fd {}", id, fd);
-    return Registration{this, id};
+    return MakeRegistration(id);
 }
 
-bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
+bool DefaultPacketDispatcher::Unregister(PacketRegistrationId id) noexcept {
     const auto it = std::ranges::find_if(registrations_, [id](const auto& registration) {
         return registration.id == id;
     });
@@ -205,7 +167,7 @@ void DefaultPacketDispatcher::DispatchPacket(const ReceiveSocket& socket, const 
     //
     // Side effect to be aware of: a callback that calls Register creates a new entry
     // with a higher id, which this loop will reach and dispatch for the current packet.
-    RegistrationId last_dispatched_id = 0;
+    PacketRegistrationId last_dispatched_id = 0;
     for (size_t idx = 0; idx < registrations_.size();) {
         auto& entry = registrations_[idx];
         if (entry.id > last_dispatched_id

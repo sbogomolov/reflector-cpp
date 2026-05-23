@@ -5,7 +5,7 @@
 #include "reflector/logger.h"
 #include "reflector/mac_address.h"
 #include "reflector/packet.h"
-#include "reflector/default_packet_dispatcher.h"
+#include "reflector/packet_dispatcher.h"
 #include "reflector/raw_socket.h"
 #include "reflector/udp_sender.h"
 #include "reflector/udp_socket.h"
@@ -142,7 +142,7 @@ struct UnregisteringPacketCounter {
         }
     }
 
-    DefaultPacketDispatcher::Registration* registration_to_reset = nullptr;
+    PacketRegistration* registration_to_reset = nullptr;
     bool reset_result = false;
     int count = 0;
 };

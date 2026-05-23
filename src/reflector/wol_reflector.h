@@ -3,7 +3,7 @@
 #include "config.h"
 #include "logger.h"
 #include "mac_address.h"
-#include "default_packet_dispatcher.h"
+#include "packet_dispatcher.h"
 #include "raw_socket.h"
 #include "udp_sender.h"
 #include "util/no_move.h"
@@ -20,7 +20,7 @@ class WolReflector : NoMove {
 public:
     // Captures WoL magic packets on `source_socket` and re-emits matching ones through
     // `target_socket`. Both must outlive this reflector.
-    WolReflector(DefaultPacketDispatcher& packet_dispatcher, RawSocket& source_socket,
+    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& source_socket,
         UdpSender& target_socket, const WolConfig& config);
     ~WolReflector() noexcept;
 
@@ -35,7 +35,7 @@ private:
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
-    void Initialize(DefaultPacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config);
+    void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;
@@ -55,7 +55,7 @@ private:
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
-    std::vector<DefaultPacketDispatcher::Registration> registrations_;
+    std::vector<PacketRegistration> registrations_;
 };
 
 } // namespace reflector

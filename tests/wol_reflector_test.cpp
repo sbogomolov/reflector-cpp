@@ -1,4 +1,5 @@
 #include "reflector/wol_reflector.h"
+#include "reflector/default_packet_dispatcher.h"
 #include "reflector/mac_address.h"
 
 #include <gtest/gtest.h>

@@ -58,7 +58,7 @@ struct RegisteringPacketCounter {
     DefaultPacketDispatcher* packet_dispatcher = nullptr;
     RawSocket* socket = nullptr;
     PacketCounter* target = nullptr;
-    DefaultPacketDispatcher::Registration new_registration;
+    PacketRegistration new_registration;
     int count = 0;
 };
 
