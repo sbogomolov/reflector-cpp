@@ -5,14 +5,11 @@
 
 #include "test_helpers.h"
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <optional>
 #include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace reflector {
@@ -56,18 +53,8 @@ protected:
         };
     }
 
-    static WolReflector MakeReflector(PacketDispatcher& packet_dispatcher, RawSocket& socket,
-        const WolConfig& config, std::optional<UdpLinkFanoutSender> v4_sender,
-        std::optional<UdpLinkFanoutSender> v6_sender) {
-        return WolReflector{packet_dispatcher, socket, config, std::move(v4_sender), std::move(v6_sender)};
-    }
-
     static void Dispatch(WolReflector& reflector, const Packet& packet) {
         reflector.OnPacket(packet);
-    }
-
-    static void ReplaceV4Sender(WolReflector& reflector, std::optional<UdpLinkFanoutSender> sender) {
-        reflector.v4_sender_ = std::move(sender);
     }
 };
 
@@ -76,17 +63,15 @@ class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Fam
 protected:
     Dispatcher dispatcher;
     PacketDispatcher packet_dispatcher{dispatcher};
-    TestCaptureSocket capture;
+    TestCaptureSocket source;
+    RecordingUdpSender target;
 
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildReflector(const WolConfig& config) {
-        if (GetParam() == IpAddress::Family::V4) {
-            return MakeReflector(packet_dispatcher, capture.socket, config,
-                UdpLinkFanoutSender{"", IpAddress::LoopbackV4()}, std::nullopt);
-        }
-        return MakeReflector(packet_dispatcher, capture.socket, config,
-            std::nullopt, UdpLinkFanoutSender{"", IpAddress::LoopbackV6()});
+        target.can_send_v4 = GetParam() == IpAddress::Family::V4;
+        target.can_send_v6 = GetParam() == IpAddress::Family::V6;
+        return WolReflector{packet_dispatcher, source.socket, target, config};
     }
 };
 
@@ -130,34 +115,39 @@ TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromPacketDispatcher) {
 
 TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     const auto family = GetParam();
-    LoopbackReceiver receiver{0, family};
-    const auto port = receiver.Port();
-
-    auto config = MakeConfig(family);
-    config.ports = {port};
+    const auto config = MakeConfig(family);
     auto reflector = BuildReflector(config);
     ASSERT_TRUE(reflector.IsValid());
 
     ASSERT_TRUE(config.mac.has_value());
     const auto payload = MakeMagicPacket(*config.mac);
-    Dispatch(reflector, MakePacket(payload, LoopbackFor(family), port));
+    const uint16_t dest_port = config.ports.front();
+    Dispatch(reflector, MakePacket(payload, LoopbackFor(family), dest_port));
 
-    ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
-    EXPECT_EQ(receiver.recorder.count, 1);
-    EXPECT_EQ(receiver.recorder.payload, payload);
+    ASSERT_EQ(target.sent.size(), 1u);
+    const auto& sent = target.sent.front();
+    // IPv4 fans out to the limited broadcast, IPv6 to the link-local all-nodes group.
+    EXPECT_EQ(sent.dst_ip, family == IpAddress::Family::V4
+        ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6());
+    EXPECT_EQ(sent.dst_port, dest_port);
+    EXPECT_EQ(sent.src_port, 12345); // the original datagram's source port is preserved
+    EXPECT_EQ(sent.ttl, 64);
+    EXPECT_EQ(sent.payload, payload);
 }
 
 class WolReflectorTest : public ::testing::Test, public WolReflectorTestBase {
 protected:
     Dispatcher dispatcher;
     PacketDispatcher packet_dispatcher{dispatcher};
-    TestCaptureSocket capture;
+    TestCaptureSocket source;
+    RecordingUdpSender target;
 
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildV4Reflector(const WolConfig& config) {
-        return MakeReflector(packet_dispatcher, capture.socket, config,
-            UdpLinkFanoutSender{"", IpAddress::LoopbackV4()}, std::nullopt);
+        target.can_send_v4 = true;
+        target.can_send_v6 = false;
+        return WolReflector{packet_dispatcher, source.socket, target, config};
     }
 };
 
@@ -171,38 +161,27 @@ TEST_F(WolReflectorTest, RejectsConfigWithEmptyPorts) {
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
 }
 
-TEST_F(WolReflectorTest, IsInvalidWhenSenderInvalid) {
-    UdpLinkFanoutSender invalid_sender{"nonexistent-iface-xyz", IpAddress::Family::V4};
-    ASSERT_FALSE(invalid_sender.IsValid());
+TEST_F(WolReflectorTest, IsInvalidWhenTargetCannotSendRequiredFamily) {
+    target.can_send_v4 = false;
 
-    const auto reflector = MakeReflector(packet_dispatcher, capture.socket,
-        MakeConfig(IpAddress::Family::V4), std::move(invalid_sender), std::nullopt);
+    const WolReflector reflector{packet_dispatcher, source.socket, target,
+        MakeConfig(IpAddress::Family::V4)};
 
     EXPECT_FALSE(reflector.IsValid());
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
 }
 
-TEST_F(WolReflectorTest, LogsErrorWhenSenderRejectsPacket) {
-    // Build the reflector with a valid sender so Initialize fully sets up magic-packet
-    // state, then swap in an invalid sender so sender->Send() returns false. This is the
-    // only way to reach OnPacket's send-failure branch — in production the path is
-    // unreachable (a sender that fails Send was already invalid at construction time, so
-    // the reflector itself would have failed to initialize).
+TEST_F(WolReflectorTest, LogsErrorWhenSendFails) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
-    ReplaceV4Sender(reflector,
-        UdpLinkFanoutSender{"nonexistent-iface-xyz", IpAddress::Family::V4});
+    target.fail_send = true;
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
     const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
-
     const std::string output = CaptureStdout([&] {
-        Dispatch(reflector,
-            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+        Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
     });
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
@@ -211,12 +190,9 @@ TEST_F(WolReflectorTest, ReflectedLogShowsMacAndInterfaces) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
     const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
-
     const std::string output = CaptureStdout([&] {
-        Dispatch(reflector,
-            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+        Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
     });
 
     EXPECT_NE(output.find("src"), std::string::npos) << output;
@@ -233,12 +209,9 @@ TEST_F(WolReflectorTest, ReflectedLogShowsPayloadMacInAnyMacMode) {
     auto reflector = BuildV4Reflector(config);
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
     const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
-
     const std::string output = CaptureStdout([&] {
-        Dispatch(reflector,
-            MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+        Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
     });
 
     EXPECT_NE(output.find("66:55:44:33:22:11"), std::string::npos) << output;
@@ -248,73 +221,54 @@ TEST_F(WolReflectorTest, IgnoresPacketWithUnsupportedFamily) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
-    // Inject an IPv6 packet — the v4-only reflector has no v6 sender and must drop.
-    Dispatch(reflector, MakePacket(payload, IpAddress::LoopbackV6(), receiver.Port()));
+    // Inject an IPv6 packet — the v4-only reflector does not handle v6 and must drop it.
+    Dispatch(reflector, MakePacket(payload, IpAddress::LoopbackV6(), 9));
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
 }
 
 TEST_F(WolReflectorTest, ReflectsPacketWithTrailingBytes) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
     payload.push_back(std::byte{0x12});
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
-    EXPECT_EQ(receiver.recorder.count, 1);
-    EXPECT_EQ(receiver.recorder.payload, payload);
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.front().payload, payload);
 }
 
 TEST_F(WolReflectorTest, IgnoresShortPacket) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     const std::vector<std::byte> payload(12, std::byte{0xff});
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
 }
 
 TEST_F(WolReflectorTest, IgnoresInvalidMagicPrefix) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
     payload.front() = std::byte{0x00};
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
 }
 
 TEST_F(WolReflectorTest, IgnoresDifferentMac) {
     auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
 }
 
 TEST_F(WolReflectorTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
@@ -323,15 +277,11 @@ TEST_F(WolReflectorTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
     auto reflector = BuildV4Reflector(config);
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    ASSERT_TRUE(receiver.PollOnce(std::chrono::milliseconds{1000}));
-    EXPECT_EQ(receiver.recorder.count, 1);
-    EXPECT_EQ(receiver.recorder.payload, payload);
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.front().payload, payload);
 }
 
 TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
@@ -340,41 +290,31 @@ TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
     auto reflector = BuildV4Reflector(config);
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V4};
-
     auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
     payload[12] = std::byte{0x12};
-    Dispatch(reflector,
-        MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), receiver.Port()));
+    Dispatch(reflector, MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
 }
 
-// In Default mode the config "uses" but doesn't "require" IPv6: if the v6 sender setup
-// fails (e.g. no IPv6 on target_if) the reflector is still valid via IPv4. Incoming v6
-// packets must then be silently dropped — not handed to the invalid sender, which would
-// log a per-packet error on top of every drop.
-TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6SenderUnavailableInDefault) {
+// In Default mode the config "uses" but doesn't "require" IPv6: if the target cannot send v6
+// (e.g. no IPv6 on target_if) the reflector is still valid via IPv4. Incoming v6 packets must
+// then be silently dropped — not sent (which would fail) and not logged at ERROR per packet.
+TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6UnavailableInDefault) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = WolAddressFamily::Default;
-    UdpLinkFanoutSender invalid_v6{"nonexistent-iface-xyz", IpAddress::Family::V6};
-    ASSERT_FALSE(invalid_v6.IsValid());
+    target.can_send_v4 = true;
+    target.can_send_v6 = false;
 
-    auto reflector = MakeReflector(packet_dispatcher, capture.socket, config,
-        UdpLinkFanoutSender{"", IpAddress::LoopbackV4()}, std::move(invalid_v6));
+    WolReflector reflector{packet_dispatcher, source.socket, target, config};
     ASSERT_TRUE(reflector.IsValid());
 
-    LoopbackReceiver receiver{0, IpAddress::Family::V6};
     const auto payload = MakeMagicPacket(*config.mac);
-
     const std::string output = CaptureStdout([&] {
-        Dispatch(reflector,
-            MakePacket(payload, IpAddress::LoopbackV6(), receiver.Port()));
+        Dispatch(reflector, MakePacket(payload, IpAddress::LoopbackV6(), 9));
     });
 
-    EXPECT_FALSE(receiver.PollOnce(std::chrono::milliseconds{50}));
-    EXPECT_EQ(receiver.recorder.count, 0);
+    EXPECT_TRUE(target.sent.empty());
     EXPECT_EQ(output.find("ERROR"), std::string::npos)
         << "v6 packet on a v6-unavailable Default reflector should not log at ERROR level: " << output;
 }

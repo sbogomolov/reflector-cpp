@@ -5,7 +5,7 @@
 #include "mac_address.h"
 #include "packet_dispatcher.h"
 #include "raw_socket.h"
-#include "udp_link_fanout_sender.h"
+#include "udp_sender.h"
 #include "util/no_move.h"
 
 #include <array>
@@ -18,7 +18,10 @@ namespace reflector {
 
 class WolReflector : NoMove {
 public:
-    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config);
+    // Captures WoL magic packets on `source_socket` and re-emits matching ones through
+    // `target_socket`. Both must outlive this reflector.
+    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& source_socket,
+        UdpSender& target_socket, const WolConfig& config);
     ~WolReflector() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
@@ -31,22 +34,28 @@ private:
     static constexpr size_t MAC_REPETITIONS = 16;
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
-    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config,
-        std::optional<UdpLinkFanoutSender> v4_sender, std::optional<UdpLinkFanoutSender> v6_sender);
+    // WoL re-emits onto the local link, so the TTL / hop limit only needs to reach the link.
+    // Matches the kernel UDP default the old sender used; parameterized per-call on the
+    // sender so mDNS/SSDP can pass their own later.
+    static constexpr uint8_t REFLECT_TTL = 64;
 
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
-    void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& socket, const WolConfig& config);
+    void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
     void OnPacket(const Packet& packet) noexcept;
-    [[nodiscard]] UdpLinkFanoutSender* SenderFor(IpAddress::Family family) noexcept;
+    [[nodiscard]] bool ReflectsFamily(IpAddress::Family family) const noexcept;
     void Reset() noexcept;
 
     Logger logger_;
-    std::optional<UdpLinkFanoutSender> v4_sender_;
-    std::optional<UdpLinkFanoutSender> v6_sender_;
+    UdpSender& target_socket_;
+    // Families this reflector actually re-emits: the config uses the family and target_socket_
+    // can originate it. A family the config merely *uses* (Default uses both, requires only v4)
+    // but the target can't send is left false, so OnPacket drops it instead of failing every send.
+    bool reflects_v4_ = false;
+    bool reflects_v6_ = false;
     std::optional<MacAddress> target_mac_;
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.

@@ -33,14 +33,6 @@ public:
     using SocketFactory =
         std::function<std::unique_ptr<RawSocket>(std::string_view interface)>;
 
-    // TODO: when mDNS/SSDP reflectors land, give Application a sender factory too, mirroring
-    // the socket factory — Application would build the sender (as it builds the
-    // socket) and forward it into the reflector, replacing WolReflector's test-only
-    // sender-injecting constructor. That makes the whole composition root unit-testable
-    // without root (loopback senders need no SO_BINDTODEVICE) and unifies the injection seam.
-    // Likely pairs with consolidating the broadcast (UdpLinkFanoutSender) and multicast
-    // senders behind one sender abstraction.
-
     Application();
     explicit Application(SocketFactory socket_factory);
 
@@ -57,6 +49,11 @@ private:
 
     [[nodiscard]] size_t SocketCount() const noexcept { return sockets_.size(); }
     [[nodiscard]] size_t ReflectorCount() const noexcept { return reflectors_.size(); }
+
+    // Returns the socket for `interface`, creating it via the factory on first use and sharing
+    // it across reflectors. Null (after no logging) when the socket is missing or its fd is
+    // invalid; the caller logs with the interface's role (source vs target).
+    [[nodiscard]] RawSocket* GetOrCreateSocket(const std::string& interface);
 
     // Address-monitor callback: re-resolve the source addresses of the socket bound to the
     // changed interface, or every socket when index == 0 (the monitor's overflow signal).

@@ -3,6 +3,7 @@
 #include "interface_address.h"
 #include "logger.h"
 #include "packet.h"
+#include "udp_sender.h"
 #include "util/no_move.h"
 
 #include <cstddef>
@@ -32,10 +33,10 @@ namespace reflector {
 // its capture-source map and registration entries and dereferences it on every drain; a move
 // would silently invalidate those pointers. Hold instances in storage that preserves
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
-class RawSocket : NoMove {
+class RawSocket : public UdpSender, NoMove {
 public:
     explicit RawSocket(std::string_view interface);
-    ~RawSocket() noexcept;
+    ~RawSocket() noexcept override;
 
     // Test-only: wrap an arbitrary fd without performing any OS-level capture setup.
     // Receive() consumes bytes from that fd the same way the production socket would,
@@ -60,7 +61,7 @@ public:
     // True if the bound interface has a usable source address for `family` (resolved at open
     // and on RefreshAddresses). The raw egress path and Application's family gating consult
     // this instead of probing.
-    [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept;
+    [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept override;
 
     // Re-resolves the interface's source addresses. The address monitor calls this when the
     // kernel reports an address change on this interface, so a long-running daemon's cached
@@ -74,7 +75,7 @@ public:
     // TTL / IPv6 hop limit. Fails (after logging) if the interface has no source address for
     // `dst_ip`'s family; gate callers with CanSend(dst_ip.AddressFamily()).
     [[nodiscard]] bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
-        std::span<const std::byte> payload, uint8_t ttl) noexcept;
+        std::span<const std::byte> payload, uint8_t ttl) noexcept override;
 
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.

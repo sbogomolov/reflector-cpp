@@ -15,22 +15,33 @@ Application::Application(SocketFactory socket_factory)
         : socket_factory_{std::move(socket_factory)}
         , logger_{"Application"} {}
 
+RawSocket* Application::GetOrCreateSocket(const std::string& interface) {
+    // One socket per interface, shared by every reflector that captures on or sends through
+    // it; created lazily on first use via the (overridable) factory.
+    auto [entry, inserted] = sockets_.try_emplace(interface);
+    if (inserted) {
+        entry->second = socket_factory_(interface);
+    }
+    const auto& socket = entry->second;
+    return (socket && socket->IsValid()) ? socket.get() : nullptr;
+}
+
 bool Application::Configure(const Config& config) {
     for (const auto& wol_config : config.WolConfigs()) {
-        // One socket per source interface, shared by every reflector registered on
-        // it; created lazily on first use via the (overridable) factory.
-        auto [entry, inserted] = sockets_.try_emplace(wol_config.source_if);
-        if (inserted) {
-            entry->second = socket_factory_(wol_config.source_if);
-        }
-        auto& socket = entry->second;
-        if (!socket || !socket->IsValid()) {
+        auto* source_socket = GetOrCreateSocket(wol_config.source_if);
+        if (source_socket == nullptr) {
             logger_.Error("Cannot configure wol reflector \"{}\": socket on interface \"{}\" is invalid",
                 wol_config.name, wol_config.source_if);
             return false;
         }
+        auto* target_socket = GetOrCreateSocket(wol_config.target_if);
+        if (target_socket == nullptr) {
+            logger_.Error("Cannot configure wol reflector \"{}\": socket on interface \"{}\" is invalid",
+                wol_config.name, wol_config.target_if);
+            return false;
+        }
 
-        auto reflector = std::make_unique<WolReflector>(packet_dispatcher_, *socket, wol_config);
+        auto reflector = std::make_unique<WolReflector>(packet_dispatcher_, *source_socket, *target_socket, wol_config);
         if (!reflector->IsValid()) {
             logger_.Error("Cannot configure wol reflector \"{}\": setup failed", wol_config.name);
             return false;

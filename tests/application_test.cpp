@@ -1,16 +1,15 @@
 #include "reflector/application.h"
 
 #include "reflector/config.h"
-#include "reflector/ip_address.h"
 #include "reflector/mac_address.h"
 #include "reflector/raw_socket.h"
-#include "reflector/udp_link_fanout_sender.h"
 
 #include <gtest/gtest.h>
 
 #include "test_helpers.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
@@ -36,27 +35,25 @@ protected:
         };
     }
 
-    // Factory that hands out sockets wrapping real AF_UNIX fds (so the dispatcher
-    // can register them) without needing CAP_NET_RAW. Counts calls so tests can assert how
-    // many distinct interfaces were opened. The RawSocket owns and closes the fd.
+    // Factory for the interfaces a test configures. The loopback target gets a real RawSocket
+    // so it resolves a source address (and so CanSend) like production; every other (fake)
+    // interface gets a socket wrapping an AF_UNIX fd, which the dispatcher can still register
+    // without CAP_NET_RAW. Counts calls so tests can assert how many distinct interfaces were
+    // opened. The RawSocket owns and closes the fd.
     struct CountingSocketFactory {
         int calls = 0;
 
         Application::SocketFactory Make() {
-            return [this](std::string_view interface) {
+            return [this](std::string_view interface) -> std::unique_ptr<RawSocket> {
                 ++calls;
+                if (interface == LoopbackInterface()) {
+                    return std::make_unique<RawSocket>(interface);
+                }
                 const int fd = ::socket(AF_UNIX, SOCK_DGRAM, 0);
                 return RawSocket::ForTestingPtr(interface, fd);
             };
         }
     };
-
-    // A loopback sender needs SO_BINDTODEVICE on Linux (root); IP_BOUND_IF on macOS works
-    // unprivileged. Tests that wire real reflectors skip when it is unavailable.
-    static bool CanBindLoopbackSender() {
-        UdpLinkFanoutSender probe{LoopbackInterface(), IpAddress::Family::V4};
-        return probe.IsValid();
-    }
 };
 
 TEST_F(ApplicationTest, InvalidSocketFailsConfigure) {
@@ -78,12 +75,12 @@ TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
     CountingSocketFactory factory;
     Application app{factory.Make()};
 
-    // The injected socket is valid, so Configure gets past the socket check and on
-    // to building the reflector, whose sender then fails to resolve a nonexistent target
-    // interface. if_nametoindex fails for a missing interface regardless of privileges, so
-    // this exercises the reflector-failure branch deterministically on every platform.
+    // Both injected sockets have valid fds, so Configure gets past the socket checks and on to
+    // building the reflector. The target is a ForTesting socket with no resolved interface
+    // address, so CanSend(IPv4) is false and the reflector (which requires IPv4) fails to
+    // initialize — exercising the reflector-failure branch deterministically without root.
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "captest", "nonexistent-iface-xyz", {9}))
+        .Add(MakeConfig("tv", "captest", "captest-target", {9}))
         .Build();
 
     const std::string output = CaptureStdout([&] {
@@ -93,14 +90,14 @@ TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
     EXPECT_EQ(ReflectorCount(app), 0) << output;
 }
 
-// Wiring tests that build real reflectors: their UDP sender must bind to a real loopback
-// interface (SO_BINDTODEVICE → root on Linux; unprivileged on macOS). The "RequiresRoot"
-// name carries the "root" ctest label; SetUp skips when the privilege is unavailable.
+// Wiring tests that build real reflectors: the loopback target socket must open as a real
+// RawSocket so it resolves a source address (needs CAP_NET_RAW on Linux, bpf access on macOS).
+// The "RequiresRoot" name carries the "root" ctest label; SetUp skips when it is unavailable.
 class ApplicationRequiresRootTest : public ApplicationTest {
 protected:
     void SetUp() override {
-        if (!CanBindLoopbackSender()) {
-            GTEST_SKIP() << "loopback UDP sender unavailable (needs root for SO_BINDTODEVICE on Linux)";
+        if (!HasPacketCapturePrivileges()) {
+            GTEST_SKIP() << "raw socket on loopback unavailable (needs CAP_NET_RAW / bpf access)";
         }
     }
 };
@@ -109,16 +106,17 @@ TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesSocketForSameInterfa
     CountingSocketFactory factory;
     Application app{factory.Make()};
 
-    // Two reflectors on the same source interface, different ports: they must share one
-    // socket (the packet dispatcher watches its fd once) while producing two reflectors.
+    // Two reflectors over the same source and target interfaces, different ports: each
+    // interface is opened once and shared (the packet dispatcher watches the source fd once),
+    // so two interfaces back two reflectors.
     const Config config = TestConfigBuilder{}
         .Add(MakeConfig("tv", "captest", LoopbackInterface(), {7}))
         .Add(MakeConfig("console", "captest", LoopbackInterface(), {9}))
         .Build();
 
     ASSERT_TRUE(app.Configure(config));
-    EXPECT_EQ(factory.calls, 1);
-    EXPECT_EQ(SocketCount(app), 1);
+    EXPECT_EQ(factory.calls, 2); // source "captest" + target loopback, each created once
+    EXPECT_EQ(SocketCount(app), 2);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 
@@ -132,8 +130,8 @@ TEST_F(ApplicationRequiresRootTest, WiresSeparateSocketsForDistinctInterfaces) {
         .Build();
 
     ASSERT_TRUE(app.Configure(config));
-    EXPECT_EQ(factory.calls, 2);
-    EXPECT_EQ(SocketCount(app), 2);
+    EXPECT_EQ(factory.calls, 3); // distinct sources "cap-a"/"cap-b" + the shared loopback target
+    EXPECT_EQ(SocketCount(app), 3);
     EXPECT_EQ(ReflectorCount(app), 2);
 }
 
