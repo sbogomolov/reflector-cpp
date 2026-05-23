@@ -41,13 +41,15 @@ protected:
         return payload;
     }
 
-    static Packet MakePacket(std::span<const std::byte> payload, IpAddress source_ip, uint16_t dest_port) {
+    static Packet MakePacket(std::span<const std::byte> payload, IpAddress source_ip,
+        uint16_t dest_port, uint8_t ttl = 64) {
         return Packet{
             .header = PacketHeader{
                 .source_ip = source_ip,
                 .dest_ip = IpAddress::LinkFanoutFor(source_ip.AddressFamily()),
                 .source_port = 12345,
                 .dest_port = dest_port,
+                .ttl = ttl,
             },
             .payload = payload,
         };
@@ -122,7 +124,8 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     ASSERT_TRUE(config.mac.has_value());
     const auto payload = MakeMagicPacket(*config.mac);
     const uint16_t dest_port = config.ports.front();
-    Dispatch(reflector, MakePacket(payload, LoopbackFor(family), dest_port));
+    constexpr uint8_t source_ttl = 200;
+    Dispatch(reflector, MakePacket(payload, LoopbackFor(family), dest_port, source_ttl));
 
     ASSERT_EQ(target.sent.size(), 1u);
     const auto& sent = target.sent.front();
@@ -130,8 +133,8 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     // the IpAddress::LinkFanoutFor test).
     EXPECT_EQ(sent.dst_ip, IpAddress::LinkFanoutFor(family));
     EXPECT_EQ(sent.dst_port, dest_port);
-    EXPECT_EQ(sent.src_port, 12345); // the original datagram's source port is preserved
-    EXPECT_EQ(sent.ttl, 64);
+    EXPECT_EQ(sent.src_port, 12345);     // the original datagram's source port is preserved
+    EXPECT_EQ(sent.ttl, source_ttl);     // re-emitted with the captured TTL, not a fixed one
     EXPECT_EQ(sent.payload, payload);
 }
 

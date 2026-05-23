@@ -34,11 +34,6 @@ private:
     static constexpr size_t MAC_REPETITIONS = 16;
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
-    // WoL re-emits onto the local link, so the TTL / hop limit only needs to reach the link.
-    // Matches the kernel UDP default the old sender used; parameterized per-call on the
-    // sender so mDNS/SSDP can pass their own later.
-    static constexpr uint8_t REFLECT_TTL = 64;
-
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
     void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;

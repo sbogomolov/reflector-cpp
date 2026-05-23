@@ -148,13 +148,14 @@ struct UnregisteringPacketCounter {
 };
 
 inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2, 1),
-    uint16_t source_port = 12345, uint16_t dest_port = 9) {
+    uint16_t source_port = 12345, uint16_t dest_port = 9, uint8_t ttl = 64) {
     return Packet{
         .header = PacketHeader{
             .source_ip = source_ip,
             .dest_ip = IpAddress::LinkFanoutFor(source_ip.AddressFamily()),
             .source_port = source_port,
             .dest_port = dest_port,
+            .ttl = ttl,
         },
         .payload = {},
     };
@@ -267,13 +268,13 @@ struct FrameBuilder {
     }
 
     void AppendIPv4Header(const IpAddress& src, const IpAddress& dst, uint8_t protocol,
-        uint16_t total_length, uint16_t flags_fragment = 0, uint8_t ihl_words = 5) {
+        uint16_t total_length, uint16_t flags_fragment = 0, uint8_t ihl_words = 5, uint8_t ttl = 64) {
         bytes.push_back(static_cast<std::byte>((4u << 4) | (ihl_words & 0x0f))); // version+IHL
         bytes.push_back(std::byte{0x00});                                         // DSCP/ECN
         AppendU16Be(bytes, total_length);                                         // total length
         AppendU16Be(bytes, 0);                                                    // identification
         AppendU16Be(bytes, flags_fragment);                                       // flags + fragment offset
-        bytes.push_back(std::byte{64});                                           // TTL
+        bytes.push_back(static_cast<std::byte>(ttl));                             // TTL
         bytes.push_back(static_cast<std::byte>(protocol));                        // protocol
         AppendU16Be(bytes, 0);                                                    // header checksum (ignored)
         AppendIpv4(bytes, src);
@@ -287,13 +288,13 @@ struct FrameBuilder {
     }
 
     void AppendIPv6Header(const IpAddress& src, const IpAddress& dst, uint8_t next_header,
-        uint16_t payload_length, uint8_t version = 6) {
+        uint16_t payload_length, uint8_t version = 6, uint8_t hop_limit = 64) {
         bytes.push_back(static_cast<std::byte>(version << 4));                    // version + traffic class hi
         bytes.push_back(std::byte{0x00});                                         // traffic class lo + flow hi
         AppendU16Be(bytes, 0);                                                    // flow lo
         AppendU16Be(bytes, payload_length);                                       // payload length
         bytes.push_back(static_cast<std::byte>(next_header));                     // next header
-        bytes.push_back(std::byte{64});                                           // hop limit
+        bytes.push_back(static_cast<std::byte>(hop_limit));                       // hop limit
         AppendIpv6(bytes, src);
         AppendIpv6(bytes, dst);
     }

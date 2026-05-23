@@ -153,7 +153,9 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
 
     const auto destination = IpAddress::LinkFanoutFor(family);
     const auto port = packet.header.dest_port;
-    if (!target_socket_.SendUdpDatagram(destination, port, packet.header.source_port, packet.payload, REFLECT_TTL)) {
+    // Re-emit with the captured TTL / hop limit so the reflected datagram preserves the
+    // sender's reach instead of resetting it.
+    if (!target_socket_.SendUdpDatagram(destination, port, packet.header.source_port, packet.payload, packet.header.ttl)) {
         logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
             packet.header.source_ip, packet.header.source_port, destination, port);
         return;

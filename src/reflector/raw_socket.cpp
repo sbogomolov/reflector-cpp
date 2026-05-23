@@ -531,7 +531,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
         l3 = frame.subspan(ETHERNET_HEADER_SIZE);
     }
 
-    auto parse_l3 = [&]() -> std::optional<std::tuple<IpAddress, IpAddress, std::span<const std::byte>>> {
+    auto parse_l3 = [&]() -> std::optional<std::tuple<IpAddress, IpAddress, uint8_t, std::span<const std::byte>>> {
         if (ethertype == IPV4_ETHERTYPE) {
             if (l3.size() < IPV4_MIN_HEADER_SIZE) {
                 logger_.Error("IPv4 payload too short for header: {} bytes", l3.size());
@@ -572,6 +572,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             return std::tuple{
                 IpAddress::FromV4Bytes(l3.subspan<12, 4>()),
                 IpAddress::FromV4Bytes(l3.subspan<16, 4>()),
+                std::to_integer<uint8_t>(l3[8]),  // TTL
                 l3.subspan(header_size, total_length - header_size),
             };
         }
@@ -601,6 +602,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             return std::tuple{
                 IpAddress::FromV6Bytes(l3.subspan<8, 16>()),
                 IpAddress::FromV6Bytes(l3.subspan<24, 16>()),
+                std::to_integer<uint8_t>(l3[7]),  // hop limit
                 l3.subspan(IPV6_HEADER_SIZE, payload_length),
             };
         }
@@ -612,7 +614,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
     if (!l3_parsed) {
         return std::nullopt;
     }
-    const auto& [source_ip, dest_ip, l4] = *l3_parsed;
+    const auto& [source_ip, dest_ip, ttl, l4] = *l3_parsed;
 
     if (l4.size() < UDP_HEADER_SIZE) {
         logger_.Error("L4 payload too short for UDP header: {} bytes", l4.size());
@@ -634,6 +636,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             .dest_ip = dest_ip,
             .source_port = source_port,
             .dest_port = dest_port,
+            .ttl = ttl,
             .source_mac = source_mac,
             .dest_mac = dest_mac,
         },

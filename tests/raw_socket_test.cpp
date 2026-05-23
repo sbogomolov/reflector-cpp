@@ -197,7 +197,8 @@ TEST_F(RawSocketTest, ParsesEthernetIpv4Udp) {
     FrameBuilder f;
     f.AppendEthernet(dst_mac, src_mac, IPV4_ETHERTYPE);
     f.AppendIPv4Header(src_ip, dst_ip, IP_PROTO_UDP,
-        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()),
+        /*flags_fragment=*/0, /*ihl_words=*/5, /*ttl=*/200);
     f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
     f.AppendPayload(payload);
 
@@ -207,6 +208,7 @@ TEST_F(RawSocketTest, ParsesEthernetIpv4Udp) {
     EXPECT_EQ(packet->header.dest_ip, dst_ip);
     EXPECT_EQ(packet->header.source_port, 12345);
     EXPECT_EQ(packet->header.dest_port, 9);
+    EXPECT_EQ(packet->header.ttl, 200);
     EXPECT_EQ(packet->header.source_mac, src_mac);
     EXPECT_EQ(packet->header.dest_mac, dst_mac);
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()), payload);
@@ -222,7 +224,7 @@ TEST_F(RawSocketTest, ParsesEthernetIpv6Udp) {
     FrameBuilder f;
     f.AppendEthernet(dst_mac, src_mac, IPV6_ETHERTYPE);
     f.AppendIPv6Header(src_ip, dst_ip, IP_PROTO_UDP,
-        /*payload_length=*/static_cast<uint16_t>(8 + payload.size()));
+        /*payload_length=*/static_cast<uint16_t>(8 + payload.size()), /*version=*/6, /*hop_limit=*/100);
     f.AppendUdp(5353, 5353, static_cast<uint16_t>(8 + payload.size()));
     f.AppendPayload(payload);
 
@@ -232,6 +234,7 @@ TEST_F(RawSocketTest, ParsesEthernetIpv6Udp) {
     EXPECT_EQ(packet->header.dest_ip, dst_ip);
     EXPECT_EQ(packet->header.source_port, 5353);
     EXPECT_EQ(packet->header.dest_port, 5353);
+    EXPECT_EQ(packet->header.ttl, 100);
     EXPECT_EQ(packet->header.source_mac, src_mac);
     EXPECT_EQ(packet->header.dest_mac, dst_mac);
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()), payload);

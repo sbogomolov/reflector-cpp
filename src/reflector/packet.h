@@ -16,6 +16,7 @@ struct PacketHeader {
     IpAddress dest_ip;
     uint16_t source_port = 0;
     uint16_t dest_port = 0;
+    uint8_t ttl = 0;  // IPv4 TTL / IPv6 hop limit, as captured
     MacAddress source_mac{};
     MacAddress dest_mac{};
 };
