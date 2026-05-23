@@ -27,8 +27,6 @@ public:
 
 private:
     friend class DefaultPacketDispatcherTest;
-    friend class WolReflectorTest;
-    friend class WolReflectorPerFamilyTest;
 
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 

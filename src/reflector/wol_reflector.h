@@ -4,7 +4,7 @@
 #include "logger.h"
 #include "mac_address.h"
 #include "packet_dispatcher.h"
-#include "raw_socket.h"
+#include "receive_socket.h"
 #include "udp_sender.h"
 #include "util/no_move.h"
 
@@ -20,22 +20,20 @@ class WolReflector : NoMove {
 public:
     // Captures WoL magic packets on `source_socket` and re-emits matching ones through
     // `target_socket`. Both must outlive this reflector.
-    WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& source_socket,
+    WolReflector(PacketDispatcher& packet_dispatcher, ReceiveSocket& source_socket,
         UdpSender& target_socket, const WolConfig& config);
     ~WolReflector() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
 private:
-    friend class WolReflectorTestBase;
-
     static constexpr size_t PREFIX_SIZE = 6;
     static constexpr size_t MAC_SIZE = 6;
     static constexpr size_t MAC_REPETITIONS = 16;
     static constexpr size_t MAGIC_PACKET_SIZE = PREFIX_SIZE + MAC_REPETITIONS * MAC_SIZE;
 
     [[nodiscard]] bool ValidateConfig(const WolConfig& config);
-    void Initialize(PacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config);
+    void Initialize(PacketDispatcher& packet_dispatcher, ReceiveSocket& source_socket, const WolConfig& config);
     void BuildExpectedMagicPacket(MacAddress mac) noexcept;
     [[nodiscard]] bool IsMagicPacket(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;

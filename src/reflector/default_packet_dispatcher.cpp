@@ -10,28 +10,6 @@ namespace {
 
 using namespace reflector;
 
-bool Matches(const PacketFilter& filter, const Packet& packet) {
-    if (filter.source_ip && *filter.source_ip != packet.header.source_ip) {
-        return false;
-    }
-    if (filter.dest_ip && *filter.dest_ip != packet.header.dest_ip) {
-        return false;
-    }
-    if (filter.source_port && *filter.source_port != packet.header.source_port) {
-        return false;
-    }
-    if (filter.dest_port && *filter.dest_port != packet.header.dest_port) {
-        return false;
-    }
-    if (filter.source_mac && *filter.source_mac != packet.header.source_mac) {
-        return false;
-    }
-    if (filter.dest_mac && *filter.dest_mac != packet.header.dest_mac) {
-        return false;
-    }
-    return true;
-}
-
 Logger& GetLogger() noexcept {
     static Logger logger{"PacketDispatcher"};
     return logger;
@@ -172,7 +150,7 @@ void DefaultPacketDispatcher::DispatchPacket(const ReceiveSocket& socket, const 
         auto& entry = registrations_[idx];
         if (entry.id > last_dispatched_id
             && entry.socket == &socket
-            && Matches(entry.filter, packet)) {
+            && entry.filter.Matches(packet)) {
             last_dispatched_id = entry.id;
             entry.callback(packet);
 

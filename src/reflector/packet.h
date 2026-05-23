@@ -35,6 +35,29 @@ struct PacketFilter {
     std::optional<uint16_t> dest_port = std::nullopt;
     std::optional<MacAddress> source_mac = std::nullopt;
     std::optional<MacAddress> dest_mac = std::nullopt;
+
+    // True if `packet` satisfies every set field; an unset (nullopt) field matches anything.
+    [[nodiscard]] bool Matches(const Packet& packet) const noexcept {
+        if (source_ip && *source_ip != packet.header.source_ip) {
+            return false;
+        }
+        if (dest_ip && *dest_ip != packet.header.dest_ip) {
+            return false;
+        }
+        if (source_port && *source_port != packet.header.source_port) {
+            return false;
+        }
+        if (dest_port && *dest_port != packet.header.dest_port) {
+            return false;
+        }
+        if (source_mac && *source_mac != packet.header.source_mac) {
+            return false;
+        }
+        if (dest_mac && *dest_mac != packet.header.dest_mac) {
+            return false;
+        }
+        return true;
+    }
 };
 
 using PacketCallback = Delegate<void(const Packet&)>;

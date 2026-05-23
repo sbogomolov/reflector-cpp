@@ -24,7 +24,7 @@ public:
 
     [[nodiscard]] constexpr const ByteArray& Bytes() const noexcept { return bytes_; }
 
-    bool operator==(const MacAddress&) const = default;
+    bool operator==(const MacAddress&) const noexcept = default;
 
 private:
     ByteArray bytes_{};

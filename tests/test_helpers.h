@@ -7,6 +7,7 @@
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
 #include "reflector/raw_socket.h"
+#include "reflector/receive_socket.h"
 #include "reflector/udp_sender.h"
 #include "reflector/udp_socket.h"
 
@@ -128,6 +129,57 @@ struct RecordingUdpSender : UdpSender {
     bool can_send_v6 = true;
     bool fail_send = false;
     std::vector<Sent> sent;
+};
+
+// Minimal ReceiveSocket stand-in for a reflector's source socket when packets are pushed
+// through a FakePacketDispatcher rather than drained off a real fd. Receive() never yields.
+struct FakeReceiveSocket : ReceiveSocket {
+    bool IsValid() const noexcept override { return true; }
+    int Fd() const noexcept override { return -1; }
+    std::optional<Packet> Receive() noexcept override { return std::nullopt; }
+#if defined(__APPLE__)
+    bool HasBufferedData() const noexcept override { return false; }
+    void ClearBuffer() noexcept override {}
+#endif
+};
+
+// Fake PacketDispatcher: records registrations and lets a test push a packet to the matching
+// callbacks via Deliver — exercising a subscriber's callback through the real registration path,
+// with no epoll/kqueue and no real socket. Uses the same PacketFilter::Matches as production.
+class FakePacketDispatcher : public PacketDispatcher {
+public:
+    PacketRegistration Register(ReceiveSocket& /*socket*/, const PacketFilter& filter,
+        const PacketCallback& callback) override {
+        const auto id = next_id_++;
+        entries_.push_back(Entry{.id = id, .filter = filter, .callback = callback});
+        return MakeRegistration(id);
+    }
+
+    // Dispatches `packet` to every registration whose filter matches.
+    void Deliver(const Packet& packet) {
+        for (const auto& entry : entries_) {
+            if (entry.filter.Matches(packet)) {
+                entry.callback(packet);
+            }
+        }
+    }
+
+    [[nodiscard]] size_t RegistrationCount() const noexcept { return entries_.size(); }
+
+private:
+    bool Unregister(PacketRegistrationId id) noexcept override {
+        std::erase_if(entries_, [id](const Entry& entry) { return entry.id == id; });
+        return true;
+    }
+
+    struct Entry {
+        PacketRegistrationId id;
+        PacketFilter filter;
+        PacketCallback callback;
+    };
+
+    std::vector<Entry> entries_;
+    PacketRegistrationId next_id_ = 1;
 };
 
 // Counts packets and, on each dispatch, resets the registration pointed at by
