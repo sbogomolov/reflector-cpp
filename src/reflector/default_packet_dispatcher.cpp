@@ -1,4 +1,4 @@
-#include "packet_dispatcher.h"
+#include "default_packet_dispatcher.h"
 
 #include "logger.h"
 #include "util/delegate.h"
@@ -41,18 +41,18 @@ Logger& GetLogger() noexcept {
 
 namespace reflector {
 
-PacketDispatcher::Registration::Registration(PacketDispatcher* packet_dispatcher, RegistrationId id) noexcept
+DefaultPacketDispatcher::Registration::Registration(DefaultPacketDispatcher* packet_dispatcher, RegistrationId id) noexcept
         : packet_dispatcher_{packet_dispatcher}, id_{id} {}
 
-PacketDispatcher::Registration::~Registration() noexcept {
+DefaultPacketDispatcher::Registration::~Registration() noexcept {
     Reset();
 }
 
-PacketDispatcher::Registration::Registration(Registration&& other) noexcept
+DefaultPacketDispatcher::Registration::Registration(Registration&& other) noexcept
         : packet_dispatcher_{std::exchange(other.packet_dispatcher_, nullptr)}
         , id_{std::exchange(other.id_, 0)} {}
 
-PacketDispatcher::Registration& PacketDispatcher::Registration::operator=(Registration&& other) noexcept {
+DefaultPacketDispatcher::Registration& DefaultPacketDispatcher::Registration::operator=(Registration&& other) noexcept {
     if (this == &other) {
         return *this;
     }
@@ -63,11 +63,11 @@ PacketDispatcher::Registration& PacketDispatcher::Registration::operator=(Regist
     return *this;
 }
 
-bool PacketDispatcher::Registration::IsValid() const noexcept {
+bool DefaultPacketDispatcher::Registration::IsValid() const noexcept {
     return packet_dispatcher_ != nullptr && id_ != 0;
 }
 
-bool PacketDispatcher::Registration::Reset() noexcept {
+bool DefaultPacketDispatcher::Registration::Reset() noexcept {
     if (packet_dispatcher_ == nullptr || id_ == 0) {
         packet_dispatcher_ = nullptr;
         id_ = 0;
@@ -79,16 +79,16 @@ bool PacketDispatcher::Registration::Reset() noexcept {
     return packet_dispatcher->Unregister(id);
 }
 
-PacketDispatcher::PacketDispatcher(Dispatcher& dispatcher)
+DefaultPacketDispatcher::DefaultPacketDispatcher(Dispatcher& dispatcher)
         : dispatcher_{&dispatcher} {}
 
-PacketDispatcher::~PacketDispatcher() noexcept {
+DefaultPacketDispatcher::~DefaultPacketDispatcher() noexcept {
     if (!registrations_.empty()) {
         GetLogger().Error("Destroying packet dispatcher with {} registration(s) still active", registrations_.size());
     }
 }
 
-PacketDispatcher::Registration PacketDispatcher::Register(
+DefaultPacketDispatcher::Registration DefaultPacketDispatcher::Register(
     RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
         GetLogger().Error("Cannot register packet callback: capture socket is invalid");
@@ -98,7 +98,7 @@ PacketDispatcher::Registration PacketDispatcher::Register(
     const auto fd = socket.Fd();
     if (!capture_sources_.contains(fd)) {
         // First subscriber for this socket: start watching its fd through the Dispatcher.
-        auto dispatcher_reg = dispatcher_->Register(fd, CreateDelegate<&PacketDispatcher::OnReadable>(this));
+        auto dispatcher_reg = dispatcher_->Register(fd, CreateDelegate<&DefaultPacketDispatcher::OnReadable>(this));
         if (!dispatcher_reg.IsValid()) {
             GetLogger().Error("Cannot register packet callback: dispatcher registration failed for fd {}", fd);
             return Registration{};
@@ -119,7 +119,7 @@ PacketDispatcher::Registration PacketDispatcher::Register(
     return Registration{this, id};
 }
 
-bool PacketDispatcher::Unregister(RegistrationId id) noexcept {
+bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
     const auto it = std::ranges::find_if(registrations_, [id](const auto& registration) {
         return registration.id == id;
     });
@@ -149,7 +149,7 @@ bool PacketDispatcher::Unregister(RegistrationId id) noexcept {
     return true;
 }
 
-void PacketDispatcher::OnReadable(int fd) noexcept {
+void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
     const auto it = capture_sources_.find(fd);
     if (it == capture_sources_.end()) {
         GetLogger().Warning("Readable callback for unknown capture fd {}", fd);
@@ -158,7 +158,7 @@ void PacketDispatcher::OnReadable(int fd) noexcept {
     DrainReadableFd(*it->second.socket);
 }
 
-void PacketDispatcher::DrainReadableFd(RawSocket& socket) noexcept {
+void DefaultPacketDispatcher::DrainReadableFd(RawSocket& socket) noexcept {
     active_socket_ = &socket;
 
 #if defined(__APPLE__)
@@ -195,7 +195,7 @@ void PacketDispatcher::DrainReadableFd(RawSocket& socket) noexcept {
     active_socket_ = nullptr;
 }
 
-void PacketDispatcher::DispatchPacket(const RawSocket& socket, const Packet& packet) const {
+void DefaultPacketDispatcher::DispatchPacket(const RawSocket& socket, const Packet& packet) const {
     // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
     // elements, so after each dispatch we check that our slot still holds the entry we
     // just fired; if it doesn't, we restart from the front and let last_dispatched_id

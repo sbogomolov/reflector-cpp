@@ -29,7 +29,7 @@ namespace reflector {
 //
 // Requires CAP_NET_RAW on Linux or BPF device permissions on macOS.
 //
-// Immovable so registered instances stay put: PacketDispatcher caches the socket address in
+// Immovable so registered instances stay put: DefaultPacketDispatcher caches the socket address in
 // its capture-source map and registration entries and dereferences it on every drain; a move
 // would silently invalidate those pointers. Hold instances in storage that preserves
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
@@ -40,7 +40,7 @@ public:
 
     // Test-only: wrap an arbitrary fd without performing any OS-level capture setup.
     // Receive() consumes bytes from that fd the same way the production socket would,
-    // so tests can either synthesize Packets via PacketDispatcher::DispatchPacket directly
+    // so tests can either synthesize Packets via DefaultPacketDispatcher::DispatchPacket directly
     // (when nothing is written to the fd) or drive real frames end-to-end via
     // TestCaptureSocket::WriteFrame.
     [[nodiscard]] static RawSocket ForTesting(std::string_view interface, int owned_fd);
@@ -88,12 +88,12 @@ public:
     // True if there are unparsed bytes in the socket's userland buffer. macOS BPF batches
     // multiple frames per read() into our buffer; if the drain stops before the batch is
     // consumed, kqueue won't fire again (the kernel side is empty) and the remaining frames
-    // would stall. PacketDispatcher uses this to keep draining past the packet-per-event cap
+    // would stall. DefaultPacketDispatcher uses this to keep draining past the packet-per-event cap
     // while the buffer still has data. Not defined on Linux because AF_PACKET delivers one
     // frame per recv with no userland buffering.
     [[nodiscard]] bool HasBufferedData() const noexcept;
 
-    // Discards any unparsed bytes in the userland buffer. PacketDispatcher calls this when it
+    // Discards any unparsed bytes in the userland buffer. DefaultPacketDispatcher calls this when it
     // abandons a drain mid-batch (last registration for this fd was unregistered by a
     // callback); the leftover frames would otherwise sit until either the socket is
     // destroyed or new kernel data arrives to trigger a fresh drain.

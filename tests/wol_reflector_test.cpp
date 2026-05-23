@@ -64,7 +64,7 @@ class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Fam
                                   public WolReflectorTestBase {
 protected:
     Dispatcher dispatcher;
-    PacketDispatcher packet_dispatcher{dispatcher};
+    DefaultPacketDispatcher packet_dispatcher{dispatcher};
     TestCaptureSocket source;
     RecordingUdpSender target;
 
@@ -85,7 +85,7 @@ INSTANTIATE_TEST_SUITE_P(
         return std::format("{}", param_info.param);
     });
 
-TEST_P(WolReflectorPerFamilyTest, RegistersWithPacketDispatcher) {
+TEST_P(WolReflectorPerFamilyTest, RegistersWithDefaultPacketDispatcher) {
     const auto reflector = BuildReflector(MakeConfig(GetParam()));
 
     EXPECT_TRUE(reflector.IsValid());
@@ -105,7 +105,7 @@ TEST_P(WolReflectorPerFamilyTest, CreatedLogUsesConfigNameInLoggerName) {
     EXPECT_NE(output.find("tv"), std::string::npos) << output;
 }
 
-TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromPacketDispatcher) {
+TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromDefaultPacketDispatcher) {
     {
         const auto reflector = BuildReflector(MakeConfig(GetParam()));
         ASSERT_TRUE(reflector.IsValid());
@@ -141,7 +141,7 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
 class WolReflectorTest : public ::testing::Test, public WolReflectorTestBase {
 protected:
     Dispatcher dispatcher;
-    PacketDispatcher packet_dispatcher{dispatcher};
+    DefaultPacketDispatcher packet_dispatcher{dispatcher};
     TestCaptureSocket source;
     RecordingUdpSender target;
 

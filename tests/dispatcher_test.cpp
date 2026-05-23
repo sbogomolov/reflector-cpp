@@ -20,7 +20,7 @@ protected:
     }
 };
 
-// A pipe whose read end stands in for a non-socket readable fd — the kind PacketDispatcher
+// A pipe whose read end stands in for a non-socket readable fd — the kind DefaultPacketDispatcher
 // and the interface-address monitor register. Writing a byte makes the read end poll-readable.
 struct ReadablePipe : NoCopy {
     ReadablePipe() noexcept {

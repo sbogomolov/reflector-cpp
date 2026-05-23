@@ -1,4 +1,4 @@
-#include "reflector/packet_dispatcher.h"
+#include "reflector/default_packet_dispatcher.h"
 
 #include "reflector/dispatcher.h"
 #include "reflector/ip_address.h"
@@ -29,10 +29,10 @@ constexpr auto POLL_SLICE = std::chrono::milliseconds{100};
 
 namespace reflector {
 
-class PacketDispatcherTest : public ::testing::Test {
+class DefaultPacketDispatcherTest : public ::testing::Test {
 protected:
     Dispatcher dispatcher;
-    PacketDispatcher packet_dispatcher{dispatcher};
+    DefaultPacketDispatcher packet_dispatcher{dispatcher};
 
     void Dispatch(const RawSocket& socket, const Packet& packet) {
         packet_dispatcher.DispatchPacket(socket, packet);
@@ -55,14 +55,14 @@ struct RegisteringPacketCounter {
         }
     }
 
-    PacketDispatcher* packet_dispatcher = nullptr;
+    DefaultPacketDispatcher* packet_dispatcher = nullptr;
     RawSocket* socket = nullptr;
     PacketCounter* target = nullptr;
-    PacketDispatcher::Registration new_registration;
+    DefaultPacketDispatcher::Registration new_registration;
     int count = 0;
 };
 
-TEST_F(PacketDispatcherTest, RegistersCallback) {
+TEST_F(DefaultPacketDispatcherTest, RegistersCallback) {
     TestCaptureSocket capture;
     PacketCounter counter;
 
@@ -73,7 +73,7 @@ TEST_F(PacketDispatcherTest, RegistersCallback) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
-TEST_F(PacketDispatcherTest, RegisterRejectsInvalidCaptureSocket) {
+TEST_F(DefaultPacketDispatcherTest, RegisterRejectsInvalidCaptureSocket) {
     auto invalid = RawSocket::ForTesting("invalid", -1);
     PacketCounter counter;
 
@@ -84,7 +84,7 @@ TEST_F(PacketDispatcherTest, RegisterRejectsInvalidCaptureSocket) {
     EXPECT_EQ(RegistrationCount(), 0);
 }
 
-TEST_F(PacketDispatcherTest, DispatchesMatchingPacket) {
+TEST_F(DefaultPacketDispatcherTest, DispatchesMatchingPacket) {
     TestCaptureSocket capture;
     PacketCounter counter;
     const auto registration = packet_dispatcher.Register(
@@ -96,7 +96,7 @@ TEST_F(PacketDispatcherTest, DispatchesMatchingPacket) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, SourceFiltersRejectNonMatchingPackets) {
+TEST_F(DefaultPacketDispatcherTest, SourceFiltersRejectNonMatchingPackets) {
     TestCaptureSocket capture;
     PacketCounter counter;
     PacketFilter filter{
@@ -113,7 +113,7 @@ TEST_F(PacketDispatcherTest, SourceFiltersRejectNonMatchingPackets) {
     EXPECT_EQ(counter.count, 0);
 }
 
-TEST_F(PacketDispatcherTest, SourceFiltersAcceptMatchingPackets) {
+TEST_F(DefaultPacketDispatcherTest, SourceFiltersAcceptMatchingPackets) {
     TestCaptureSocket capture;
     PacketCounter counter;
     PacketFilter filter{
@@ -129,7 +129,7 @@ TEST_F(PacketDispatcherTest, SourceFiltersAcceptMatchingPackets) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, DestFilterRejectsNonMatchingPackets) {
+TEST_F(DefaultPacketDispatcherTest, DestFilterRejectsNonMatchingPackets) {
     TestCaptureSocket capture;
     PacketCounter counter;
     PacketFilter filter{.dest_port = uint16_t{9}};
@@ -143,7 +143,7 @@ TEST_F(PacketDispatcherTest, DestFilterRejectsNonMatchingPackets) {
     EXPECT_EQ(counter.count, 0);
 }
 
-TEST_F(PacketDispatcherTest, DestFilterAcceptsMatchingPackets) {
+TEST_F(DefaultPacketDispatcherTest, DestFilterAcceptsMatchingPackets) {
     TestCaptureSocket capture;
     PacketCounter counter;
     PacketFilter filter{.dest_port = uint16_t{9}};
@@ -157,7 +157,7 @@ TEST_F(PacketDispatcherTest, DestFilterAcceptsMatchingPackets) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, SourceMacFilterMatchesEqualMac) {
+TEST_F(DefaultPacketDispatcherTest, SourceMacFilterMatchesEqualMac) {
     TestCaptureSocket capture;
     PacketCounter counter;
     const auto mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
@@ -173,7 +173,7 @@ TEST_F(PacketDispatcherTest, SourceMacFilterMatchesEqualMac) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, DestMacFilterRejectsDifferentMac) {
+TEST_F(DefaultPacketDispatcherTest, DestMacFilterRejectsDifferentMac) {
     TestCaptureSocket capture;
     PacketCounter counter;
     PacketFilter filter{.dest_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff")};
@@ -188,7 +188,7 @@ TEST_F(PacketDispatcherTest, DestMacFilterRejectsDifferentMac) {
     EXPECT_EQ(counter.count, 0);
 }
 
-TEST_F(PacketDispatcherTest, CombinedFilterRequiresAllFields) {
+TEST_F(DefaultPacketDispatcherTest, CombinedFilterRequiresAllFields) {
     TestCaptureSocket capture;
     PacketCounter counter;
     const auto mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
@@ -213,7 +213,7 @@ TEST_F(PacketDispatcherTest, CombinedFilterRequiresAllFields) {
     EXPECT_EQ(counter.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, MultipleRegistrationsReceivePacket) {
+TEST_F(DefaultPacketDispatcherTest, MultipleRegistrationsReceivePacket) {
     TestCaptureSocket capture;
     PacketCounter first;
     PacketCounter second;
@@ -232,7 +232,7 @@ TEST_F(PacketDispatcherTest, MultipleRegistrationsReceivePacket) {
     EXPECT_EQ(second.count, 1);
 }
 
-TEST_F(PacketDispatcherTest, UnregisterRemovesCallback) {
+TEST_F(DefaultPacketDispatcherTest, UnregisterRemovesCallback) {
     TestCaptureSocket capture;
     PacketCounter counter;
     auto registration = packet_dispatcher.Register(
@@ -246,7 +246,7 @@ TEST_F(PacketDispatcherTest, UnregisterRemovesCallback) {
     EXPECT_EQ(counter.count, 0);
 }
 
-TEST_F(PacketDispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
+TEST_F(DefaultPacketDispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
     TestCaptureSocket capture;
     UnregisteringPacketCounter first;
     PacketCounter second;
@@ -268,7 +268,7 @@ TEST_F(PacketDispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
-TEST_F(PacketDispatcherTest, DispatchesToCallbackRegisteredDuringDispatch) {
+TEST_F(DefaultPacketDispatcherTest, DispatchesToCallbackRegisteredDuringDispatch) {
     TestCaptureSocket capture;
     RegisteringPacketCounter first;
     PacketCounter second;
@@ -288,7 +288,7 @@ TEST_F(PacketDispatcherTest, DispatchesToCallbackRegisteredDuringDispatch) {
     EXPECT_EQ(RegistrationCount(), 2);
 }
 
-TEST_F(PacketDispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
+TEST_F(DefaultPacketDispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
     TestCaptureSocket capture;
     PacketCounter first;
     PacketCounter second;
@@ -308,7 +308,7 @@ TEST_F(PacketDispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
-TEST_F(PacketDispatcherTest, PollOnceWithoutPacketReturnsFalse) {
+TEST_F(DefaultPacketDispatcherTest, PollOnceWithoutPacketReturnsFalse) {
     TestCaptureSocket capture;
     PacketCounter counter;
     const auto registration = packet_dispatcher.Register(
@@ -323,10 +323,10 @@ TEST_F(PacketDispatcherTest, PollOnceWithoutPacketReturnsFalse) {
 
 // Drives an Ethernet/IPv4/UDP frame through TestCaptureSocket's socketpair so that
 // dispatcher.PollOnce wakes via kqueue/epoll, invokes the per-fd callback,
-// PacketDispatcher drains the socket, ParseFrame decodes the frame, and DispatchPacket
+// DefaultPacketDispatcher drains the socket, ParseFrame decodes the frame, and DispatchPacket
 // invokes the subscriber. Exercises the full receive path on both macOS (bpf_hdr-prefixed)
 // and Linux (raw bytes) without needing capture privileges or real loopback traffic.
-TEST_F(PacketDispatcherTest, PollOnceDispatchesFrameWrittenToTestSocket) {
+TEST_F(DefaultPacketDispatcherTest, PollOnceDispatchesFrameWrittenToTestSocket) {
     TestCaptureSocket capture;
     PacketRecorder recorder;
     const auto registration = packet_dispatcher.Register(capture.socket,
@@ -355,7 +355,7 @@ TEST_F(PacketDispatcherTest, PollOnceDispatchesFrameWrittenToTestSocket) {
     EXPECT_EQ(recorder.source_ip, src_ip);
 }
 
-TEST_F(PacketDispatcherTest, DispatchesNothingForUnparseableFrame) {
+TEST_F(DefaultPacketDispatcherTest, DispatchesNothingForUnparseableFrame) {
     TestCaptureSocket capture;
     PacketCounter counter;
     const auto registration = packet_dispatcher.Register(capture.socket, PacketFilter{},
@@ -375,10 +375,10 @@ TEST_F(PacketDispatcherTest, DispatchesNothingForUnparseableFrame) {
     EXPECT_EQ(counter.count, 0);
 }
 
-class PacketDispatcherRequiresRootTest : public ::testing::Test {
+class DefaultPacketDispatcherRequiresRootTest : public ::testing::Test {
 protected:
     Dispatcher dispatcher;
-    PacketDispatcher packet_dispatcher{dispatcher};
+    DefaultPacketDispatcher packet_dispatcher{dispatcher};
     std::optional<RawSocket> socket;
     UdpSocket listener_socket{IpAddress::Family::V4};
     uint16_t listener_port = 0;
@@ -419,7 +419,7 @@ protected:
     }
 };
 
-TEST_F(PacketDispatcherRequiresRootTest, PollOnceDispatchesLoopbackPacket) {
+TEST_F(DefaultPacketDispatcherRequiresRootTest, PollOnceDispatchesLoopbackPacket) {
     PacketRecorder recorder;
     const auto registration = packet_dispatcher.Register(*socket, LoopbackFilter(),
         CreateDelegate<&PacketRecorder::OnPacket>(&recorder));
@@ -434,7 +434,7 @@ TEST_F(PacketDispatcherRequiresRootTest, PollOnceDispatchesLoopbackPacket) {
     EXPECT_EQ(recorder.source_ip, IpAddress::LoopbackV4());
 }
 
-TEST_F(PacketDispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBurst) {
+TEST_F(DefaultPacketDispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBurst) {
     PacketCounter counter;
     const auto registration = packet_dispatcher.Register(*socket, LoopbackFilter(),
         CreateDelegate<&PacketCounter::OnPacket>(&counter));
@@ -450,7 +450,7 @@ TEST_F(PacketDispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBurst) {
     EXPECT_EQ(counter.count, packet_count);
 }
 
-TEST_F(PacketDispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLastRegistration) {
+TEST_F(DefaultPacketDispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLastRegistration) {
     UnregisteringPacketCounter counter;
     auto registration = packet_dispatcher.Register(*socket, LoopbackFilter(),
         CreateDelegate<&UnregisteringPacketCounter::OnPacket>(&counter));

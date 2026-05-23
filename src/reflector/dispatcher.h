@@ -11,13 +11,13 @@
 
 namespace reflector {
 
-// Invoked with the fd that became readable. PacketDispatcher binds one of these per capture
+// Invoked with the fd that became readable. DefaultPacketDispatcher binds one of these per capture
 // socket; other readable fds (e.g. the interface-address monitor) bind their own.
 using OnReadableCallback = Delegate<void(int)>;
 
 // A minimal readiness reactor over kqueue (macOS) / epoll (Linux): callers register a
 // callback per fd, and Run/PollOnce invoke it whenever that fd becomes readable. It knows
-// nothing about packets — PacketDispatcher layers the capture/parse/filter logic on top by
+// nothing about packets — DefaultPacketDispatcher layers the capture/parse/filter logic on top by
 // registering one fd callback per capture socket. One callback per fd; the fd is the key.
 class Dispatcher : NoMove {
 public:

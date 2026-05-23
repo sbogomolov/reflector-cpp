@@ -18,7 +18,7 @@ namespace reflector {
 // becomes readable it drains every queued frame and dispatches each to the registrations
 // whose filter matches. Packet subscribers register their interest here, not with the
 // Dispatcher — keeping the Dispatcher a plain fd reactor.
-class PacketDispatcher : NoMove {
+class DefaultPacketDispatcher : NoMove {
 public:
     using RegistrationId = uint64_t;
 
@@ -34,24 +34,24 @@ public:
         bool Reset() noexcept;
 
     private:
-        friend class PacketDispatcher;
+        friend class DefaultPacketDispatcher;
 
-        Registration(PacketDispatcher* packet_dispatcher, RegistrationId id) noexcept;
+        Registration(DefaultPacketDispatcher* packet_dispatcher, RegistrationId id) noexcept;
 
-        PacketDispatcher* packet_dispatcher_ = nullptr;
+        DefaultPacketDispatcher* packet_dispatcher_ = nullptr;
         RegistrationId id_ = 0;
     };
 
-    explicit PacketDispatcher(Dispatcher& dispatcher);
-    ~PacketDispatcher() noexcept;
+    explicit DefaultPacketDispatcher(Dispatcher& dispatcher);
+    ~DefaultPacketDispatcher() noexcept;
 
-    // The socket must outlive every registration returned for it and this PacketDispatcher:
+    // The socket must outlive every registration returned for it and this DefaultPacketDispatcher:
     // we keep a raw pointer to it and dereference it on Unregister and on every drain.
-    // The returned Registration must not outlive this PacketDispatcher.
+    // The returned Registration must not outlive this DefaultPacketDispatcher.
     [[nodiscard]] Registration Register(RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 
 private:
-    friend class PacketDispatcherTest;
+    friend class DefaultPacketDispatcherTest;
     friend class WolReflectorTest;
     friend class WolReflectorPerFamilyTest;
 

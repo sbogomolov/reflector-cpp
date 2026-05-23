@@ -16,7 +16,7 @@ std::string LoggerName(const WolConfig& config) {
 
 } // namespace
 
-WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, RawSocket& source_socket,
+WolReflector::WolReflector(DefaultPacketDispatcher& packet_dispatcher, RawSocket& source_socket,
     UdpSender& target_socket, const WolConfig& config)
         : logger_{LoggerName(config)}
         , target_socket_{target_socket} {
@@ -39,7 +39,7 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
     return true;
 }
 
-void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config) {
+void WolReflector::Initialize(DefaultPacketDispatcher& packet_dispatcher, RawSocket& source_socket, const WolConfig& config) {
     if (config.RequiresIPv4() && !target_socket_.CanSend(IpAddress::Family::V4)) {
         logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv4",
             config.name, config.target_if);
