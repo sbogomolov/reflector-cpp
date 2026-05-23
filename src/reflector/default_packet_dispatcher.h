@@ -2,7 +2,7 @@
 
 #include "dispatcher.h"
 #include "packet.h"
-#include "raw_socket.h"
+#include "receive_socket.h"
 #include "util/no_copy.h"
 #include "util/no_move.h"
 
@@ -48,7 +48,7 @@ public:
     // The socket must outlive every registration returned for it and this DefaultPacketDispatcher:
     // we keep a raw pointer to it and dereference it on Unregister and on every drain.
     // The returned Registration must not outlive this DefaultPacketDispatcher.
-    [[nodiscard]] Registration Register(RawSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
+    [[nodiscard]] Registration Register(ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback);
 
 private:
     friend class DefaultPacketDispatcherTest;
@@ -59,7 +59,7 @@ private:
 
     struct RegistrationEntry {
         RegistrationId id;
-        RawSocket* socket;
+        ReceiveSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
     };
@@ -68,7 +68,7 @@ private:
     // fd watched. Created with the socket's first packet registration and dropped with its
     // last, so the fd is watched exactly while something wants its frames.
     struct CaptureSource {
-        RawSocket* socket;
+        ReceiveSocket* socket;
         Dispatcher::Registration dispatcher_reg;
     };
 
@@ -76,8 +76,8 @@ private:
 
     bool Unregister(RegistrationId id) noexcept;
     void OnReadable(int fd) noexcept;
-    void DrainReadableFd(RawSocket& socket) noexcept;
-    void DispatchPacket(const RawSocket& socket, const Packet& packet) const;
+    void DrainReadableFd(ReceiveSocket& socket) noexcept;
+    void DispatchPacket(const ReceiveSocket& socket, const Packet& packet) const;
 
     Dispatcher* dispatcher_;
     // Kept sorted by id: Register appends with a monotonically increasing id and Unregister
@@ -88,7 +88,7 @@ private:
     RegistrationId next_registration_id_ = 1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
-    const RawSocket* active_socket_ = nullptr;
+    const ReceiveSocket* active_socket_ = nullptr;
 };
 
 } // namespace reflector

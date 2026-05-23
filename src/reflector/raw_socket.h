@@ -3,6 +3,7 @@
 #include "interface_address.h"
 #include "logger.h"
 #include "packet.h"
+#include "receive_socket.h"
 #include "udp_sender.h"
 #include "util/no_move.h"
 
@@ -33,7 +34,7 @@ namespace reflector {
 // its capture-source map and registration entries and dereferences it on every drain; a move
 // would silently invalidate those pointers. Hold instances in storage that preserves
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
-class RawSocket : public UdpSender, NoMove {
+class RawSocket : public UdpSender, public ReceiveSocket, NoMove {
 public:
     explicit RawSocket(std::string_view interface);
     ~RawSocket() noexcept override;
@@ -49,8 +50,8 @@ public:
     // behind a pointer — e.g. Application's injectable capture-socket factory.
     [[nodiscard]] static std::unique_ptr<RawSocket> ForTestingPtr(std::string_view interface, int owned_fd);
 
-    [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
-    [[nodiscard]] int Fd() const noexcept { return fd_; }
+    [[nodiscard]] bool IsValid() const noexcept override { return fd_ >= 0; }
+    [[nodiscard]] int Fd() const noexcept override { return fd_; }
     [[nodiscard]] std::string_view Interface() const noexcept { return interface_; }
 
     // The interface's kernel index, resolved at open (0 for test-only sockets or if the
@@ -82,7 +83,7 @@ public:
     // Returns nullopt when no datagram is currently available (EAGAIN), or when the next
     // frame is unparseable / fragmented — caller treats both the same way and tries again
     // on the next read event.
-    [[nodiscard]] std::optional<Packet> Receive() noexcept;
+    [[nodiscard]] std::optional<Packet> Receive() noexcept override;
 
 #if defined(__APPLE__)
     // True if there are unparsed bytes in the socket's userland buffer. macOS BPF batches
@@ -91,13 +92,13 @@ public:
     // would stall. DefaultPacketDispatcher uses this to keep draining past the packet-per-event cap
     // while the buffer still has data. Not defined on Linux because AF_PACKET delivers one
     // frame per recv with no userland buffering.
-    [[nodiscard]] bool HasBufferedData() const noexcept;
+    [[nodiscard]] bool HasBufferedData() const noexcept override;
 
     // Discards any unparsed bytes in the userland buffer. DefaultPacketDispatcher calls this when it
     // abandons a drain mid-batch (last registration for this fd was unregistered by a
     // callback); the leftover frames would otherwise sit until either the socket is
     // destroyed or new kernel data arrives to trigger a fresh drain.
-    void ClearBuffer() noexcept;
+    void ClearBuffer() noexcept override;
 #endif
 
 private:
