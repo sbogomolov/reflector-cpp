@@ -28,7 +28,7 @@ DefaultPacketDispatcher::~DefaultPacketDispatcher() noexcept {
     }
 }
 
-PacketRegistration DefaultPacketDispatcher::Register(
+PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
         GetLogger().Error("Cannot register packet callback: capture socket is invalid");
@@ -59,7 +59,7 @@ PacketRegistration DefaultPacketDispatcher::Register(
     return MakeRegistration(id);
 }
 
-bool DefaultPacketDispatcher::Unregister(PacketRegistrationId id) noexcept {
+bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
     const auto it = std::ranges::find_if(registrations_, [id](const auto& registration) {
         return registration.id == id;
     });
@@ -75,7 +75,7 @@ bool DefaultPacketDispatcher::Unregister(PacketRegistrationId id) noexcept {
         return r.socket == socket;
     });
     if (!socket_still_used) {
-        // Dropping the CaptureSource resets its DispatcherRegistration, which removes the
+        // Dropping the CaptureSource resets its Dispatcher::Registration, which removes the
         // read event for this fd.
         capture_sources_.erase(socket->Fd());
         // Tell DrainReadableFd to stop before its next Receive() — the socket no longer has
@@ -145,7 +145,7 @@ void DefaultPacketDispatcher::DispatchPacket(const ReceiveSocket& socket, const 
     //
     // Side effect to be aware of: a callback that calls Register creates a new entry
     // with a higher id, which this loop will reach and dispatch for the current packet.
-    PacketRegistrationId last_dispatched_id = 0;
+    RegistrationId last_dispatched_id = 0;
     for (size_t idx = 0; idx < registrations_.size();) {
         auto& entry = registrations_[idx];
         if (entry.id > last_dispatched_id

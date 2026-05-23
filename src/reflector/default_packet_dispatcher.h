@@ -22,7 +22,7 @@ public:
     explicit DefaultPacketDispatcher(Dispatcher& dispatcher);
     ~DefaultPacketDispatcher() noexcept override;
 
-    [[nodiscard]] PacketRegistration Register(
+    [[nodiscard]] PacketDispatcher::Registration Register(
         ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) override;
 
 private:
@@ -31,7 +31,7 @@ private:
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
     struct RegistrationEntry {
-        PacketRegistrationId id;
+        RegistrationId id;
         ReceiveSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
@@ -42,12 +42,12 @@ private:
     // last, so the fd is watched exactly while something wants its frames.
     struct CaptureSource {
         ReceiveSocket* socket;
-        DispatcherRegistration dispatcher_reg;
+        Dispatcher::Registration dispatcher_reg;
     };
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
 
-    bool Unregister(PacketRegistrationId id) noexcept override;
+    bool Unregister(RegistrationId id) noexcept override;
     void OnReadable(int fd) noexcept;
     void DrainReadableFd(ReceiveSocket& socket) noexcept;
     void DispatchPacket(const ReceiveSocket& socket, const Packet& packet) const;
@@ -58,7 +58,7 @@ private:
     // breaks the order would silently corrupt dispatch.
     std::vector<RegistrationEntry> registrations_;
     std::unordered_map<int, CaptureSource> capture_sources_;
-    PacketRegistrationId next_registration_id_ = 1;
+    RegistrationId next_registration_id_ = 1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
     const ReceiveSocket* active_socket_ = nullptr;

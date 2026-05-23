@@ -64,7 +64,7 @@ struct SelfUnregisteringReadable {
             reset_result = registration_to_reset->Reset();
         }
     }
-    DispatcherRegistration* registration_to_reset = nullptr;
+    Dispatcher::Registration* registration_to_reset = nullptr;
     bool reset_result = false;
     int count = 0;
 };

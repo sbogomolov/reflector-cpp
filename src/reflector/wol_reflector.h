@@ -53,7 +53,7 @@ private:
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
-    std::vector<PacketRegistration> registrations_;
+    std::vector<PacketDispatcher::Registration> registrations_;
 };
 
 } // namespace reflector

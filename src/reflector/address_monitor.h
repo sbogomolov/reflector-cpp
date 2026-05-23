@@ -56,7 +56,7 @@ private:
 
     Logger logger_;
     OnInterfaceChanged on_change_;
-    DispatcherRegistration registration_;
+    Dispatcher::Registration registration_;
     int fd_ = -1;
 };
 

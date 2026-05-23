@@ -152,7 +152,7 @@ public:
     // fail. Lets a test exercise a subscriber's mid-loop registration-failure handling.
     size_t fail_register_on_call = 0;
 
-    PacketRegistration Register(ReceiveSocket& /*socket*/, const PacketFilter& filter,
+    PacketDispatcher::Registration Register(ReceiveSocket& /*socket*/, const PacketFilter& filter,
         const PacketCallback& callback) override {
         if (++register_calls_ == fail_register_on_call) {
             return {};
@@ -174,19 +174,19 @@ public:
     [[nodiscard]] size_t RegistrationCount() const noexcept { return entries_.size(); }
 
 private:
-    bool Unregister(PacketRegistrationId id) noexcept override {
+    bool Unregister(PacketDispatcher::RegistrationId id) noexcept override {
         std::erase_if(entries_, [id](const Entry& entry) { return entry.id == id; });
         return true;
     }
 
     struct Entry {
-        PacketRegistrationId id;
+        PacketDispatcher::RegistrationId id;
         PacketFilter filter;
         PacketCallback callback;
     };
 
     std::vector<Entry> entries_;
-    PacketRegistrationId next_id_ = 1;
+    PacketDispatcher::RegistrationId next_id_ = 1;
     size_t register_calls_ = 0;
 };
 
@@ -202,7 +202,7 @@ struct UnregisteringPacketCounter {
         }
     }
 
-    PacketRegistration* registration_to_reset = nullptr;
+    PacketDispatcher::Registration* registration_to_reset = nullptr;
     bool reset_result = false;
     int count = 0;
 };

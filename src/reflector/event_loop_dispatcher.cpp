@@ -65,7 +65,7 @@ EventLoopDispatcher::~EventLoopDispatcher() noexcept {
     }
 }
 
-DispatcherRegistration EventLoopDispatcher::Register(int fd, const OnReadableCallback& on_readable) {
+Dispatcher::Registration EventLoopDispatcher::Register(int fd, const OnReadableCallback& on_readable) {
     if (fd < 0) {
         GetLogger().Error("Cannot register fd callback: fd is invalid");
         return {};

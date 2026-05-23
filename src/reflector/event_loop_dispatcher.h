@@ -18,7 +18,7 @@ public:
     EventLoopDispatcher();
     ~EventLoopDispatcher() noexcept override;
 
-    [[nodiscard]] DispatcherRegistration Register(int fd, const OnReadableCallback& on_readable) override;
+    [[nodiscard]] Dispatcher::Registration Register(int fd, const OnReadableCallback& on_readable) override;
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
     bool PollOnce(std::chrono::milliseconds timeout);
