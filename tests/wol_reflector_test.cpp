@@ -45,7 +45,7 @@ protected:
         return Packet{
             .header = PacketHeader{
                 .source_ip = source_ip,
-                .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
+                .dest_ip = IpAddress::LinkFanoutFor(source_ip.AddressFamily()),
                 .source_port = 12345,
                 .dest_port = dest_port,
             },
@@ -126,9 +126,9 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
 
     ASSERT_EQ(target.sent.size(), 1u);
     const auto& sent = target.sent.front();
-    // IPv4 fans out to the limited broadcast, IPv6 to the link-local all-nodes group.
-    EXPECT_EQ(sent.dst_ip, family == IpAddress::Family::V4
-        ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6());
+    // Fans out to the family's link-everyone address (the V4/V6 mapping itself is covered by
+    // the IpAddress::LinkFanoutFor test).
+    EXPECT_EQ(sent.dst_ip, IpAddress::LinkFanoutFor(family));
     EXPECT_EQ(sent.dst_port, dest_port);
     EXPECT_EQ(sent.src_port, 12345); // the original datagram's source port is preserved
     EXPECT_EQ(sent.ttl, 64);

@@ -151,9 +151,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
         return;
     }
 
-    const auto destination = family == IpAddress::Family::V4
-        ? IpAddress::BroadcastV4()
-        : IpAddress::AllNodesLinkLocalV6();
+    const auto destination = IpAddress::LinkFanoutFor(family);
     const auto port = packet.header.dest_port;
     if (!target_socket_.SendUdpDatagram(destination, port, packet.header.source_port, packet.payload, REFLECT_TTL)) {
         logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",

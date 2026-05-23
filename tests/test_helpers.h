@@ -152,7 +152,7 @@ inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2,
     return Packet{
         .header = PacketHeader{
             .source_ip = source_ip,
-            .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
+            .dest_ip = IpAddress::LinkFanoutFor(source_ip.AddressFamily()),
             .source_port = source_port,
             .dest_port = dest_port,
         },

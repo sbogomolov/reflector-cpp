@@ -24,6 +24,9 @@ public:
     [[nodiscard]] static constexpr IpAddress AnyV6() noexcept { return IpAddress{Family::V6, {}}; }
     [[nodiscard]] static IpAddress BroadcastV4() noexcept;          // 255.255.255.255
     [[nodiscard]] static IpAddress AllNodesLinkLocalV6() noexcept;  // ff02::1
+    // The family's "everyone on the local link" destination: the IPv4 limited broadcast, or
+    // the IPv6 link-local all-nodes multicast.
+    [[nodiscard]] static IpAddress LinkFanoutFor(Family family) noexcept;
     [[nodiscard]] static IpAddress LoopbackV4() noexcept;           // 127.0.0.1
     [[nodiscard]] static IpAddress LoopbackV6() noexcept;           // ::1
     [[nodiscard]] static IpAddress FromV4Bytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) noexcept;

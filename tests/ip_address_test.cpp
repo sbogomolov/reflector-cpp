@@ -35,6 +35,11 @@ TEST(IpAddressTest, AllNodesLinkLocalV6ReturnsAllNodesMulticastAddress) {
     EXPECT_EQ(addr.ToString(), "ff02::1");
 }
 
+TEST(IpAddressTest, LinkFanoutForSelectsFamilyAppropriateAddress) {
+    EXPECT_EQ(IpAddress::LinkFanoutFor(IpAddress::Family::V4), IpAddress::BroadcastV4());
+    EXPECT_EQ(IpAddress::LinkFanoutFor(IpAddress::Family::V6), IpAddress::AllNodesLinkLocalV6());
+}
+
 TEST(IpAddressTest, LoopbackV4ReturnsLoopbackAddress) {
     const auto addr = IpAddress::LoopbackV4();
 
