@@ -27,20 +27,28 @@ public:
     AddressMonitor(Dispatcher& dispatcher, const OnInterfaceChanged& on_change);
     ~AddressMonitor() noexcept;
 
+    // Test seam: build a monitor around an already-open `fd` (e.g. a socketpair end) instead of the
+    // kernel notification socket, registering it with `dispatcher`. The monitor owns and closes
+    // `fd`. Lets tests drive OnReadable with synthesized messages and observe on_change, with no
+    // real netlink/route socket.
+    [[nodiscard]] static AddressMonitor ForTesting(
+        Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change);
+
     [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
 
 private:
-    friend class AddressMonitorTest;
-
-    // Test-only: construct without opening the kernel socket or registering, so AddressMonitorTest
-    // can drive the message parser without privileges or real address churn.
-    enum class TestingTag {};
-    AddressMonitor(TestingTag, const OnInterfaceChanged& on_change) noexcept;
+    // Used by ForTesting: adopts an already-open `fd` and registers it with `dispatcher` instead of
+    // opening the kernel socket. Distinguished from the production constructor by the fd parameter.
+    AddressMonitor(Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change) noexcept;
 
     // Opens the notification socket and registers it with `dispatcher`, leaving fd_ >= 0 and
     // registration_ valid on success. Logs the specific cause and returns false on any failure;
     // the constructor then closes the fd and logs the consequence.
     [[nodiscard]] bool Open(Dispatcher& dispatcher) noexcept;
+
+    // Registers the already-open fd_ with `dispatcher` so its readability drives OnReadable.
+    // Returns false (after logging) if registration fails.
+    [[nodiscard]] bool Watch(Dispatcher& dispatcher) noexcept;
 
     void Close() noexcept;
 

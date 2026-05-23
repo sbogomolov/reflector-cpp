@@ -51,8 +51,16 @@ AddressMonitor::AddressMonitor(Dispatcher& dispatcher, const OnInterfaceChanged&
     }
 }
 
-AddressMonitor::AddressMonitor(TestingTag, const OnInterfaceChanged& on_change) noexcept
-        : logger_{"AddressMonitor"}, on_change_{on_change} {}
+AddressMonitor::AddressMonitor(Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change) noexcept
+        : logger_{"AddressMonitor"}, on_change_{on_change}, fd_{fd} {
+    if (!Watch(dispatcher)) {
+        Close();
+    }
+}
+
+AddressMonitor AddressMonitor::ForTesting(Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change) {
+    return AddressMonitor{dispatcher, fd, on_change};
+}
 
 bool AddressMonitor::Open(Dispatcher& dispatcher) noexcept {
 #if defined(__linux__)
@@ -81,6 +89,10 @@ bool AddressMonitor::Open(Dispatcher& dispatcher) noexcept {
     }
 #endif
 
+    return Watch(dispatcher);
+}
+
+bool AddressMonitor::Watch(Dispatcher& dispatcher) noexcept {
     registration_ = dispatcher.Register(fd_, CreateDelegate<&AddressMonitor::OnReadable>(this));
     if (!registration_.IsValid()) {
         logger_.Error("Cannot register the address-notification socket with the dispatcher");

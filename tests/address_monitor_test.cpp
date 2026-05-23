@@ -2,13 +2,17 @@
 
 #include "reflector/event_loop_dispatcher.h"
 #include "reflector/util/delegate.h"
+#include "mocks/fake_dispatcher.h"
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <span>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <vector>
 
 #if defined(__linux__)
@@ -21,10 +25,11 @@
 
 namespace {
 
-// The parser writes to an out-parameter, so tests assert on that directly; this sink only exists
-// to give the monitor a valid callback at construction.
-struct ChangeSink {
-    void OnChange(unsigned /*interface_index*/) noexcept {}
+// Records the interface indices the monitor reports, so tests assert on its actual on_change output.
+struct RecordingChangeSink {
+    void OnChange(unsigned interface_index) noexcept { changed.push_back(interface_index); }
+
+    std::vector<unsigned> changed;
 };
 
 #if defined(__linux__)
@@ -48,6 +53,7 @@ void AppendAddrMessage(std::vector<std::byte>& out, uint16_t type, uint32_t inte
 }
 
 constexpr uint16_t ADDR_MESSAGE = RTM_NEWADDR;
+constexpr uint16_t DELETED_ADDR_MESSAGE = RTM_DELADDR;
 constexpr uint16_t NON_ADDR_MESSAGE = RTM_NEWLINK;
 
 #elif defined(__APPLE__)
@@ -68,6 +74,7 @@ void AppendAddrMessage(std::vector<std::byte>& out, unsigned char type, uint16_t
 }
 
 constexpr unsigned char ADDR_MESSAGE = RTM_NEWADDR;
+constexpr unsigned char DELETED_ADDR_MESSAGE = RTM_DELADDR;
 constexpr unsigned char NON_ADDR_MESSAGE = RTM_IFINFO;
 
 #endif
@@ -76,59 +83,155 @@ constexpr unsigned char NON_ADDR_MESSAGE = RTM_IFINFO;
 
 namespace reflector {
 
+// Drives AddressMonitor over a non-blocking socketpair registered with a FakeDispatcher: the test
+// writes synthesized kernel notifications to the write end, fires the monitor's read callback, and
+// asserts on the indices delivered to the recording sink — exercising the real recv->parse->deliver
+// path with no kernel netlink/route socket.
 class AddressMonitorTest : public ::testing::Test {
 protected:
-    ChangeSink sink;
-    AddressMonitor monitor{
-        AddressMonitor::TestingTag{}, CreateDelegate<&ChangeSink::OnChange>(&sink)};
+    FakeDispatcher dispatcher;
+    RecordingChangeSink sink;
+    int monitor_fd = -1;  // read end, owned by the monitor
+    int write_fd = -1;    // write end, owned by the fixture
 
-    std::vector<unsigned> Collect(std::span<const std::byte> messages) {
-        std::vector<unsigned> changed;
-        monitor.CollectChangedInterfaces(messages, changed);
-        return changed;
+    ~AddressMonitorTest() override {
+        if (write_fd >= 0) {
+            ::close(write_fd);
+        }
     }
+
+    // Builds a monitor watching one end of a fresh non-blocking socketpair; the other end is kept
+    // for feeding notifications. The monitor owns and closes its (read) end.
+    AddressMonitor MakeMonitor() {
+        int fds[2];
+        EXPECT_EQ(::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds), 0) << std::strerror(errno);
+        EXPECT_EQ(::fcntl(fds[0], F_SETFL, O_NONBLOCK), 0) << std::strerror(errno);
+        monitor_fd = fds[0];
+        write_fd = fds[1];
+        return AddressMonitor::ForTesting(dispatcher, fds[0],
+            CreateDelegate<&RecordingChangeSink::OnChange>(&sink));
+    }
+
+    // Writes one notification datagram to the monitor's socket.
+    void Write(const std::vector<std::byte>& messages) {
+        ASSERT_EQ(::write(write_fd, messages.data(), messages.size()),
+            static_cast<ssize_t>(messages.size())) << std::strerror(errno);
+    }
+
+    // Fires the monitor's read callback, as the dispatcher would when the fd becomes readable.
+    void FireReadable() { dispatcher.FireReadable(monitor_fd); }
 };
 
-TEST_F(AddressMonitorTest, OpensKernelSocket) {
-    EventLoopDispatcher dispatcher;
-    AddressMonitor real{dispatcher, CreateDelegate<&ChangeSink::OnChange>(&sink)};
-    EXPECT_TRUE(real.IsValid());
+TEST_F(AddressMonitorTest, RegistersFdWithDispatcher) {
+    const auto monitor = MakeMonitor();
+
+    EXPECT_TRUE(monitor.IsValid());
+    EXPECT_TRUE(dispatcher.IsWatching(monitor_fd));
+    EXPECT_EQ(dispatcher.RegistrationCount(), 1);
 }
 
-TEST_F(AddressMonitorTest, ReportsChangedInterfaceIndex) {
+TEST_F(AddressMonitorTest, UnregistersOnDestruction) {
+    {
+        const auto monitor = MakeMonitor();
+        ASSERT_EQ(dispatcher.RegistrationCount(), 1);
+    }
+
+    EXPECT_EQ(dispatcher.RegistrationCount(), 0);
+}
+
+TEST_F(AddressMonitorTest, ReportsNewAddress) {
+    auto monitor = MakeMonitor();
     std::vector<std::byte> messages;
     AppendAddrMessage(messages, ADDR_MESSAGE, 7);
 
-    EXPECT_EQ(Collect(messages), (std::vector<unsigned>{7}));
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{7}));
 }
 
-TEST_F(AddressMonitorTest, ReportsEachMessageInBatch) {
+TEST_F(AddressMonitorTest, ReportsDeletedAddress) {
+    auto monitor = MakeMonitor();
     std::vector<std::byte> messages;
-    AppendAddrMessage(messages, ADDR_MESSAGE, 2);
-    AppendAddrMessage(messages, ADDR_MESSAGE, 5);
-    AppendAddrMessage(messages, ADDR_MESSAGE, 9);
+    AppendAddrMessage(messages, DELETED_ADDR_MESSAGE, 4);
 
-    EXPECT_EQ(Collect(messages), (std::vector<unsigned>{2, 5, 9}));
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{4}));
 }
 
-TEST_F(AddressMonitorTest, CoalescesRepeatedInterfaceIndices) {
+TEST_F(AddressMonitorTest, ReportsEachInBatchCoalescingRepeats) {
+    auto monitor = MakeMonitor();
     std::vector<std::byte> messages;
     AppendAddrMessage(messages, ADDR_MESSAGE, 3);
     AppendAddrMessage(messages, ADDR_MESSAGE, 3);
     AppendAddrMessage(messages, ADDR_MESSAGE, 5);
-    AppendAddrMessage(messages, ADDR_MESSAGE, 3);
 
-    // Each interface appears once, in first-seen order.
-    EXPECT_EQ(Collect(messages), (std::vector<unsigned>{3, 5}));
+    Write(messages);
+    FireReadable();
+
+    // Each interface once, in first-seen order.
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{3, 5}));
+}
+
+TEST_F(AddressMonitorTest, CoalescesAcrossReads) {
+    auto monitor = MakeMonitor();
+    // Two separate datagrams (two recv reads in one drain) for the same index -> one callback.
+    std::vector<std::byte> first;
+    AppendAddrMessage(first, ADDR_MESSAGE, 8);
+    std::vector<std::byte> second;
+    AppendAddrMessage(second, ADDR_MESSAGE, 8);
+
+    Write(first);
+    Write(second);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{8}));
 }
 
 TEST_F(AddressMonitorTest, IgnoresNonAddressMessages) {
+    auto monitor = MakeMonitor();
     std::vector<std::byte> messages;
     AppendAddrMessage(messages, NON_ADDR_MESSAGE, 3);
     AppendAddrMessage(messages, ADDR_MESSAGE, 4);
     AppendAddrMessage(messages, NON_ADDR_MESSAGE, 6);
 
-    EXPECT_EQ(Collect(messages), (std::vector<unsigned>{4}));
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{4}));
+}
+
+TEST_F(AddressMonitorTest, IgnoresSpuriousWakeWithNoData) {
+    auto monitor = MakeMonitor();
+
+    FireReadable();  // nothing was written
+
+    EXPECT_TRUE(sink.changed.empty());
+}
+
+TEST_F(AddressMonitorTest, ToleratesTruncatedTrailingMessage) {
+    auto monitor = MakeMonitor();
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, ADDR_MESSAGE, 2);
+    messages.push_back(std::byte{0x42});  // a stray trailing byte, too short to be a message
+
+    Write(messages);
+    FireReadable();
+
+    // The valid leading message is reported; the truncated tail is ignored, not over-read.
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{2}));
+}
+
+// The one genuinely-real test: opening the kernel notification socket and registering it with a
+// real dispatcher succeeds (needs no privilege on Linux/macOS).
+TEST(AddressMonitorRealSocketTest, OpensKernelSocket) {
+    EventLoopDispatcher dispatcher;
+    RecordingChangeSink sink;
+    AddressMonitor monitor{dispatcher, CreateDelegate<&RecordingChangeSink::OnChange>(&sink)};
+
+    EXPECT_TRUE(monitor.IsValid());
 }
 
 } // namespace reflector
