@@ -56,6 +56,8 @@ protected:
     }
 };
 
+// Tests whose behavior depends on the address family run for both V4 and V6: setup-time family
+// gating and the reflection/send path (the destination and the target's per-family send).
 class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Family>,
                                   public WolReflectorTestBase {
 protected:
@@ -110,6 +112,22 @@ TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromPacketDispatcher) {
     EXPECT_EQ(DispatcherRegistrationCount(), 0);
 }
 
+// A config that requires a family (IPv4 requires v4, IPv6 requires v6) the target cannot send
+// fails setup, and the error names that family.
+TEST_P(WolReflectorPerFamilyTest, RequiredFamilyUnavailableMakesInvalid) {
+    const auto family = GetParam();
+    target.can_send_v4 = false;
+    target.can_send_v6 = false;
+
+    const std::string output = CaptureStdout([&] {
+        const WolReflector reflector{packet_dispatcher, source, target, MakeConfig(family)};
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(DispatcherRegistrationCount(), 0);
+    });
+
+    EXPECT_NE(output.find(std::format("{}", family)), std::string::npos) << output;
+}
+
 TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     const auto family = GetParam();
     const auto config = MakeConfig(family);
@@ -133,6 +151,35 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
     EXPECT_EQ(sent.payload, payload);
 }
 
+TEST_P(WolReflectorPerFamilyTest, ReflectsPacketWithTrailingBytes) {
+    const auto family = GetParam();
+    const auto config = MakeConfig(family);
+    auto reflector = BuildReflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    auto payload = MakeMagicPacket(*config.mac);
+    payload.push_back(std::byte{0x12}); // e.g. a trailing SecureOn password — forwarded as-is
+    packet_dispatcher.Deliver(MakePacket(payload, LoopbackFor(family), config.ports.front()));
+
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.front().payload, payload);
+}
+
+TEST_P(WolReflectorPerFamilyTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
+    const auto family = GetParam();
+    auto config = MakeConfig(family);
+    config.mac.reset();
+    auto reflector = BuildReflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+    packet_dispatcher.Deliver(MakePacket(payload, LoopbackFor(family), config.ports.front()));
+
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.front().payload, payload);
+}
+
+// Family-independent behavior is exercised once, over IPv4.
 class WolReflectorTest : public ::testing::Test, public WolReflectorTestBase {
 protected:
     FakePacketDispatcher packet_dispatcher;
@@ -152,20 +199,80 @@ TEST_F(WolReflectorTest, RejectsConfigWithEmptyPorts) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.ports = {};
 
-    const auto reflector = BuildV4Reflector(config);
+    const std::string output = CaptureStdout([&] {
+        const auto reflector = BuildV4Reflector(config);
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(DispatcherRegistrationCount(), 0);
+    });
 
-    EXPECT_FALSE(reflector.IsValid());
-    EXPECT_EQ(DispatcherRegistrationCount(), 0);
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
-TEST_F(WolReflectorTest, IsInvalidWhenTargetCannotSendRequiredFamily) {
-    target.can_send_v4 = false;
+TEST_F(WolReflectorTest, RegistersACallbackPerConfiguredPort) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.ports = {7, 9};
+    auto reflector = BuildV4Reflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(DispatcherRegistrationCount(), 2);
 
-    const WolReflector reflector{packet_dispatcher, source, target,
-        MakeConfig(IpAddress::Family::V4)};
+    const auto payload = MakeMagicPacket(*config.mac);
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 7));
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
+
+    ASSERT_EQ(target.sent.size(), 2u);
+    EXPECT_EQ(target.sent[0].dst_port, 7);
+    EXPECT_EQ(target.sent[1].dst_port, 9);
+}
+
+// If registering one port fails, the already-registered ports are rolled back and the reflector
+// reports itself invalid.
+TEST_F(WolReflectorTest, RegistrationFailureRollsBackAndInvalidates) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.ports = {7, 9};
+    packet_dispatcher.fail_register_on_call = 2; // second port's registration fails
+
+    const std::string output = CaptureStdout([&] {
+        const auto reflector = BuildV4Reflector(config);
+        EXPECT_FALSE(reflector.IsValid());
+    });
+
+    EXPECT_EQ(DispatcherRegistrationCount(), 0); // the first port's registration was rolled back
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
+}
+
+TEST_F(WolReflectorTest, IgnoresPacketOnUnconfiguredPort) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.ports = {9};
+    auto reflector = BuildV4Reflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto payload = MakeMagicPacket(*config.mac);
+    // Port 7 is not configured, so the reflector's dest_port=9 filter must reject it.
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 7));
+
+    EXPECT_TRUE(target.sent.empty());
+}
+
+TEST_F(WolReflectorTest, DualModeValidWhenBothFamiliesAvailable) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = WolAddressFamily::Dual;
+    target.can_send_v4 = true;
+    target.can_send_v6 = true;
+
+    const WolReflector reflector{packet_dispatcher, source, target, config};
+
+    EXPECT_TRUE(reflector.IsValid());
+}
+
+TEST_F(WolReflectorTest, DualModeInvalidWhenAFamilyIsUnavailable) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = WolAddressFamily::Dual;
+    target.can_send_v4 = true;
+    target.can_send_v6 = false; // Dual requires v6 too
+
+    const WolReflector reflector{packet_dispatcher, source, target, config};
 
     EXPECT_FALSE(reflector.IsValid());
-    EXPECT_EQ(DispatcherRegistrationCount(), 0);
 }
 
 TEST_F(WolReflectorTest, LogsErrorWhenSendFails) {
@@ -214,27 +321,18 @@ TEST_F(WolReflectorTest, ReflectedLogShowsPayloadMacInAnyMacMode) {
     EXPECT_NE(output.find("66:55:44:33:22:11"), std::string::npos) << output;
 }
 
+// A v4-only config must drop v6 packets even when the target *can* send v6 — proving it is the
+// config's family selection, not the target's capability, that rejects them.
 TEST_F(WolReflectorTest, IgnoresPacketWithUnsupportedFamily) {
-    auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
+    target.can_send_v4 = true;
+    target.can_send_v6 = true;
+    const WolReflector reflector{packet_dispatcher, source, target, MakeConfig(IpAddress::Family::V4)};
     ASSERT_TRUE(reflector.IsValid());
 
     const auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
-    // Inject an IPv6 packet — the v4-only reflector does not handle v6 and must drop it.
     packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
 
     EXPECT_TRUE(target.sent.empty());
-}
-
-TEST_F(WolReflectorTest, ReflectsPacketWithTrailingBytes) {
-    auto reflector = BuildV4Reflector(MakeConfig(IpAddress::Family::V4));
-    ASSERT_TRUE(reflector.IsValid());
-
-    auto payload = MakeMagicPacket(*MakeConfig(IpAddress::Family::V4).mac);
-    payload.push_back(std::byte{0x12});
-    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
-
-    ASSERT_EQ(target.sent.size(), 1u);
-    EXPECT_EQ(target.sent.front().payload, payload);
 }
 
 TEST_F(WolReflectorTest, IgnoresShortPacket) {
@@ -268,19 +366,6 @@ TEST_F(WolReflectorTest, IgnoresDifferentMac) {
     EXPECT_TRUE(target.sent.empty());
 }
 
-TEST_F(WolReflectorTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
-    auto config = MakeConfig(IpAddress::Family::V4);
-    config.mac.reset();
-    auto reflector = BuildV4Reflector(config);
-    ASSERT_TRUE(reflector.IsValid());
-
-    const auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
-    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
-
-    ASSERT_EQ(target.sent.size(), 1u);
-    EXPECT_EQ(target.sent.front().payload, payload);
-}
-
 TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.mac.reset();
@@ -288,7 +373,22 @@ TEST_F(WolReflectorTest, IgnoresMalformedMagicPacketWhenMacIsUnspecified) {
     ASSERT_TRUE(reflector.IsValid());
 
     auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
-    payload[12] = std::byte{0x12};
+    payload[12] = std::byte{0x12}; // break the MAC repetition consistency
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
+
+    EXPECT_TRUE(target.sent.empty());
+}
+
+// Any-MAC mode still requires the six-0xFF prefix (a different code path from the fixed-MAC
+// memcmp that IgnoresInvalidMagicPrefix exercises).
+TEST_F(WolReflectorTest, IgnoresBadPrefixWhenMacIsUnspecified) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.mac.reset();
+    auto reflector = BuildV4Reflector(config);
+    ASSERT_TRUE(reflector.IsValid());
+
+    auto payload = MakeMagicPacket(*MacAddress::FromString("66:55:44:33:22:11"));
+    payload.front() = std::byte{0x00};
     packet_dispatcher.Deliver(MakePacket(payload, IpAddress::FromV4Bytes(192, 0, 2, 1), 9));
 
     EXPECT_TRUE(target.sent.empty());
