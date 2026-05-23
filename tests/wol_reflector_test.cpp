@@ -3,6 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include "mocks/fake_packet_dispatcher.h"
+#include "mocks/fake_receive_socket.h"
+#include "mocks/recording_udp_sender.h"
 #include "test_helpers.h"
 
 #include <cstddef>

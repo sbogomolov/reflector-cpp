@@ -7,8 +7,6 @@
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
 #include "reflector/raw_socket.h"
-#include "reflector/receive_socket.h"
-#include "reflector/udp_sender.h"
 #include "reflector/udp_socket.h"
 
 #include <gtest/gtest.h>
@@ -91,103 +89,6 @@ struct PacketRecorder {
     int count = 0;
     std::vector<std::byte> payload;
     std::optional<IpAddress> source_ip;
-};
-
-// Recording fake UdpSender: substitutes for a real socket on the send side so reflector logic
-// is exercised without injecting a frame on the wire. CanSend is configurable per family;
-// SendUdpDatagram records its arguments (or fails when `fail_send` is set, to drive the
-// send-failure branch).
-struct RecordingUdpSender : UdpSender {
-    struct Sent {
-        std::vector<std::byte> payload;
-        uint16_t src_port;
-        uint16_t dst_port;
-        IpAddress dst_ip;
-        uint8_t ttl;
-    };
-
-    bool CanSend(IpAddress::Family family) const noexcept override {
-        return family == IpAddress::Family::V4 ? can_send_v4 : can_send_v6;
-    }
-
-    bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
-        std::span<const std::byte> payload, uint8_t ttl) noexcept override {
-        if (fail_send) {
-            return false;
-        }
-        sent.push_back(Sent{
-            .payload = std::vector<std::byte>{payload.begin(), payload.end()},
-            .src_port = src_port,
-            .dst_port = dst_port,
-            .dst_ip = dst_ip,
-            .ttl = ttl,
-        });
-        return true;
-    }
-
-    bool can_send_v4 = true;
-    bool can_send_v6 = true;
-    bool fail_send = false;
-    std::vector<Sent> sent;
-};
-
-// Minimal ReceiveSocket stand-in for a reflector's source socket when packets are pushed
-// through a FakePacketDispatcher rather than drained off a real fd. Receive() never yields.
-struct FakeReceiveSocket : ReceiveSocket {
-    bool IsValid() const noexcept override { return true; }
-    int Fd() const noexcept override { return -1; }
-    std::optional<Packet> Receive() noexcept override { return std::nullopt; }
-#if defined(__APPLE__)
-    bool HasBufferedData() const noexcept override { return false; }
-    void ClearBuffer() noexcept override {}
-#endif
-};
-
-// Fake PacketDispatcher: records registrations and lets a test push a packet to the matching
-// callbacks via Deliver — exercising a subscriber's callback through the real registration path,
-// with no epoll/kqueue and no real socket. Uses the same PacketFilter::Matches as production.
-class FakePacketDispatcher : public PacketDispatcher {
-public:
-    // 1-based index of a Register call to fail (return an invalid registration), or 0 to never
-    // fail. Lets a test exercise a subscriber's mid-loop registration-failure handling.
-    size_t fail_register_on_call = 0;
-
-    PacketDispatcher::Registration Register(ReceiveSocket& /*socket*/, const PacketFilter& filter,
-        const PacketCallback& callback) override {
-        if (++register_calls_ == fail_register_on_call) {
-            return {};
-        }
-        const auto id = next_id_++;
-        entries_.push_back(Entry{.id = id, .filter = filter, .callback = callback});
-        return MakeRegistration(id);
-    }
-
-    // Dispatches `packet` to every registration whose filter matches.
-    void Deliver(const Packet& packet) {
-        for (const auto& entry : entries_) {
-            if (entry.filter.Matches(packet)) {
-                entry.callback(packet);
-            }
-        }
-    }
-
-    [[nodiscard]] size_t RegistrationCount() const noexcept { return entries_.size(); }
-
-private:
-    bool Unregister(PacketDispatcher::RegistrationId id) noexcept override {
-        std::erase_if(entries_, [id](const Entry& entry) { return entry.id == id; });
-        return true;
-    }
-
-    struct Entry {
-        PacketDispatcher::RegistrationId id;
-        PacketFilter filter;
-        PacketCallback callback;
-    };
-
-    std::vector<Entry> entries_;
-    PacketDispatcher::RegistrationId next_id_ = 1;
-    size_t register_calls_ = 0;
 };
 
 // Counts packets and, on each dispatch, resets the registration pointed at by
