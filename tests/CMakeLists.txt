@@ -1,5 +1,5 @@
 add_executable(reflector_test
-    ${CMAKE_CURRENT_SOURCE_DIR}/address_monitor_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/default_address_monitor_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/application_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/checksum_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_test.cpp
