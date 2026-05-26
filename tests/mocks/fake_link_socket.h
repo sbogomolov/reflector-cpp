@@ -27,8 +27,8 @@ struct FakeLinkSocket : LinkSocket {
         uint8_t ttl;
     };
 
-    [[nodiscard]] bool IsValid() const noexcept override { return true; }
-    [[nodiscard]] int Fd() const noexcept override { return -1; }
+    [[nodiscard]] bool IsValid() const noexcept override { return valid; }
+    [[nodiscard]] int Fd() const noexcept override { return fd; }
     [[nodiscard]] std::optional<Packet> Receive() noexcept override { return std::nullopt; }
 #if defined(__APPLE__)
     [[nodiscard]] bool HasBufferedData() const noexcept override { return false; }
@@ -57,6 +57,8 @@ struct FakeLinkSocket : LinkSocket {
     [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index; }
     void RefreshAddresses() noexcept override { ++refresh_count; }
 
+    bool valid = true;
+    int fd = -1;
     bool can_send_v4 = true;
     bool can_send_v6 = true;
     bool fail_send = false;

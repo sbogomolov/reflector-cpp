@@ -21,8 +21,11 @@ public:
         return MakeRegistration(fd);
     }
 
-    // Tests drive readiness directly via FireReadable(), so the loop is never run.
-    void Run(const volatile std::sig_atomic_t& /*stop_requested*/) override {}
+    // Production blocks here; the fake records the call and returns. Tests drive readiness via
+    // FireReadable() rather than a real loop.
+    void Run(const volatile std::sig_atomic_t& /*stop_requested*/) override { ++run_calls; }
+
+    size_t run_calls = 0;
 
     // Invokes the callback registered for `fd`, as the reactor would when `fd` becomes readable.
     void FireReadable(int fd) {
