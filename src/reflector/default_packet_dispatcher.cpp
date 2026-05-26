@@ -29,7 +29,7 @@ DefaultPacketDispatcher::~DefaultPacketDispatcher() noexcept {
 }
 
 PacketDispatcher::Registration DefaultPacketDispatcher::Register(
-    ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
+    LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
         GetLogger().Error("Cannot register packet callback: capture socket is invalid");
         return {};
@@ -98,7 +98,7 @@ void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
     DrainReadableFd(*it->second.socket);
 }
 
-void DefaultPacketDispatcher::DrainReadableFd(ReceiveSocket& socket) noexcept {
+void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
     active_socket_ = &socket;
 
 #if defined(__APPLE__)
@@ -135,7 +135,7 @@ void DefaultPacketDispatcher::DrainReadableFd(ReceiveSocket& socket) noexcept {
     active_socket_ = nullptr;
 }
 
-void DefaultPacketDispatcher::DispatchPacket(const ReceiveSocket& socket, const Packet& packet) const {
+void DefaultPacketDispatcher::DispatchPacket(const LinkSocket& socket, const Packet& packet) const {
     // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
     // elements, so after each dispatch we check that our slot still holds the entry we
     // just fired; if it doesn't, we restart from the front and let last_dispatched_id

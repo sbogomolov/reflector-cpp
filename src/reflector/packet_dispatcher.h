@@ -1,7 +1,7 @@
 #pragma once
 
+#include "link_socket.h"
 #include "packet.h"
-#include "receive_socket.h"
 #include "util/registration.h"
 
 #include <cstdint>
@@ -23,7 +23,7 @@ public:
     // dispatcher keeps a raw pointer to it. The returned registration must not outlive the
     // dispatcher.
     [[nodiscard]] virtual Registration Register(
-        ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) = 0;
+        LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) = 0;
 
 protected:
     [[nodiscard]] Registration MakeRegistration(RegistrationId id) noexcept { return Registration{this, id}; }

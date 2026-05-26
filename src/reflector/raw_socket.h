@@ -1,10 +1,9 @@
 #pragma once
 
 #include "interface_address.h"
+#include "link_socket.h"
 #include "logger.h"
 #include "packet.h"
-#include "receive_socket.h"
-#include "udp_sender.h"
 #include "util/no_move.h"
 
 #include <cstddef>
@@ -34,7 +33,7 @@ namespace reflector {
 // its capture-source map and registration entries and dereferences it on every drain; a move
 // would silently invalidate those pointers. Hold instances in storage that preserves
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
-class RawSocket : public UdpSender, public ReceiveSocket, NoMove {
+class RawSocket : public LinkSocket, NoMove {
 public:
     explicit RawSocket(std::string_view interface);
     ~RawSocket() noexcept override;
@@ -57,7 +56,7 @@ public:
     // The interface's kernel index, resolved at open (0 for test-only sockets or if the
     // lookup failed). The address monitor reports changes by index, so Application can map
     // a changed index back to the socket whose addresses need refreshing.
-    [[nodiscard]] unsigned InterfaceIndex() const noexcept { return interface_index_; }
+    [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index_; }
 
     // True if the bound interface has a usable source address for `family` (resolved at open
     // and on RefreshAddresses). The raw egress path and Application's family gating consult
@@ -67,7 +66,7 @@ public:
     // Re-resolves the interface's source addresses. The address monitor calls this when the
     // kernel reports an address change on this interface, so a long-running daemon's cached
     // source addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
-    void RefreshAddresses() noexcept;
+    void RefreshAddresses() noexcept override;
 
     // Injects a UDP datagram out this interface as a raw L2 frame: builds the Ethernet/IP/UDP
     // headers and checksums from the interface's cached source MAC/IP, derives the destination

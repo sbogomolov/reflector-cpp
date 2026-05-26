@@ -1,9 +1,9 @@
 #pragma once
 
 #include "dispatcher.h"
+#include "link_socket.h"
 #include "packet.h"
 #include "packet_dispatcher.h"
-#include "receive_socket.h"
 #include "util/no_move.h"
 
 #include <cstddef>
@@ -23,7 +23,7 @@ public:
     ~DefaultPacketDispatcher() noexcept override;
 
     [[nodiscard]] PacketDispatcher::Registration Register(
-        ReceiveSocket& socket, const PacketFilter& filter, const PacketCallback& callback) override;
+        LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) override;
 
 private:
     friend class DefaultPacketDispatcherTest;
@@ -32,7 +32,7 @@ private:
 
     struct RegistrationEntry {
         RegistrationId id;
-        ReceiveSocket* socket;
+        LinkSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
     };
@@ -41,7 +41,7 @@ private:
     // fd watched. Created with the socket's first packet registration and dropped with its
     // last, so the fd is watched exactly while something wants its frames.
     struct CaptureSource {
-        ReceiveSocket* socket;
+        LinkSocket* socket;
         Dispatcher::Registration dispatcher_reg;
     };
 
@@ -49,8 +49,8 @@ private:
 
     bool Unregister(RegistrationId id) noexcept override;
     void OnReadable(int fd) noexcept;
-    void DrainReadableFd(ReceiveSocket& socket) noexcept;
-    void DispatchPacket(const ReceiveSocket& socket, const Packet& packet) const;
+    void DrainReadableFd(LinkSocket& socket) noexcept;
+    void DispatchPacket(const LinkSocket& socket, const Packet& packet) const;
 
     Dispatcher* dispatcher_;
     // Kept sorted by id: Register appends with a monotonically increasing id and Unregister
@@ -61,7 +61,7 @@ private:
     RegistrationId next_registration_id_ = 1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
-    const ReceiveSocket* active_socket_ = nullptr;
+    const LinkSocket* active_socket_ = nullptr;
 };
 
 } // namespace reflector

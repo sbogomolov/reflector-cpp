@@ -1,8 +1,7 @@
 #include "reflector/wol_reflector.h"
 #include "reflector/mac_address.h"
+#include "mocks/fake_link_socket.h"
 #include "mocks/fake_packet_dispatcher.h"
-#include "mocks/fake_receive_socket.h"
-#include "mocks/recording_udp_sender.h"
 #include "test_helpers.h"
 
 #include <gtest/gtest.h>
@@ -64,8 +63,8 @@ class WolReflectorPerFamilyTest : public ::testing::TestWithParam<IpAddress::Fam
                                   public WolReflectorTestBase {
 protected:
     FakePacketDispatcher packet_dispatcher;
-    FakeReceiveSocket source;
-    RecordingUdpSender target;
+    FakeLinkSocket source;
+    FakeLinkSocket target;
 
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
@@ -185,8 +184,8 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsAnyMagicPacketWhenMacIsUnspecified) {
 class WolReflectorTest : public ::testing::Test, public WolReflectorTestBase {
 protected:
     FakePacketDispatcher packet_dispatcher;
-    FakeReceiveSocket source;
-    RecordingUdpSender target;
+    FakeLinkSocket source;
+    FakeLinkSocket target;
 
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 

@@ -1,8 +1,8 @@
 #pragma once
 
+#include "reflector/link_socket.h"
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
-#include "reflector/receive_socket.h"
 
 #include <cstddef>
 #include <vector>
@@ -18,7 +18,7 @@ public:
     // fail. Lets a test exercise a subscriber's mid-loop registration-failure handling.
     size_t fail_register_on_call = 0;
 
-    [[nodiscard]] PacketDispatcher::Registration Register(ReceiveSocket& /*socket*/, const PacketFilter& filter,
+    [[nodiscard]] PacketDispatcher::Registration Register(LinkSocket& /*socket*/, const PacketFilter& filter,
         const PacketCallback& callback) override {
         if (++register_calls_ == fail_register_on_call) {
             return {};
