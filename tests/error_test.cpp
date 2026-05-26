@@ -54,3 +54,16 @@ TEST(ErrorTest, CapturesErrnoMessage) {
 
     EXPECT_EQ(error.Message(), std::format("({}) {}", ENOENT, std::system_category().message(ENOENT)));
 }
+
+// The "socket drained, stop reading" signal in the recv loops: both spellings of would-block are
+// would-block (they're equal on our platforms, distinct elsewhere), and nothing else is.
+TEST(ErrorTest, IsWouldBlockErrnoMatchesEagainAndEwouldblock) {
+    EXPECT_TRUE(IsWouldBlockErrno(EAGAIN));
+    EXPECT_TRUE(IsWouldBlockErrno(EWOULDBLOCK));
+    EXPECT_FALSE(IsWouldBlockErrno(EINTR));
+    EXPECT_FALSE(IsWouldBlockErrno(0));
+}
+
+TEST(ErrorTest, FormatsThroughMessage) {
+    EXPECT_EQ(std::format("{}", Error{"boom"}), "boom");
+}
