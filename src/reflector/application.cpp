@@ -1,5 +1,8 @@
 #include "application.h"
 
+#include "default_address_monitor.h"
+#include "event_loop_dispatcher.h"
+#include "raw_socket.h"
 #include "util/delegate.h"
 
 #include <memory>
@@ -9,21 +12,38 @@
 namespace reflector {
 
 Application::Application()
-        : Application{[](std::string_view interface) {
+        : socket_factory_{[](std::string_view interface) -> std::unique_ptr<LinkSocket> {
               return std::make_unique<RawSocket>(interface);
-          }} {}
+          }}
+        , logger_{"Application"}
+        , dispatcher_{std::make_unique<EventLoopDispatcher>()}
+        , address_monitor_{std::make_unique<DefaultAddressMonitor>(*dispatcher_)} {
+    StartMonitor();
+}
 
-Application::Application(SocketFactory socket_factory)
+Application::Application(std::unique_ptr<Dispatcher> dispatcher, std::unique_ptr<AddressMonitor> monitor,
+    SocketFactory socket_factory)
         : socket_factory_{std::move(socket_factory)}
-        , logger_{"Application"} {
+        , logger_{"Application"}
+        , dispatcher_{std::move(dispatcher)}
+        , address_monitor_{std::move(monitor)} {
+    StartMonitor();
+}
+
+Application Application::ForTesting(std::unique_ptr<Dispatcher> dispatcher,
+    std::unique_ptr<AddressMonitor> monitor, SocketFactory socket_factory) {
+    return Application{std::move(dispatcher), std::move(monitor), std::move(socket_factory)};
+}
+
+void Application::StartMonitor() {
     // Address-change refresh is best-effort: if the monitor can't start (it logs the cause),
     // carry on without it rather than failing the daemon.
-    if (!address_monitor_.Start(CreateDelegate<&Application::OnInterfaceChanged>(this))) {
+    if (!address_monitor_->Start(CreateDelegate<&Application::OnInterfaceChanged>(this))) {
         logger_.Warning("Address monitor unavailable; source addresses will not refresh on interface changes");
     }
 }
 
-RawSocket* Application::GetOrCreateSocket(const std::string& interface) {
+LinkSocket* Application::GetOrCreateSocket(const std::string& interface) {
     // One socket per interface, shared by every reflector that captures on or sends through
     // it; created lazily on first use via the (overridable) factory.
     auto [entry, inserted] = sockets_.try_emplace(interface);
@@ -71,7 +91,7 @@ void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
 }
 
 void Application::Run(const volatile std::sig_atomic_t& stop_requested) {
-    dispatcher_.Run(stop_requested);
+    dispatcher_->Run(stop_requested);
 }
 
 } // namespace reflector

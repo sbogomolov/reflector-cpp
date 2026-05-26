@@ -3,10 +3,11 @@
 #include "reflector/config.h"
 #include "reflector/mac_address.h"
 #include "reflector/raw_socket.h"
+#include "mocks/fake_address_monitor.h"
+#include "mocks/fake_dispatcher.h"
+#include "test_helpers.h"
 
 #include <gtest/gtest.h>
-
-#include "test_helpers.h"
 
 #include <cstdint>
 #include <memory>
@@ -22,6 +23,13 @@ class ApplicationTest : public ::testing::Test {
 protected:
     static size_t SocketCount(const Application& app) { return app.SocketCount(); }
     static size_t ReflectorCount(const Application& app) { return app.ReflectorCount(); }
+
+    // Builds an Application with a fake dispatcher + address monitor (no real epoll or netlink)
+    // and the given socket factory, through the ForTesting seam.
+    static Application MakeApp(Application::SocketFactory factory) {
+        return Application::ForTesting(std::make_unique<FakeDispatcher>(),
+            std::make_unique<FakeAddressMonitor>(), std::move(factory));
+    }
 
     static WolConfig MakeConfig(std::string_view name, std::string_view source_if,
         std::string_view target_if, std::vector<uint16_t> ports) {
@@ -57,9 +65,9 @@ protected:
 };
 
 TEST_F(ApplicationTest, InvalidSocketFailsConfigure) {
-    Application app{[](std::string_view interface) {
+    auto app = MakeApp([](std::string_view interface) {
         return RawSocket::ForTestingPtr(interface, -1);
-    }};
+    });
     const Config config = TestConfigBuilder{}
         .Add(MakeConfig("tv", "captest", LoopbackInterface(), {9}))
         .Build();
@@ -73,7 +81,7 @@ TEST_F(ApplicationTest, InvalidSocketFailsConfigure) {
 
 TEST_F(ApplicationTest, ConfigureFailsWhenReflectorSetupFails) {
     CountingSocketFactory factory;
-    Application app{factory.Make()};
+    auto app = MakeApp(factory.Make());
 
     // Both injected sockets have valid fds, so Configure gets past the socket checks and on to
     // building the reflector. The target is a ForTesting socket with no resolved interface
@@ -104,7 +112,7 @@ protected:
 
 TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesSocketForSameInterface) {
     CountingSocketFactory factory;
-    Application app{factory.Make()};
+    auto app = MakeApp(factory.Make());
 
     // Two reflectors over the same source and target interfaces, different ports: each
     // interface is opened once and shared (the packet dispatcher watches the source fd once),
@@ -122,7 +130,7 @@ TEST_F(ApplicationRequiresRootTest, WiresReflectorsAndSharesSocketForSameInterfa
 
 TEST_F(ApplicationRequiresRootTest, WiresSeparateSocketsForDistinctInterfaces) {
     CountingSocketFactory factory;
-    Application app{factory.Make()};
+    auto app = MakeApp(factory.Make());
 
     const Config config = TestConfigBuilder{}
         .Add(MakeConfig("tv", "cap-a", LoopbackInterface(), {7}))
