@@ -3,6 +3,8 @@
 #include "util/delegate.h"
 #include "util/registration.h"
 
+#include <csignal>
+
 namespace reflector {
 
 // Invoked with the fd that became readable. EventLoopDispatcher binds one of these per watched
@@ -23,6 +25,11 @@ public:
     // registration per fd (re-registering an already-watched fd fails). The returned registration
     // must not outlive this dispatcher.
     [[nodiscard]] virtual Registration Register(int fd, const OnReadableCallback& on_readable) = 0;
+
+    // Runs the readiness loop until `stop_requested` becomes non-zero, dispatching each registered
+    // callback as its fd becomes readable. (The production reactor blocks in the kernel between
+    // events; a fake need not run a real loop.)
+    virtual void Run(const volatile std::sig_atomic_t& stop_requested) = 0;
 
 protected:
     [[nodiscard]] Registration MakeRegistration(int fd) noexcept { return Registration{this, fd}; }

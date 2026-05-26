@@ -2,6 +2,7 @@
 
 #include "reflector/dispatcher.h"
 
+#include <csignal>
 #include <cstddef>
 #include <unordered_map>
 
@@ -19,6 +20,9 @@ public:
         callbacks_.emplace(fd, on_readable);
         return MakeRegistration(fd);
     }
+
+    // Tests drive readiness directly via FireReadable(), so the loop is never run.
+    void Run(const volatile std::sig_atomic_t& /*stop_requested*/) override {}
 
     // Invokes the callback registered for `fd`, as the reactor would when `fd` becomes readable.
     void FireReadable(int fd) {

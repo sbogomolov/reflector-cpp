@@ -20,7 +20,7 @@ public:
 
     [[nodiscard]] Dispatcher::Registration Register(int fd, const OnReadableCallback& on_readable) override;
 
-    void Run(const volatile std::sig_atomic_t& stop_requested);
+    void Run(const volatile std::sig_atomic_t& stop_requested) override;
     bool PollOnce(std::chrono::milliseconds timeout);
 
 private:
