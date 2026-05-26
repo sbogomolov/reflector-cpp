@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstddef>
 
 #include <unistd.h>
@@ -67,6 +68,16 @@ struct SelfUnregisteringReadable {
     Dispatcher::Registration* registration_to_reset = nullptr;
     bool reset_result = false;
     int count = 0;
+};
+
+// Requests the loop stop the first time it fires, so Run() makes exactly one dispatch pass.
+struct StopRequestingReadable {
+    volatile std::sig_atomic_t* stop_requested = nullptr;
+    int count = 0;
+    void OnReadable(int) {
+        ++count;
+        *stop_requested = 1;
+    }
 };
 
 TEST_F(EventLoopDispatcherTest, PollOnceInvokesCallbackWithItsFd) {
@@ -175,6 +186,24 @@ TEST_F(EventLoopDispatcherTest, EachFdInvokesItsOwnCallback) {
 
 TEST_F(EventLoopDispatcherTest, PollOnceWithoutRegistrationsReturnsFalse) {
     EXPECT_FALSE(dispatcher.PollOnce(std::chrono::milliseconds{0}));
+}
+
+// Run() loops PollOnce until stop_requested is set. A callback that requests the stop when it
+// fires lets the loop make a single pass — dispatching the event, then exiting — without threads.
+TEST_F(EventLoopDispatcherTest, RunPollsUntilStopRequested) {
+    ReadablePipe pipe;
+    ASSERT_GE(pipe.ReadEnd(), 0);
+    volatile std::sig_atomic_t stop_requested = 0;
+    StopRequestingReadable counter{.stop_requested = &stop_requested};
+
+    const auto registration = dispatcher.Register(
+        pipe.ReadEnd(), CreateDelegate<&StopRequestingReadable::OnReadable>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+    ASSERT_TRUE(pipe.Notify());
+
+    dispatcher.Run(stop_requested);
+
+    EXPECT_EQ(counter.count, 1);
 }
 
 } // namespace reflector
