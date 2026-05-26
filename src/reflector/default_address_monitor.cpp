@@ -43,26 +43,37 @@ void AddUnique(std::vector<unsigned>& indices, unsigned index) {
 
 } // namespace
 
-AddressMonitor::AddressMonitor(Dispatcher& dispatcher, const OnInterfaceChanged& on_change)
-        : logger_{"AddressMonitor"}, on_change_{on_change} {
-    if (!Open(dispatcher)) {
-        Close();
-        logger_.Warning("Address monitor unavailable; cached source addresses will not refresh");
-    }
-}
-
-AddressMonitor::AddressMonitor(Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change) noexcept
-        : logger_{"AddressMonitor"}, on_change_{on_change}, fd_{fd} {
-    if (!Watch(dispatcher)) {
+DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher)
+        : logger_{"AddressMonitor"}, dispatcher_{&dispatcher} {
+    if (!Open()) {
         Close();
     }
 }
 
-AddressMonitor AddressMonitor::ForTesting(Dispatcher& dispatcher, int fd, const OnInterfaceChanged& on_change) {
-    return AddressMonitor{dispatcher, fd, on_change};
+DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher, int fd) noexcept
+        : logger_{"AddressMonitor"}, dispatcher_{&dispatcher}, fd_{fd} {}
+
+DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, int fd) {
+    return DefaultAddressMonitor{dispatcher, fd};
 }
 
-bool AddressMonitor::Open(Dispatcher& dispatcher) noexcept {
+bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept {
+    if (!on_change.IsValid()) {
+        logger_.Error("Cannot start address monitor: the change callback is not bound");
+        Close();
+        return false;
+    }
+    on_change_ = on_change;
+    if (fd_ < 0 || !Watch()) {
+        // Open() (at construction) or Watch() has already logged the specific cause; whether to
+        // proceed without address refresh is the caller's policy, not ours.
+        Close();
+        return false;
+    }
+    return true;
+}
+
+bool DefaultAddressMonitor::Open() noexcept {
 #if defined(__linux__)
     fd_ = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE);
     if (fd_ < 0) {
@@ -89,11 +100,11 @@ bool AddressMonitor::Open(Dispatcher& dispatcher) noexcept {
     }
 #endif
 
-    return Watch(dispatcher);
+    return true;
 }
 
-bool AddressMonitor::Watch(Dispatcher& dispatcher) noexcept {
-    registration_ = dispatcher.Register(fd_, CreateDelegate<&AddressMonitor::OnReadable>(this));
+bool DefaultAddressMonitor::Watch() noexcept {
+    registration_ = dispatcher_->Register(fd_, CreateDelegate<&DefaultAddressMonitor::OnReadable>(this));
     if (!registration_.IsValid()) {
         logger_.Error("Cannot register the address-notification socket with the dispatcher");
         return false;
@@ -102,19 +113,19 @@ bool AddressMonitor::Watch(Dispatcher& dispatcher) noexcept {
     return true;
 }
 
-AddressMonitor::~AddressMonitor() noexcept {
+DefaultAddressMonitor::~DefaultAddressMonitor() noexcept {
     registration_.Reset();  // unregister while fd_ is still open, before Close() invalidates it
     Close();
 }
 
-void AddressMonitor::Close() noexcept {
+void DefaultAddressMonitor::Close() noexcept {
     if (fd_ >= 0) {
         close(fd_);
         fd_ = -1;
     }
 }
 
-void AddressMonitor::OnReadable(int /*fd*/) noexcept {
+void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     // Left uninitialized on purpose: recv fills it and we only ever read the bytes it reports.
     // The Linux parser casts buffer.data() to nlmsghdr*, so align for that; the macOS parser
     // reads via memcpy and needs no particular alignment.
@@ -178,7 +189,7 @@ void AddressMonitor::OnReadable(int /*fd*/) noexcept {
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 
-void AddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
+void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
         std::vector<unsigned>& changed) const noexcept {
     const auto* header = reinterpret_cast<const nlmsghdr*>(messages.data());
     for (int length = static_cast<int>(messages.size()); NLMSG_OK(header, length);
@@ -194,7 +205,7 @@ void AddressMonitor::CollectChangedInterfaces(std::span<const std::byte> message
 
 #elif defined(__APPLE__)
 
-void AddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
+void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
         std::vector<unsigned>& changed) const noexcept {
     // PF_ROUTE messages pack back-to-back; each begins with rt_msghdr's prefix (u_short msglen;
     // u_char version; u_char type). Read the fields with memcpy — the buffer carries no

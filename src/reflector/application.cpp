@@ -1,5 +1,7 @@
 #include "application.h"
 
+#include "util/delegate.h"
+
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -13,7 +15,13 @@ Application::Application()
 
 Application::Application(SocketFactory socket_factory)
         : socket_factory_{std::move(socket_factory)}
-        , logger_{"Application"} {}
+        , logger_{"Application"} {
+    // Address-change refresh is best-effort: if the monitor can't start (it logs the cause),
+    // carry on without it rather than failing the daemon.
+    if (!address_monitor_.Start(CreateDelegate<&Application::OnInterfaceChanged>(this))) {
+        logger_.Warning("Address monitor unavailable; source addresses will not refresh on interface changes");
+    }
+}
 
 RawSocket* Application::GetOrCreateSocket(const std::string& interface) {
     // One socket per interface, shared by every reflector that captures on or sends through
