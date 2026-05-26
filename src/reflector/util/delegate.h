@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <type_traits>
 #include <utility>
 
@@ -75,10 +76,17 @@ public:
     template <typename... CallArgs>
         requires std::is_invocable_r_v<R, StubT, void*, CallArgs&&...>
     R operator()(CallArgs&& ...args) const {
+        assert(stub_ != nullptr);
         return stub_(object_, std::forward<CallArgs>(args)...);
     }
 
+    // Default-constructed delegates are invalid: they bind nothing, and calling operator() on one
+    // is undefined — it does not check, to keep the call branch-free on hot paths. Guard with
+    // IsValid() when a delegate may not have been assigned a target.
+    Delegate() noexcept = default;
     Delegate(void* object, StubT stub) : object_{object}, stub_{stub} {}
+
+    [[nodiscard]] bool IsValid() const noexcept { return stub_ != nullptr; }
 
     template <typename T, auto method>
     [[nodiscard]] static R MethodStub(void* object, Args... args) {
@@ -90,8 +98,8 @@ public:
         return (*function)(std::forward<Args>(args)...);
     }
 
-    void* object_;
-    StubT stub_;
+    void* object_ = nullptr;
+    StubT stub_ = nullptr;
 };
 
 template <auto method, typename T, typename D = detail::DelegateForMethod<method>>

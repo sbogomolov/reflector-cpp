@@ -156,3 +156,26 @@ TEST(DelegateTest, PassesPointerByValue) {
 
     EXPECT_EQ(sink.stored_ptr, &value);
 }
+
+TEST(DelegateTest, DefaultConstructedIsInvalid) {
+    const Delegate<int(int, float)> empty;
+    EXPECT_FALSE(empty.IsValid());
+
+    DelegateTestClass test;
+    const auto bound = CreateDelegate<&DelegateTestClass::Method>(&test);
+    EXPECT_TRUE(bound.IsValid());
+}
+
+TEST(DelegateTest, AssignedAfterDefaultConstructionIsCallable) {
+    DelegateTestClass test;
+
+    // The "bind later" case the default constructor exists for: hold an empty delegate, assign a
+    // target afterwards, then call it.
+    Delegate<int(int, float)> delegate;
+    ASSERT_FALSE(delegate.IsValid());
+
+    delegate = CreateDelegate<&DelegateTestClass::Method>(&test);
+
+    EXPECT_TRUE(delegate.IsValid());
+    EXPECT_EQ(delegate(1, 2.3f), 1);
+}
