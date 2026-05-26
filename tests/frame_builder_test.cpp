@@ -15,6 +15,7 @@
 #include <cstring>
 #include <span>
 #include <sys/socket.h>
+#include <vector>
 
 using namespace reflector;
 
@@ -51,6 +52,28 @@ TEST(FrameBuilderTest, ReturnsZeroWhenBufferTooSmall) {
     std::array<std::byte, 8> buffer{};  // far smaller than a 14+20+8 frame
     EXPECT_EQ(
         BuildUdpFrame(MulticastMacFor(dst_ip), MacAddress{}, src_ip, dst_ip, 5353, 5353, {}, 255, buffer),
+        0u);
+}
+
+// A datagram whose length can't fit the protocol's 16-bit length field yields no frame. The
+// ceiling differs by family: IPv4's total_length counts the 20-byte IP header (payload <= 65507),
+// while IPv6's only field is the UDP length (payload <= 65527). The overflow is rejected before
+// the buffer-size check, so the output buffer size is irrelevant here.
+TEST(FrameBuilderTest, ReturnsZeroWhenDatagramOverflowsLengthField) {
+    std::array<std::byte, 64> buffer{};
+
+    const auto v4_src = IpAddress::FromV4Bytes(192, 168, 1, 2);
+    const auto v4_dst = *IpAddress::FromString("224.0.0.251");
+    const std::vector<std::byte> v4_payload(65508);  // 20 + 8 + 65508 = 65536, one past the limit
+    EXPECT_EQ(
+        BuildUdpFrame(MulticastMacFor(v4_dst), MacAddress{}, v4_src, v4_dst, 5353, 5353, v4_payload, 255, buffer),
+        0u);
+
+    const auto v6_src = *IpAddress::FromString("fe80::1");
+    const auto v6_dst = *IpAddress::FromString("ff02::fb");
+    const std::vector<std::byte> v6_payload(65528);  // 8 + 65528 = 65536, one past the limit
+    EXPECT_EQ(
+        BuildUdpFrame(MulticastMacFor(v6_dst), MacAddress{}, v6_src, v6_dst, 5353, 5353, v6_payload, 255, buffer),
         0u);
 }
 
