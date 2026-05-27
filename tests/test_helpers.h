@@ -7,7 +7,8 @@
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
 #include "reflector/raw_socket.h"
-#include "reflector/udp_socket.h"
+
+#include "util/udp_socket.h"
 
 #include <gtest/gtest.h>
 

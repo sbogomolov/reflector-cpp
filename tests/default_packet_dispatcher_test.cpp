@@ -4,9 +4,10 @@
 #include "reflector/ip_address.h"
 #include "reflector/packet.h"
 #include "reflector/raw_socket.h"
-#include "reflector/udp_socket.h"
 
 #include "reflector/util/delegate.h"
+
+#include "util/udp_socket.h"
 
 #include "test_helpers.h"
 

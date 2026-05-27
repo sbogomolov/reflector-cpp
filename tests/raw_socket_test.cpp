@@ -3,7 +3,7 @@
 #include "reflector/ip_address.h"
 #include "reflector/mac_address.h"
 #include "reflector/packet.h"
-#include "reflector/udp_socket.h"
+#include "util/udp_socket.h"
 
 #include "test_helpers.h"
 
