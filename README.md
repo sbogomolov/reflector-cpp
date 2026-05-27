@@ -145,22 +145,19 @@ sudo ctest --test-dir build -L root --output-on-failure
 
 ### Docker-backed tests
 
-Docker-backed coverage is opt-in because it builds/runs containers and, for e2e, creates temporary Docker networks. Run the Dockerfile unit-test targets directly with:
+Docker-backed coverage is opt-in because it builds/runs containers and, for e2e, creates temporary Docker networks. Run the Dockerfile unit-test targets with:
 
 ```sh
-docker build --target test-debug .
-docker build --target test-release .
+./docker_test.sh                      # Debug (ASan/UBSan)
+./docker_test.sh release              # Release
+./docker_test.sh debug -R RawSocket   # extra args are forwarded to ctest
 ```
 
-The interface-pair tests skip during these builds: the `docker build` sandbox grants `CAP_NET_RAW`
-(so the loopback `root` tests run) but not `CAP_NET_ADMIN`, which creating `veth` needs. To exercise
-them in a container, tag the image and re-run ctest from a container started with that capability:
-
-```sh
-docker build --target test-debug -t reflector-test .
-docker run --rm --cap-add NET_ADMIN reflector-test \
-    ctest --test-dir build-test-debug -L root --output-on-failure
-```
+The script builds the test image and runs the suite in a container started with `--cap-add=NET_ADMIN`.
+That capability is required because the interface-pair `root` tests create a `veth` pair, and `docker
+build` can't grant it — so building and running the tests in one `docker build` step (as the image
+used to) silently skips them. `CAP_NET_RAW`, which loopback capture needs, is already in Docker's
+default capability set, so only `NET_ADMIN` has to be added.
 
 Run the e2e suite directly with:
 
@@ -179,7 +176,7 @@ cmake -S . -B build \
 ctest --test-dir build -L docker --output-on-failure
 ```
 
-`REFLECTOR_ENABLE_DOCKER_TESTS` adds the Dockerfile unit-test target (`test-debug` for Debug builds, `test-release` otherwise). `REFLECTOR_ENABLE_E2E_TESTS` adds the e2e runner. Both are labeled `docker`; the e2e test is also labeled `e2e`, so `-L e2e` selects only e2e coverage.
+`REFLECTOR_ENABLE_DOCKER_TESTS` adds a `docker`-labeled test that runs `docker_test.sh` (building the Debug or Release test image to match the build and running its unit suite in a container with `CAP_NET_ADMIN`). `REFLECTOR_ENABLE_E2E_TESTS` adds the e2e runner. Both are labeled `docker`; the e2e test is also labeled `e2e`, so `-L e2e` selects only e2e coverage.
 
 ## License
 

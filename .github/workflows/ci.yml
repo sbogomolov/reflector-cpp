@@ -109,13 +109,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and run unit tests in container
+      - name: Build test image
         uses: docker/build-push-action@v7
         with:
           context: .
           target: ${{ matrix.target }}
+          tags: reflector:${{ matrix.target }}
+          load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # docker build can't grant CAP_NET_ADMIN, which the veth-pair tests need; run the
+      # built image with it so they execute instead of skipping. See docker_test.sh.
+      - name: Run unit tests with CAP_NET_ADMIN
+        run: docker run --rm --cap-add=NET_ADMIN reflector:${{ matrix.target }}
 
   docker-e2e:
     name: Docker e2e

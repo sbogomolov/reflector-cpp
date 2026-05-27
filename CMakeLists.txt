@@ -130,21 +130,23 @@ if(BUILD_TESTING)
             message(FATAL_ERROR "REFLECTOR_ENABLE_DOCKER_TESTS requires the docker executable")
         endif()
         if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            set(_reflector_docker_test_target test-debug)
+            set(_reflector_docker_test_variant debug)
         else()
-            set(_reflector_docker_test_target test-release)
+            set(_reflector_docker_test_variant release)
         endif()
 
+        # docker_test.sh builds the test image and runs the suite in a container with
+        # CAP_NET_ADMIN, so the veth-pair tests run rather than skip.
         add_test(
-            NAME ReflectorDocker.BuildTestTarget
-            COMMAND ${DOCKER_EXECUTABLE} build --target ${_reflector_docker_test_target} .
+            NAME ReflectorDocker.UnitTests
+            COMMAND ${PROJECT_SOURCE_DIR}/docker_test.sh ${_reflector_docker_test_variant}
         )
-        set_tests_properties(ReflectorDocker.BuildTestTarget PROPERTIES
+        set_tests_properties(ReflectorDocker.UnitTests PROPERTIES
             LABELS "docker"
             TIMEOUT 600
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
-        unset(_reflector_docker_test_target)
+        unset(_reflector_docker_test_variant)
     endif()
 
     if(REFLECTOR_ENABLE_E2E_TESTS)
