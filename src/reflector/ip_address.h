@@ -27,6 +27,11 @@ public:
     // The family's "everyone on the local link" destination: the IPv4 limited broadcast, or
     // the IPv6 link-local all-nodes multicast.
     [[nodiscard]] static IpAddress LinkFanoutFor(Family family) noexcept;
+    [[nodiscard]] static IpAddress MdnsGroupV4() noexcept;          // 224.0.0.251
+    [[nodiscard]] static IpAddress MdnsGroupV6() noexcept;          // ff02::fb
+    // The mDNS multicast group for the family (224.0.0.251 / ff02::fb): the destination for
+    // both queries and responses on UDP 5353.
+    [[nodiscard]] static IpAddress MdnsGroupFor(Family family) noexcept;
     [[nodiscard]] static IpAddress LoopbackV4() noexcept;           // 127.0.0.1
     [[nodiscard]] static IpAddress LoopbackV6() noexcept;           // ::1
     [[nodiscard]] static IpAddress FromV4Bytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) noexcept;

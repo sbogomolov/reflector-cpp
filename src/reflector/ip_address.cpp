@@ -40,6 +40,22 @@ IpAddress IpAddress::LinkFanoutFor(Family family) noexcept {
     return family == Family::V4 ? BroadcastV4() : AllNodesLinkLocalV6();
 }
 
+IpAddress IpAddress::MdnsGroupV4() noexcept {
+    return FromV4Bytes(224, 0, 0, 251);
+}
+
+IpAddress IpAddress::MdnsGroupV6() noexcept {
+    ByteArray bytes{};
+    bytes[0] = std::byte{0xff};
+    bytes[1] = std::byte{0x02};
+    bytes[15] = std::byte{0xfb};
+    return IpAddress{Family::V6, bytes};
+}
+
+IpAddress IpAddress::MdnsGroupFor(Family family) noexcept {
+    return family == Family::V4 ? MdnsGroupV4() : MdnsGroupV6();
+}
+
 IpAddress IpAddress::LoopbackV4() noexcept {
     return FromV4Bytes(127, 0, 0, 1);
 }

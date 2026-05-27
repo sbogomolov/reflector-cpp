@@ -63,6 +63,27 @@ TEST(IpAddressTest, LinkFanoutForSelectsFamilyAppropriateAddress) {
     EXPECT_EQ(IpAddress::LinkFanoutFor(IpAddress::Family::V6), IpAddress::AllNodesLinkLocalV6());
 }
 
+TEST(IpAddressTest, MdnsGroupV4ReturnsMdnsMulticastAddress) {
+    const auto addr = IpAddress::MdnsGroupV4();
+
+    EXPECT_TRUE(addr.IsV4());
+    EXPECT_EQ(addr, IpAddress::FromV4Bytes(224, 0, 0, 251));
+    EXPECT_EQ(addr.ToString(), "224.0.0.251");
+}
+
+TEST(IpAddressTest, MdnsGroupV6ReturnsMdnsMulticastAddress) {
+    const auto addr = IpAddress::MdnsGroupV6();
+
+    EXPECT_TRUE(addr.IsV6());
+    EXPECT_EQ(addr, IpAddress::FromString("ff02::fb"));
+    EXPECT_EQ(addr.ToString(), "ff02::fb");
+}
+
+TEST(IpAddressTest, MdnsGroupForSelectsFamilyAppropriateAddress) {
+    EXPECT_EQ(IpAddress::MdnsGroupFor(IpAddress::Family::V4), IpAddress::MdnsGroupV4());
+    EXPECT_EQ(IpAddress::MdnsGroupFor(IpAddress::Family::V6), IpAddress::MdnsGroupV6());
+}
+
 TEST(IpAddressTest, LoopbackV4ReturnsLoopbackAddress) {
     const auto addr = IpAddress::LoopbackV4();
 
