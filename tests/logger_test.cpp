@@ -4,8 +4,11 @@
 
 #include "test_helpers.h"
 
+#include <charconv>
+#include <format>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 using namespace reflector;
@@ -145,4 +148,31 @@ TEST(LoggerTest, DynamicNameSurvivesMoveConstructionAndAssignment) {
     EXPECT_NE(output.find("[MoveAssignedDynamicLoggerName]"), std::string::npos) << output;
     EXPECT_NE(output.find("message from move constructed dynamic logger"), std::string::npos) << output;
     EXPECT_NE(output.find("message from move assigned dynamic logger"), std::string::npos) << output;
+}
+
+TEST(LoggerTest, FormatsLogLevelNames) {
+    EXPECT_EQ(std::format("{}", LogLevel::Debug), "DEBUG");
+    EXPECT_EQ(std::format("{}", LogLevel::Info), "INFO");
+    EXPECT_EQ(std::format("{}", LogLevel::Warning), "WARNING");
+    EXPECT_EQ(std::format("{}", LogLevel::Error), "ERROR");
+}
+
+TEST(LoggerTest, LogLineIncludesSourceLocation) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"LoggerTest"};
+
+    const std::string output = CaptureStdout([&] {
+        logger.Info("a message");
+    });
+
+    // The line carries the call site as basename:line; parse the number to prove a line follows.
+    const std::string marker = "logger_test.cpp:";
+    const auto pos = output.find(marker);
+    ASSERT_NE(pos, std::string::npos) << output;
+
+    int line = 0;
+    const char* first = output.data() + pos + marker.size();
+    const auto result = std::from_chars(first, output.data() + output.size(), line);
+    EXPECT_EQ(result.ec, std::errc{}) << output;  // digits follow the colon
+    EXPECT_GT(line, 0) << output;
 }
