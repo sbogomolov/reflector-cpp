@@ -185,6 +185,13 @@ protected:
         CaptureStdout([&] { result = socket.ParseFrame(frame); });
         return result;
     }
+
+    // Sets the socket's resolved source addresses directly (the fixture is a friend) so CanSend's
+    // per-family gating is testable without a real interface that happens to have the right mix.
+    void SetSource(std::optional<IpAddress> v4, std::optional<IpAddress> v6) noexcept {
+        socket.addresses_.v4 = std::move(v4);
+        socket.addresses_.v6 = std::move(v6);
+    }
 };
 
 TEST_F(RawSocketTest, ParsesEthernetIpv4Udp) {
@@ -430,6 +437,34 @@ TEST_F(RawSocketTest, RejectsIpv6UdpLengthExceedingIpDatagram) {
     f.bytes.resize(f.bytes.size() + 12, std::byte{0});
 
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
+}
+
+TEST_F(RawSocketTest, Ipv4SourceEnablesIpv4AndRefusesIpv6Send) {
+    SetSource(IpAddress::FromV4Bytes(192, 0, 2, 1), std::nullopt);
+
+    EXPECT_TRUE(socket.CanSend(IpAddress::Family::V4));
+    EXPECT_FALSE(socket.CanSend(IpAddress::Family::V6));
+
+    // No IPv6 source: the send path's family gate refuses before reaching any syscall. (A
+    // successful V4 send needs a real raw socket — see the RequiresRoot inject tests below.)
+    const std::array payload{std::byte{0xde}, std::byte{0xad}};
+    CaptureStdout([&] {  // swallow the expected "no source" error; the bool is the contract
+        EXPECT_FALSE(socket.SendUdpDatagram(
+            IpAddress::AllNodesLinkLocalV6(), 9, 9, payload, /*ttl=*/64));
+    });
+}
+
+TEST_F(RawSocketTest, Ipv6SourceEnablesIpv6AndRefusesIpv4Send) {
+    SetSource(std::nullopt, *IpAddress::FromString("fe80::1"));
+
+    EXPECT_FALSE(socket.CanSend(IpAddress::Family::V4));
+    EXPECT_TRUE(socket.CanSend(IpAddress::Family::V6));
+
+    const std::array payload{std::byte{0xde}, std::byte{0xad}};
+    CaptureStdout([&] {
+        EXPECT_FALSE(socket.SendUdpDatagram(
+            IpAddress::BroadcastV4(), 9, 9, payload, /*ttl=*/64));
+    });
 }
 
 #if defined(__APPLE__)
