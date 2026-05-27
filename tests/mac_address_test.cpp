@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <format>
 
@@ -92,4 +93,26 @@ TEST(MacAddressTest, FormatsAddress) {
     ASSERT_TRUE(mac.has_value());
 
     EXPECT_EQ(std::format("{}", *mac), "B0:37:95:C5:60:BE");
+}
+
+TEST(MacAddressTest, FormatsBytesBelowSixteenWithLeadingZero) {
+    const auto mac = MacAddress::FromString("00:01:0a:bc:0f:05");
+    ASSERT_TRUE(mac.has_value());
+
+    EXPECT_EQ(std::format("{}", *mac), "00:01:0A:BC:0F:05");
+}
+
+TEST(MacAddressTest, FromBytesCopiesOctets) {
+    const std::array<std::byte, 6> octets{
+        std::byte{0xb0}, std::byte{0x37}, std::byte{0x95}, std::byte{0xc5}, std::byte{0x60}, std::byte{0xbe}};
+
+    const auto mac = MacAddress::FromBytes(octets);
+
+    EXPECT_EQ(mac.Bytes(), octets);
+}
+
+TEST(MacAddressTest, Equality) {
+    const auto mac = *MacAddress::FromString("00:11:22:33:44:55");
+    EXPECT_EQ(mac, *MacAddress::FromString("00:11:22:33:44:55"));
+    EXPECT_NE(mac, *MacAddress::FromString("00:11:22:33:44:56"));
 }
