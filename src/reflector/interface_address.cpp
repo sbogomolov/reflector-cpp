@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include <net/if.h>
 #include <sys/socket.h>
@@ -20,7 +21,6 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <cerrno>
-#include <vector>
 #elif defined(__APPLE__)
 #include <ifaddrs.h>
 #include <net/if_dl.h>
@@ -72,6 +72,20 @@ void Consider(InterfaceAddresses& result, const IpAddress& address) noexcept {
         result.v6 = address;
     }
 }
+
+} // namespace
+
+namespace detail {
+
+void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddresses& result) noexcept {
+    for (const auto& address : candidates) {
+        Consider(result, address);
+    }
+}
+
+} // namespace detail
+
+namespace {
 
 #if defined(__linux__)
 
@@ -189,6 +203,7 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
         }
     });
 
+    std::vector<IpAddress> candidates;
     NetlinkDump(fd, RTM_GETADDR, 2, [&](const nlmsghdr* header) {
         const auto* addr = static_cast<const ifaddrmsg*>(NLMSG_DATA(header));
         if (addr->ifa_index != index) {
@@ -228,13 +243,15 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
             return;
         }
         if (addr->ifa_family == AF_INET) {
-            Consider(result,IpAddress::FromV4Bytes(std::span<const std::byte, 4>{chosen, 4}));
+            candidates.push_back(IpAddress::FromV4Bytes(std::span<const std::byte, 4>{chosen, 4}));
         } else {
-            Consider(result,IpAddress::FromV6Bytes(std::span<const std::byte, 16>{chosen, 16}));
+            candidates.push_back(IpAddress::FromV6Bytes(std::span<const std::byte, 16>{chosen, 16}));
         }
     });
 
     close(fd);
+
+    detail::SelectSourceAddresses(candidates, result);
 }
 
 #pragma GCC diagnostic pop
@@ -304,6 +321,7 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
         return;
     }
 
+    std::vector<IpAddress> candidates;
     for (const ifaddrs* ifa = head; ifa != nullptr; ifa = ifa->ifa_next) {
         if (ifa->ifa_addr == nullptr || interface != ifa->ifa_name) {
             continue;
@@ -311,7 +329,7 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
         switch (ifa->ifa_addr->sa_family) {
         case AF_INET:
             if (const auto address = IpAddress::FromSockaddr(ifa->ifa_addr); address) {
-                Consider(result,*address);
+                candidates.push_back(*address);
             }
             break;
         case AF_INET6: {
@@ -323,7 +341,7 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
                 if (address->IsLinkLocal()) {
                     address = CanonicalizeLinkLocal(*address);
                 }
-                Consider(result,*address);
+                candidates.push_back(*address);
             }
             break;
         }
@@ -337,6 +355,8 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
 
     close(inet6_fd);
     freeifaddrs(head);
+
+    detail::SelectSourceAddresses(candidates, result);
 }
 
 #endif

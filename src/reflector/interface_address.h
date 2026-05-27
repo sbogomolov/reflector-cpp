@@ -4,6 +4,7 @@
 #include "mac_address.h"
 
 #include <optional>
+#include <span>
 #include <string_view>
 
 namespace reflector {
@@ -16,6 +17,16 @@ struct InterfaceAddresses {
     std::optional<IpAddress> v4;  // the interface's IPv4 address, if any
     std::optional<IpAddress> v6;  // the interface's IPv6 link-local (fe80::) address, if any
 };
+
+namespace detail {
+
+// Folds an interface's usable candidate addresses into `result`: the first IPv4, and the
+// best-ranked IPv6 (link-local > ULA > GUA > other). Leaves result.mac untouched — the resolver
+// sets that separately. Split out from the platform resolvers so the preference policy is testable
+// without a real interface that happens to carry the right address mix.
+void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddresses& result) noexcept;
+
+} // namespace detail
 
 // Resolves an interface's MAC and per-family source addresses; fields are left empty for
 // anything it lacks (or if it's unknown). The IPv6 result prefers a link-local address (the
