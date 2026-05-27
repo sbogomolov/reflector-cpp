@@ -32,6 +32,11 @@
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <sys/socket.h>
+// Added to the UAPI in Linux 4.20; define it if the build's kernel headers predate that.
+// The setsockopt still fails at runtime on a pre-4.20 kernel, which RawSocket treats as fatal.
+#ifndef PACKET_IGNORE_OUTGOING
+#define PACKET_IGNORE_OUTGOING 23
+#endif
 #elif defined(__APPLE__)
 #include <net/bpf.h>
 #include <net/ethernet.h>
@@ -43,12 +48,13 @@ namespace reflector {
 namespace {
 
 // Classic BPF programs that accept IPv4 UDP or IPv6 UDP only (no VLAN tag, no IPv6
-// extension headers). Direction filtering is handled by the kernel — Linux prefixes the
-// Ethernet program with a PACKET_OUTGOING check (per-frame, via SKF_AD aux data); macOS
-// uses BIOCSSEESENT=0 at setup time. Both prevent two reflector entries with mirrored
-// interface pairs (entry A: eth0 → eth1, entry B: eth1 → eth0) from ping-ponging the
-// same frame: without this, B's capture on eth1 would pick up A's egress and re-reflect
-// it back to eth0, where A would in turn pick up B's egress, ad infinitum.
+// extension headers). Direction filtering is handled at the socket level rather than in
+// the program: Linux sets PACKET_IGNORE_OUTGOING and macOS clears BIOCSSEESENT (on
+// Ethernet), so the kernel never feeds us our own injected frames. Both prevent two
+// reflector entries with mirrored interface pairs (entry A: eth0 → eth1, entry B: eth1 →
+// eth0) from ping-ponging the same frame: without this, B's capture on eth1 would pick up
+// A's egress and re-reflect it back to eth0, where A would in turn pick up B's egress, ad
+// infinitum.
 struct BpfInsn {
     uint16_t code;
     uint8_t jt;
@@ -59,38 +65,10 @@ struct BpfInsn {
 // Non-const so the kernel APIs (sock_filter* / bpf_insn*) accept .data() without
 // const_cast. The surrounding anonymous namespace gives internal linkage; no caller
 // mutates them and the kernel only reads.
-#if defined(__linux__)
-// Ethernet UDP filter with leading PACKET_OUTGOING drop. SKF_AD_OFF = -0x1000;
-// SKF_AD_PKTTYPE = 4. Together they form the magic negative ABS offset that classic BPF
-// interprets as "load skb->pkt_type" instead of frame data.
+// Ethernet UDP filter: accept IPv4/IPv6 UDP only. Direction filtering is done at the
+// socket level (see above), not here, so this is a plain protocol classifier shared by
+// both platforms.
 //
-//   0: ldw  [SKF_AD_OFF + SKF_AD_PKTTYPE]   load packet type metadata
-//   1: jeq  4 (OUTGOING), jt=8, jf=0        if outgoing, jump to drop
-//   2: ldh  [12]                            load ethertype
-//   3: jeq  0x0800, jt=3, jf=0              if IPv4, jump to 7 (IPv4 path); else fall through
-//   4: jeq  0x86dd, jt=0, jf=5              if IPv6, fall through; else jump to 10 (drop)
-//   5: ldb  [20]                            load IPv6 next-header
-//   6: jeq  17, jt=2, jf=3                  if UDP, jump to 9 (accept); else jump to 10 (drop)
-//   7: ldb  [23]                            load IPv4 protocol
-//   8: jeq  17, jt=0, jf=1                  if UDP, fall through to 9 (accept); else jump to 10 (drop)
-//   9: ret  0xffffffff                      accept
-//  10: ret  0                               drop
-constexpr uint32_t SKF_AD_OFF_PKTTYPE = static_cast<uint32_t>(-0x1000 + 4);
-constexpr uint32_t LINUX_PACKET_OUTGOING = 4;
-std::array<BpfInsn, 11> ETHERNET_UDP_FILTER{{
-    {0x0020,  0,  0, SKF_AD_OFF_PKTTYPE},     // BPF_LD|BPF_W|BPF_ABS, k=aux pkttype
-    {0x0015,  8,  0, LINUX_PACKET_OUTGOING},  // BPF_JMP|BPF_JEQ|BPF_K, k=PACKET_OUTGOING
-    {0x0028,  0,  0, 0x0000000c},             // BPF_LD|BPF_H|BPF_ABS, offset 12 (ethertype)
-    {0x0015,  3,  0, 0x00000800},             // BPF_JMP|BPF_JEQ|BPF_K, k=0x0800 (IPv4)
-    {0x0015,  0,  5, 0x000086dd},             // BPF_JMP|BPF_JEQ|BPF_K, k=0x86dd (IPv6)
-    {0x0030,  0,  0, 0x00000014},             // BPF_LD|BPF_B|BPF_ABS, offset 20 (IPv6 next-header)
-    {0x0015,  2,  3, 0x00000011},             // BPF_JMP|BPF_JEQ|BPF_K, k=17 (UDP)
-    {0x0030,  0,  0, 0x00000017},             // BPF_LD|BPF_B|BPF_ABS, offset 23 (IPv4 protocol)
-    {0x0015,  0,  1, 0x00000011},             // BPF_JMP|BPF_JEQ|BPF_K, k=17 (UDP)
-    {0x0006,  0,  0, 0xffffffff},             // BPF_RET|BPF_K, accept
-    {0x0006,  0,  0, 0x00000000},             // BPF_RET|BPF_K, drop
-}};
-#elif defined(__APPLE__)
 //   0: ldh  [12]                load ethertype
 //   1: jeq  0x0800, jt=3, jf=0  if IPv4, jump to 5 (IPv4 path); else fall through
 //   2: jeq  0x86dd, jt=0, jf=5  if IPv6, fall through; else jump to 8 (drop)
@@ -112,6 +90,7 @@ std::array<BpfInsn, 9> ETHERNET_UDP_FILTER{{
     {0x0006,  0,  0, 0x00000000}, // BPF_RET|BPF_K, drop
 }};
 
+#if defined(__APPLE__)
 // DLT_NULL framing: 4-byte address family in host byte order (BSD loopback driver
 // convention), then the IP packet. The data layout is host-endian, but the classic
 // BPF VM's BPF_LD|BPF_W|BPF_ABS always interprets the loaded 4 bytes as big-endian
@@ -222,6 +201,18 @@ RawSocket::RawSocket(std::string_view interface)
         return;
     }
 
+    // Stop the kernel from handing this capture socket our own injected frames — the
+    // loop-prevention counterpart to macOS's BIOCSSEESENT=0 (see the filter note above).
+    // Fatal if unsupported (kernel < 4.20): a capture socket that re-receives its own
+    // injections would let mirrored reflector entries ping-pong a frame forever.
+    const int ignore_outgoing = 1;
+    if (setsockopt(fd_, SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore_outgoing,
+            sizeof(ignore_outgoing)) != 0) {
+        logger_.Error("Cannot set PACKET_IGNORE_OUTGOING: {}", Error::FromErrno());
+        Close();
+        return;
+    }
+
     receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
 
     logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_);
@@ -281,9 +272,9 @@ RawSocket::RawSocket(std::string_view interface)
     // so default BPF (BPF_D_INOUT) accepts it; setting SEESENT=0 (= BPF_D_IN) would
     // drop every frame the driver gives us and silence lo0 entirely. BIOCSDIRECTION
     // isn't an escape hatch — same ioctl, same kernel handler, just a wider value
-    // set. Linux doesn't need this gate: its Ethernet BPF program drops
-    // PACKET_OUTGOING per frame, collapsing lo's egress+ingress duplication to the
-    // ingress copy.
+    // set. Linux doesn't need this gate: PACKET_IGNORE_OUTGOING on its AF_PACKET socket
+    // drops the egress copy, collapsing lo's egress+ingress duplication to the ingress
+    // copy.
     if (link_type_ == LinkType::Ethernet) {
         u_int see_sent = 0;
         if (ioctl(fd_, BIOCSSEESENT, &see_sent) != 0) {
