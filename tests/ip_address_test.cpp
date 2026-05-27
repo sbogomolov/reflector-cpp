@@ -2,7 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <arpa/inet.h>
+#include <array>
 #include <cstddef>
 #include <format>
 #include <functional>
@@ -11,12 +13,33 @@
 
 using namespace reflector;
 
+namespace {
+
+// Parses a known-valid address for the classification tests; fails the test if it doesn't parse.
+IpAddress Parse(const char* address) {
+    const auto parsed = IpAddress::FromString(address);
+    EXPECT_TRUE(parsed.has_value()) << address;
+    return parsed.value_or(IpAddress::AnyV6());
+}
+
+} // namespace
+
 TEST(IpAddressTest, AnyV4AndAnyV6AreFamilyWildcards) {
     EXPECT_TRUE(IpAddress::AnyV4().IsV4());
     EXPECT_EQ(IpAddress::AnyV4().ToString(), "0.0.0.0");
     EXPECT_TRUE(IpAddress::AnyV6().IsV6());
     EXPECT_EQ(IpAddress::AnyV6().ToString(), "::");
     EXPECT_NE(IpAddress::AnyV4(), IpAddress::AnyV6());
+}
+
+TEST(IpAddressTest, IsV4AndIsV6AreMutuallyExclusive) {
+    const auto v4 = IpAddress::FromV4Bytes(192, 0, 2, 1);
+    EXPECT_TRUE(v4.IsV4());
+    EXPECT_FALSE(v4.IsV6());
+
+    const auto v6 = *IpAddress::FromString("2001:db8::1");
+    EXPECT_TRUE(v6.IsV6());
+    EXPECT_FALSE(v6.IsV4());
 }
 
 TEST(IpAddressTest, BroadcastV4ReturnsLimitedBroadcastAddress) {
@@ -169,4 +192,56 @@ TEST(IpAddressTest, FromSockaddrUnknownFamilyReturnsNullopt) {
 
 TEST(IpAddressTest, FromSockaddrNullReturnsNullopt) {
     EXPECT_FALSE(IpAddress::FromSockaddr(nullptr).has_value());
+}
+
+TEST(IpAddressTest, FromV4BytesSpanCopiesOctets) {
+    const std::array<std::byte, 4> octets{std::byte{0xc0}, std::byte{0x00}, std::byte{0x02}, std::byte{0x01}};
+
+    const auto addr = IpAddress::FromV4Bytes(octets);
+
+    EXPECT_TRUE(addr.IsV4());
+    EXPECT_TRUE(std::equal(octets.begin(), octets.end(), addr.Bytes().begin()));  // the octets, as given
+}
+
+TEST(IpAddressTest, FromV6BytesSpanCopiesOctets) {
+    IpAddress::ByteArray octets{};
+    for (size_t i = 0; i < octets.size(); ++i) {
+        octets[i] = static_cast<std::byte>(i + 1);
+    }
+
+    const auto addr = IpAddress::FromV6Bytes(octets);
+
+    EXPECT_TRUE(addr.IsV6());
+    EXPECT_EQ(addr.Bytes(), octets);
+}
+
+TEST(IpAddressTest, ClassifiesIpv6Scopes) {
+    // Link-local is fe80::/10 — the second byte's top two bits are 10 (fe80..febf, but not fec0+).
+    EXPECT_TRUE(Parse("fe80::1").IsLinkLocal());
+    EXPECT_TRUE(Parse("febf::1").IsLinkLocal());
+    EXPECT_FALSE(Parse("fec0::1").IsLinkLocal());
+
+    // Unique-local is fc00::/7 — first byte fc or fd.
+    EXPECT_TRUE(Parse("fc00::1").IsUniqueLocal());
+    EXPECT_TRUE(Parse("fd00::1").IsUniqueLocal());
+    EXPECT_FALSE(Parse("fe00::1").IsUniqueLocal());
+
+    // Global unicast is 2000::/3 — first byte 0x20..0x3f.
+    EXPECT_TRUE(Parse("2000::1").IsGlobalUnicast());
+    EXPECT_TRUE(Parse("3fff::1").IsGlobalUnicast());
+    EXPECT_FALSE(Parse("1fff::1").IsGlobalUnicast());
+    EXPECT_FALSE(Parse("4000::1").IsGlobalUnicast());
+
+    // The categories don't overlap.
+    EXPECT_FALSE(Parse("fe80::1").IsGlobalUnicast());
+    EXPECT_FALSE(Parse("2001:db8::1").IsLinkLocal());
+    EXPECT_FALSE(Parse("fd00::1").IsGlobalUnicast());
+}
+
+TEST(IpAddressTest, Ipv4IsNeverIpv6Scoped) {
+    const auto v4 = IpAddress::FromV4Bytes(192, 0, 2, 1);
+
+    EXPECT_FALSE(v4.IsLinkLocal());
+    EXPECT_FALSE(v4.IsUniqueLocal());
+    EXPECT_FALSE(v4.IsGlobalUnicast());
 }
