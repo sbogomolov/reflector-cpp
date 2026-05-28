@@ -633,7 +633,42 @@ TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
     ASSERT_TRUE(last.has_value());
     EXPECT_EQ(last->header.source_port, 22222);
 }
+
+// A frame BPF truncated to fit the buffer (bh_datalen > bh_caplen) is dropped with a warning,
+// not parsed from its partial bytes.
+TEST(RawSocketBatchTest, ReceiveDropsBpfTruncatedFrame) {
+    TestCaptureSocket capture;
+    const auto payload = MakeBytes({0xab, 0xcd});
+    FrameBuilder f;
+    f.AppendEthernet(MacAddress{}, MacAddress{}, IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(),
+        IP_PROTO_UDP, static_cast<uint16_t>(20 + 8 + payload.size()));
+    f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+    // The frame's real length was far larger than what BPF captured.
+    ASSERT_TRUE(capture.WriteTruncatedFrame(f.bytes, 70000));
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(capture.socket.Receive().has_value());
+    });
+    EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
+}
 #endif  // defined(__APPLE__)
+
+#if defined(__linux__)
+// recv(MSG_TRUNC) reports an oversized frame's real length, so Receive drops it (with a warning)
+// instead of parsing the truncated bytes that fit the buffer.
+TEST(RawSocketReceiveTest, DropsFrameLargerThanReceiveBuffer) {
+    TestCaptureSocket capture;
+    const std::vector<std::byte> frame(5000, std::byte{0xff}); // exceeds the 4 KiB receive buffer
+    ASSERT_TRUE(capture.WriteFrame(frame));
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(capture.socket.Receive().has_value());
+    });
+    EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
+}
+#endif  // defined(__linux__)
 
 class RawSocketRequiresRootTest : public ::testing::Test {
 protected:

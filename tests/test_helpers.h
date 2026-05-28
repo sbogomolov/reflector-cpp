@@ -320,6 +320,12 @@ struct TestCaptureSocket {
         }
         return WriteRaw(batch);
     }
+
+    // Writes one frame whose bpf_hdr reports more original bytes (bh_datalen) than were captured
+    // (bh_caplen = frame.size()), as BPF does when a packet is too big for the capture buffer.
+    bool WriteTruncatedFrame(std::span<const std::byte> frame, uint32_t original_length) {
+        return WriteRaw(EncodeFrame(frame, original_length));
+    }
 #endif
 
 private:
@@ -340,17 +346,24 @@ private:
     }
 
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {
+        return EncodeFrame(frame, static_cast<uint32_t>(frame.size()));
+    }
+
+    // original_length sets bh_datalen; pass a value larger than frame.size() to model a frame BPF
+    // truncated to fit the buffer. Ignored on Linux, which has no bpf_hdr.
+    static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame, uint32_t original_length) {
 #if defined(__APPLE__)
         bpf_hdr header{};
         header.bh_hdrlen = static_cast<u_short>(BPF_WORDALIGN(sizeof(bpf_hdr)));
         header.bh_caplen = static_cast<bpf_u_int32>(frame.size());
-        header.bh_datalen = header.bh_caplen;
+        header.bh_datalen = static_cast<bpf_u_int32>(original_length);
         const auto record_size = BPF_WORDALIGN(header.bh_hdrlen + frame.size());
         std::vector<std::byte> buffer(record_size, std::byte{0});
         std::memcpy(buffer.data(), &header, sizeof(header));
         std::memcpy(buffer.data() + header.bh_hdrlen, frame.data(), frame.size());
         return buffer;
 #else
+        (void)original_length;
         return std::vector<std::byte>{frame.begin(), frame.end()};
 #endif
     }

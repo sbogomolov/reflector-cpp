@@ -469,15 +469,22 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     }
 
 #if defined(__linux__)
+    // MSG_TRUNC makes recv report the frame's real length even when it exceeds the buffer, so a
+    // frame that didn't fit is detectable (bytes > buffer) instead of being silently truncated.
     ssize_t bytes;
     do {
-        bytes = recv(fd_, receive_buffer_.data(), receive_buffer_.size(), 0);
+        bytes = recv(fd_, receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
     } while (bytes < 0 && errno == EINTR);
     if (bytes < 0) {
         if (IsWouldBlockErrno(errno)) {
             return std::nullopt;
         }
         logger_.Error("Cannot receive frame: {}", Error::FromErrno());
+        return std::nullopt;
+    }
+    if (static_cast<size_t>(bytes) > receive_buffer_.size()) {
+        logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+            bytes, receive_buffer_.size());
         return std::nullopt;
     }
     return ParseFrame({receive_buffer_.data(), static_cast<size_t>(bytes)});
@@ -520,6 +527,14 @@ std::optional<Packet> RawSocket::Receive() noexcept {
         return std::nullopt;
     }
     receive_buffer_offset_ = BPF_WORDALIGN(frame_offset + header.bh_caplen);
+
+    // BPF captured fewer bytes than the frame's real length, so it didn't fit the buffer; drop it
+    // rather than parse a truncated frame. (Offset already advanced to the next record above.)
+    if (header.bh_datalen > header.bh_caplen) {
+        logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+            header.bh_datalen, receive_buffer_.size());
+        return std::nullopt;
+    }
 
     return ParseFrame({receive_buffer_.data() + frame_offset, header.bh_caplen});
 #endif
