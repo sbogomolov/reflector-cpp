@@ -56,13 +56,18 @@ The runtime image uses pinned Debian/distroless base image digests. By default, 
 
 ## Release
 
-Release checklist:
+The project version in `CMakeLists.txt` is the single source of truth: `version.sh` extracts it, and
+`docker_build.sh` (image tag), `release.sh` (git tag), and the GitHub release name all derive from
+it. To cut a release:
 
-- Make sure `CMakeLists.txt` has the new project version.
-- Make sure all changes for the release are present on `origin/main`.
-- Check that all CI jobs on `origin/main` succeeded.
-- Create a GitHub release with the tag corresponding to the new version, for example `v0.1.4`.
-- Push the new Docker images with `./docker_build.sh --push`.
+- Bump the project version in `CMakeLists.txt` and merge it to `origin/main`.
+- From a clean `main` in sync with `origin/main`, run `./release.sh`.
+
+`./release.sh` automates the rest: it verifies CI is green on the release commit, prints the detected
+version and asks for confirmation, tags `v<version>` and pushes it, creates the GitHub release (with
+generated notes), and publishes the Docker images with `./docker_build.sh --push`. The pushed tag is
+independently re-checked against `CMakeLists.txt` by the `Tag version check` workflow. Requires the
+GitHub CLI (`gh`, authenticated) and Docker.
 
 ## Run
 

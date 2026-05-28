@@ -104,11 +104,7 @@ if [ "$push" = true ] && [ "$image_set" = false ]; then
     image="$default_push_image"
 fi
 
-version=$(sed -n 's/.*project([[:space:]]*reflector[[:space:]]*VERSION[[:space:]]*\([0-9.]*\).*/\1/p' CMakeLists.txt)
-if [ -z "$version" ]; then
-    echo "Cannot determine VERSION from CMakeLists.txt" >&2
-    exit 1
-fi
+version=$("$(dirname "$0")/version.sh")
 
 if [ "$push" = true ]; then
     docker buildx build \
