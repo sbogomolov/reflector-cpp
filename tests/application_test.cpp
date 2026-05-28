@@ -13,6 +13,7 @@
 #include <csignal>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -61,7 +62,7 @@ protected:
         return Application::ForTesting(std::move(dispatcher), std::move(monitor), MakeFactory());
     }
 
-    static WolConfig MakeConfig(std::string_view name, std::string_view source_if,
+    static WolConfig MakeWolConfig(std::string_view name, std::string_view source_if,
         std::string_view target_if, std::vector<uint16_t> ports) {
         return WolConfig{
             .name = std::string{name},
@@ -70,6 +71,17 @@ protected:
             .target_if = std::string{target_if},
             .ports = std::move(ports),
             .address_family = AddressFamily::IPv4,
+        };
+    }
+
+    static MdnsConfig MakeMdnsConfig(std::string_view name, std::string_view source_if,
+        std::string_view target_if, AddressFamily family = AddressFamily::IPv4) {
+        return MdnsConfig{
+            .name = std::string{name},
+            .mac = std::nullopt,
+            .source_if = std::string{source_if},
+            .target_if = std::string{target_if},
+            .address_family = family,
         };
     }
 
@@ -103,8 +115,8 @@ private:
 TEST_F(ApplicationTest, SharesOneSocketPerInterfaceAcrossConfigs) {
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "src", "dst", {7}))
-        .Add(MakeConfig("console", "src", "dst", {9}))
+        .Add(MakeWolConfig("tv", "src", "dst", {7}))
+        .Add(MakeWolConfig("console", "src", "dst", {9}))
         .Build();
 
     ASSERT_TRUE(app.Configure(config));
@@ -121,8 +133,8 @@ TEST_F(ApplicationTest, SharesOneSocketPerInterfaceAcrossConfigs) {
 TEST_F(ApplicationTest, CreatesDistinctSocketsForDistinctInterfaces) {
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "src-a", "dst", {7}))
-        .Add(MakeConfig("console", "src-b", "dst", {9}))
+        .Add(MakeWolConfig("tv", "src-a", "dst", {7}))
+        .Add(MakeWolConfig("console", "src-b", "dst", {9}))
         .Build();
 
     ASSERT_TRUE(app.Configure(config));
@@ -137,7 +149,7 @@ TEST_F(ApplicationTest, FailsWhenSourceSocketInvalid) {
     ConfigureSocket("bad-src", {.valid = false});
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "bad-src", "dst", {9}))
+        .Add(MakeWolConfig("tv", "bad-src", "dst", {9}))
         .Build();
 
     const std::string output = CaptureStdout([&] {
@@ -152,7 +164,7 @@ TEST_F(ApplicationTest, FailsWhenTargetSocketInvalid) {
     ConfigureSocket("bad-dst", {.valid = false});
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "src", "bad-dst", {9}))
+        .Add(MakeWolConfig("tv", "src", "bad-dst", {9}))
         .Build();
 
     const std::string output = CaptureStdout([&] {
@@ -169,7 +181,7 @@ TEST_F(ApplicationTest, FailsWhenReflectorSetupFails) {
     ConfigureSocket("dst", {.can_send_v4 = false});
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("tv", "src", "dst", {9}))
+        .Add(MakeWolConfig("tv", "src", "dst", {9}))
         .Build();
 
     const std::string output = CaptureStdout([&] {
@@ -183,17 +195,117 @@ TEST_F(ApplicationTest, StopsAtFirstFailure) {
     ConfigureSocket("dst-bad", {.can_send_v4 = false}); // the second config's reflector will fail
     auto app = MakeApp();
     const Config config = TestConfigBuilder{}
-        .Add(MakeConfig("first", "src1", "dst1", {7}))
-        .Add(MakeConfig("second", "src2", "dst-bad", {8}))
-        .Add(MakeConfig("third", "src3", "dst3", {9}))
+        .Add(MakeWolConfig("first", "src1", "dst1", {7}))
+        .Add(MakeWolConfig("second", "src2", "dst-bad", {8}))
+        .Add(MakeWolConfig("third", "src3", "dst3", {9}))
         .Build();
 
     const std::string output = CaptureStdout([&] {
         EXPECT_FALSE(app.Configure(config));
     });
 
-    EXPECT_EQ(ReflectorCount(app), 1) << output;        // only the first config was wired
+    EXPECT_EQ(ReflectorCount(app), 0) << output;        // a failed Configure leaves nothing wired
     EXPECT_EQ(Socket("src3"), nullptr);                 // the third config was never reached
+}
+
+TEST_F(ApplicationTest, WiresMdnsReflectorOnBothInterfaces) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeMdnsConfig("cast", "src", "dst"))
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    EXPECT_EQ(factory_calls_, 2);
+    EXPECT_EQ(SocketCount(app), 2);
+    EXPECT_EQ(ReflectorCount(app), 1);
+    // mDNS captures on both interfaces, so each socket's fd is watched once.
+    EXPECT_EQ(dispatcher_->RegistrationCount(), 2);
+    EXPECT_TRUE(dispatcher_->IsWatching(Socket("src")->fd));
+    EXPECT_TRUE(dispatcher_->IsWatching(Socket("dst")->fd));
+}
+
+TEST_F(ApplicationTest, SharesSocketsBetweenWolAndMdns) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {9}))
+        .Add(MakeMdnsConfig("cast", "src", "dst"))
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    // Both protocols reuse the same per-interface sockets.
+    EXPECT_EQ(factory_calls_, 2);
+    EXPECT_EQ(SocketCount(app), 2);
+    EXPECT_EQ(ReflectorCount(app), 2);
+    // WoL watches "src"; mDNS additionally watches "dst" — two distinct fds total.
+    EXPECT_EQ(dispatcher_->RegistrationCount(), 2);
+}
+
+TEST_F(ApplicationTest, FailsWhenMdnsSourceSocketInvalid) {
+    ConfigureSocket("bad-src", {.valid = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeMdnsConfig("cast", "bad-src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0);
+    EXPECT_NE(output.find("mdns"), std::string::npos) << output;     // the log names the protocol
+    EXPECT_NE(output.find("bad-src"), std::string::npos) << output;  // and the source interface
+}
+
+TEST_F(ApplicationTest, FailsWhenMdnsTargetSocketInvalid) {
+    ConfigureSocket("bad-dst", {.valid = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeMdnsConfig("cast", "src", "bad-dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0);
+    EXPECT_NE(output.find("bad-dst"), std::string::npos) << output;  // the log names the target interface
+}
+
+TEST_F(ApplicationTest, FailsWhenMdnsReflectorSetupFails) {
+    // mDNS needs the family sendable on both interfaces; the IPv4 config can't be reflected when
+    // the target can't originate IPv4, so the reflector fails to initialize.
+    ConfigureSocket("dst", {.can_send_v4 = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeMdnsConfig("cast", "src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0) << output;
+}
+
+TEST_F(ApplicationTest, ClearsWolReflectorWhenLaterMdnsFails) {
+    // WoL is configured before mDNS, so the WoL reflector wires successfully before the mDNS entry
+    // fails. Configure is transactional: that earlier success is rolled back, leaving nothing wired.
+    // A source that can't originate IPv4 breaks mDNS (which reflects in both directions) but not WoL
+    // (whose source only captures).
+    ConfigureSocket("src", {.can_send_v4 = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {9}))
+        .Add(MakeMdnsConfig("cast", "src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0) << output; // the WoL reflector wired earlier is rolled back
 }
 
 TEST_F(ApplicationTest, SubscribesToTheAddressMonitor) {
@@ -210,7 +322,7 @@ TEST_F(ApplicationTest, WarnsButProceedsWhenMonitorCannotStart) {
         auto app = MakeApp();
         // The daemon carries on without address refresh: configuration still succeeds.
         EXPECT_TRUE(app.Configure(TestConfigBuilder{}
-            .Add(MakeConfig("tv", "src", "dst", {9}))
+            .Add(MakeWolConfig("tv", "src", "dst", {9}))
             .Build()));
     });
 
@@ -221,7 +333,7 @@ TEST_F(ApplicationTest, RefreshesOnlyTheChangedInterface) {
     ConfigureSocket("src", {.interface_index = 5});
     ConfigureSocket("dst", {.interface_index = 9});
     auto app = MakeApp();
-    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeConfig("tv", "src", "dst", {9})).Build()));
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
 
     monitor_->FireChange(5);
 
@@ -233,7 +345,7 @@ TEST_F(ApplicationTest, RefreshesAllInterfacesOnOverflowSignal) {
     ConfigureSocket("src", {.interface_index = 5});
     ConfigureSocket("dst", {.interface_index = 9});
     auto app = MakeApp();
-    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeConfig("tv", "src", "dst", {9})).Build()));
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
 
     monitor_->FireChange(0); // 0 is the "refresh everything" overflow signal
 
@@ -245,7 +357,7 @@ TEST_F(ApplicationTest, RefreshesNothingForUnknownInterface) {
     ConfigureSocket("src", {.interface_index = 5});
     ConfigureSocket("dst", {.interface_index = 9});
     auto app = MakeApp();
-    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeConfig("tv", "src", "dst", {9})).Build()));
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
 
     monitor_->FireChange(7); // no socket is bound to interface index 7
 
@@ -255,6 +367,7 @@ TEST_F(ApplicationTest, RefreshesNothingForUnknownInterface) {
 
 TEST_F(ApplicationTest, RunDelegatesToTheDispatcher) {
     auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
     volatile std::sig_atomic_t stop_requested = 1; // already stopped, so the fake returns at once
 
     app.Run(stop_requested);

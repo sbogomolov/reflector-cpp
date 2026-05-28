@@ -46,6 +46,11 @@ public:
         return *this;
     }
 
+    TestConfigBuilder& Add(MdnsConfig mdns) {
+        config_.mdns_configs_.push_back(std::move(mdns));
+        return *this;
+    }
+
     [[nodiscard]] Config Build() const { return config_; }
 
 private:

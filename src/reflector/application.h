@@ -6,8 +6,8 @@
 #include "dispatcher.h"
 #include "link_socket.h"
 #include "logger.h"
+#include "reflector.h"
 #include "util/no_move.h"
-#include "wol_reflector.h"
 
 #include <csignal>
 #include <cstddef>
@@ -21,10 +21,10 @@
 namespace reflector {
 
 // Owns and wires together the sockets, the dispatcher and packet dispatcher, and the
-// reflectors for a set of WolConfigs, then runs the dispatcher event loop. Extracting this out
-// of main() keeps the entry point thin (arg parsing, config load, signal setup) and makes the
-// wiring testable: ForTesting injects a fake dispatcher, address monitor, and socket factory, so
-// the dedup, failure, and address-refresh paths are exercisable without CAP_NET_RAW.
+// reflectors for a set of WoL and mDNS configs, then runs the dispatcher event loop. Extracting
+// this out of main() keeps the entry point thin (arg parsing, config load, signal setup) and makes
+// the wiring testable: ForTesting injects a fake dispatcher, address monitor, and socket factory,
+// so the dedup, failure, and address-refresh paths are exercisable without CAP_NET_RAW.
 class Application : NoMove {
 public:
     // Creates the socket for an interface. Production opens a real RawSocket; tests inject a fake.
@@ -39,10 +39,10 @@ public:
     [[nodiscard]] static Application ForTesting(std::unique_ptr<Dispatcher> dispatcher,
         std::unique_ptr<AddressMonitor> monitor, SocketFactory socket_factory);
 
-    // Builds one reflector per WolConfig, sharing a single socket across configs on
-    // the same source interface (the packet dispatcher watches that socket's fd once, however
-    // many reflectors register on it). Returns false (after logging) on the first failure; the
-    // partially-wired state is then torn down by the destructor.
+    // Builds one reflector per WoL and mDNS config, sharing a single socket across configs on the
+    // same interface (the packet dispatcher watches that socket's fd once, however many reflectors
+    // register on it). Transactional: returns true with everything wired, or false (after logging)
+    // on the first failure, having cleared any reflectors wired before it.
     [[nodiscard]] bool Configure(const Config& config);
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
@@ -59,6 +59,14 @@ private:
     // Starts the address monitor, routing changes to OnInterfaceChanged. Logs a warning and
     // continues if it can't start — address refresh is best-effort, not required to run.
     void StartMonitor();
+
+    // Wires every entry in `configs` into a reflector of type R, sharing one socket per interface
+    // across all reflectors (see GetOrCreateSocket). WolReflector and MdnsReflector share the ctor
+    // shape (dispatcher, source, target, config) and the IsValid contract, so one template covers
+    // both; `protocol` only labels the error logs. Returns false on the first failure (already
+    // logged); reflectors wired so far stay in reflectors_ for Configure to roll back.
+    template <class ReflectorType, class ConfigType>
+    bool ConfigureReflectors(const std::vector<ConfigType>& configs, std::string_view protocol);
 
     [[nodiscard]] size_t SocketCount() const noexcept { return sockets_.size(); }
     [[nodiscard]] size_t ReflectorCount() const noexcept { return reflectors_.size(); }
@@ -83,7 +91,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<LinkSocket>> sockets_;
     std::unique_ptr<Dispatcher> dispatcher_;
     DefaultPacketDispatcher packet_dispatcher_{*dispatcher_};
-    std::vector<std::unique_ptr<WolReflector>> reflectors_;
+    std::vector<std::unique_ptr<Reflector>> reflectors_;
     std::unique_ptr<AddressMonitor> address_monitor_;
 };
 

@@ -2,12 +2,16 @@
 
 #include "default_address_monitor.h"
 #include "event_loop_dispatcher.h"
+#include "mdns_reflector.h"
 #include "raw_socket.h"
 #include "util/delegate.h"
+#include "wol_reflector.h"
 
+#include <cassert>
 #include <memory>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace reflector {
 
@@ -54,29 +58,41 @@ LinkSocket* Application::GetOrCreateSocket(const std::string& interface) {
     return (socket && socket->IsValid()) ? socket.get() : nullptr;
 }
 
-bool Application::Configure(const Config& config) {
-    for (const auto& wol_config : config.WolConfigs()) {
-        auto* source_socket = GetOrCreateSocket(wol_config.source_if);
+template <class ReflectorType, class ConfigType>
+bool Application::ConfigureReflectors(const std::vector<ConfigType>& configs, std::string_view protocol) {
+    for (const auto& config : configs) {
+        auto* source_socket = GetOrCreateSocket(config.source_if);
         if (source_socket == nullptr) {
-            logger_.Error("Cannot configure wol reflector \"{}\": socket on interface \"{}\" is invalid",
-                wol_config.name, wol_config.source_if);
+            logger_.Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+                protocol, config.name, config.source_if);
             return false;
         }
-        auto* target_socket = GetOrCreateSocket(wol_config.target_if);
+        auto* target_socket = GetOrCreateSocket(config.target_if);
         if (target_socket == nullptr) {
-            logger_.Error("Cannot configure wol reflector \"{}\": socket on interface \"{}\" is invalid",
-                wol_config.name, wol_config.target_if);
+            logger_.Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+                protocol, config.name, config.target_if);
             return false;
         }
 
-        auto reflector = std::make_unique<WolReflector>(packet_dispatcher_, *source_socket, *target_socket, wol_config);
+        auto reflector = std::make_unique<ReflectorType>(packet_dispatcher_, *source_socket, *target_socket, config);
         if (!reflector->IsValid()) {
-            logger_.Error("Cannot configure wol reflector \"{}\": setup failed", wol_config.name);
+            logger_.Error("Cannot configure {} reflector \"{}\": setup failed", protocol, config.name);
             return false;
         }
         reflectors_.push_back(std::move(reflector));
     }
     return true;
+}
+
+bool Application::Configure(const Config& config) {
+    if (ConfigureReflectors<WolReflector>(config.WolConfigs(), "wol")
+        && ConfigureReflectors<MdnsReflector>(config.MdnsConfigs(), "mdns")) {
+        return true;
+    }
+    // Fail closed: drop any reflectors wired before the failure so a config error never leaves a
+    // partially-wired Application. Pairs with Run's assert(!reflectors_.empty()).
+    reflectors_.clear();
+    return false;
 }
 
 void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
@@ -91,6 +107,9 @@ void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
 }
 
 void Application::Run(const volatile std::sig_atomic_t& stop_requested) {
+    // Reaching Run with nothing wired means the caller ignored a failed Configure (a valid config
+    // has at least one reflector). The control flow already guarantees this; assert documents it.
+    assert(!reflectors_.empty());
     dispatcher_->Run(stop_requested);
 }
 
