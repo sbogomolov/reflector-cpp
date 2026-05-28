@@ -1,8 +1,18 @@
 # reflector
 
-Reflects Wake-on-LAN magic packets received on one network interface onto another. Useful when the host that sends WoL packets and the host you want to wake live on different L2 segments — for example, a router bridging a wired LAN to a Wi-Fi network where broadcasts are not forwarded.
+Reflects link-local service traffic between two network interfaces. Useful when the devices that
+talk to each other live on different L2 segments that don't forward each other's broadcasts or
+multicasts — for example, a router bridging a wired LAN to a Wi-Fi network. Two protocols are
+supported today:
 
-By default, each reflector entry requires IPv4 handling and attempts IPv6 on a best-effort basis. Magic packets received over IPv4 are re-emitted as the IPv4 limited broadcast (`255.255.255.255`); packets received over IPv6 are re-emitted to the IPv6 link-local all-nodes multicast group (`ff02::1`). If IPv4 cannot be initialized for an entry, startup fails. If only IPv6 cannot be initialized, IPv4 keeps running.
+- **Wake-on-LAN** — magic packets sent on one interface are re-emitted on another, so a sender can
+  wake a host on a different segment.
+- **multicast DNS (mDNS)** — service discovery traffic is relayed between two interfaces, so clients
+  on one segment can discover responders on the other.
+
+By default, each reflector entry requires IPv4 handling and attempts IPv6 on a best-effort basis. If
+IPv4 cannot be initialized for an entry, startup fails; if only IPv6 cannot be initialized, IPv4
+keeps running. The per-protocol re-emit details are described under [Configuration](#configuration).
 
 ## Platform support
 
@@ -64,11 +74,11 @@ The default config path is `./config.toml`. The process logs to stdout and shuts
 
 ### Runtime privileges
 
-The reflector opens an L2 packet-capture socket on each `source_if` to observe incoming
-WoL traffic, and a UDP sender bound to each `target_if` to re-emit it. The capture
-socket is what drives the privilege requirements below; the sender does not need to
-bind to a port (it sends only), so no WoL-port-related privileges are required even
-when the default ports `7` / `9` are in use.
+The reflector opens an L2 packet-capture socket on each interface it listens on to observe incoming
+packets, and a UDP sender bound to each interface it emits on to re-emit them. The capture socket is
+what drives the privilege requirements below; the sender does not need to bind to a port (it sends
+only), so no port-related privileges are required. mDNS additionally joins its multicast group on the
+capture socket, which needs no privilege beyond what opening that socket already requires.
 
 #### Linux
 
@@ -95,12 +105,16 @@ Log out and back in after installing for the group membership to take effect.
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one `[[wol]]`
-entry:
+`config.toml` contains optional top-level settings plus at least one reflector entry — a `[[wol]]`
+or `[[mdns]]` table. `log_level` is the only top-level setting:
 
 ```toml
 log_level = "info"             # optional; one of debug | info | warning | error (default: info)
+```
 
+### Wake-on-LAN (`[[wol]]`)
+
+```toml
 [[wol]]
 name      = "tv"                # human-readable label, used in logs
 mac       = "B0:37:95:C5:60:BE" # optional; when omitted, all WoL magic packets are proxied
@@ -115,6 +129,25 @@ Each entry installs listeners on `source_if` for the listed UDP ports, matches i
 `address_family = "default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort. Use `"dual"` to require both address families, or `"ipv4"` / `"ipv6"` to use only one.
 
 Every WoL entry name must be unique. Beyond the name, duplicate detection rejects only rules that could reflect the same packet twice: the entries must use the same `source_if`, the same `target_if`, at least one common UDP port, overlapping MAC selection, and overlapping address-family handling. MAC selection overlaps when both entries use the same `mac`, or when either entry omits `mac` and therefore accepts any MAC. Address-family handling overlaps when the two entries can both handle the same IP version — an `ipv4`-only rule and an `ipv6`-only rule never overlap, while `default`/`dual` handle both versions and so overlap with either. Rules with different source interfaces, target interfaces, disjoint port sets, or non-overlapping address families can coexist.
+
+### Multicast DNS (`[[mdns]]`)
+
+```toml
+[[mdns]]
+name      = "cast"               # human-readable label, used in logs
+source_if = "en0"                # interface clients query from (must differ from target_if)
+target_if = "lo0"                # interface the responders live on
+mac       = "B0:37:95:C5:60:BE"  # optional; restricts the target→source direction to this device
+address_family = "default"       # optional; default | dual | ipv4 | ipv6
+```
+
+Reflects multicast DNS (UDP 5353) between `source_if` and `target_if`, joining the mDNS group (`224.0.0.251` / `ff02::fb`) on both. Relaying is directional by the DNS header's QR bit: queries flow source→target and responses (including unsolicited announcements) flow target→source, so clients on `source_if` discover responders on `target_if` without exposing the `source_if` devices in return. Reflected datagrams are re-emitted to the same group on port 5353. No IP addresses appear in the config.
+
+When `mac` is set, it filters the target→source direction to frames whose L2 source MAC matches it, exposing only that one device on `target_if`; queries source→target are never MAC-filtered. With `mac` omitted, all mDNS traffic is reflected in both directions.
+
+`address_family` behaves as for WoL, except mDNS is bidirectional: a handled family must have a source address on **both** interfaces, since the target re-emits relayed queries and the source re-emits relayed responses.
+
+Every mDNS entry name must be unique. Beyond the name, two entries are rejected as duplicates only when they share `source_if`, `target_if`, overlapping MAC selection, and overlapping address-family handling (the same overlap rules as WoL, but without ports — mDNS is always on UDP 5353).
 
 ## Tests
 

@@ -2,6 +2,13 @@
 
 [[wol]]
 name = "tv"
-mac = "B0:37:95:C5:60:BE"
 source_if = "en0"
 target_if = "lo0"
+mac = "B0:37:95:C5:60:BE"  # optional; when omitted, all WoL magic packets are proxied
+ports = [7, 9]             # optional; defaults to [7, 9]
+
+[[mdns]]
+name = "cast"
+source_if = "en0"
+target_if = "lo0"
+mac = "B0:37:95:C5:60:BE"  # optional; restricts the target->source direction to this device
