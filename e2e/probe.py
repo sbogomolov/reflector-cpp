@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import binascii
 import socket
+import struct
 import sys
 import time
 
@@ -45,6 +46,20 @@ def is_ipv6(address: str) -> bool:
     return ":" in address
 
 
+def is_ipv4_multicast(address: str) -> bool:
+    return 224 <= int(address.split(".")[0]) <= 239
+
+
+def join_group(sock: socket.socket, family: int, group: str, interface: str) -> None:
+    ifindex = socket.if_nametoindex(interface)
+    if family == socket.AF_INET6:
+        mreq = socket.inet_pton(socket.AF_INET6, group) + struct.pack("@I", ifindex)
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP, mreq)
+    else:
+        mreq = struct.pack("@4s4si", socket.inet_aton(group), b"\x00\x00\x00\x00", ifindex)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+
 def send(args: argparse.Namespace) -> int:
     payload = args.payload_hex if args.payload_hex is not None else magic_packet(args.mac)
 
@@ -59,15 +74,30 @@ def send(args: argparse.Namespace) -> int:
             sock.sendto(payload, (args.address, args.port, 0, scope_id))
     else:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            if is_ipv4_multicast(args.address):
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+                if args.interface:
+                    ifindex = socket.if_nametoindex(args.interface)
+                    mreqn = struct.pack("@4s4si", b"\x00\x00\x00\x00", b"\x00\x00\x00\x00", ifindex)
+                    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, mreqn)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.sendto(payload, (args.address, args.port))
 
     print(f"sent {len(payload)} bytes to {args.address}:{args.port}: {packet_hex(payload)}", flush=True)
     return 0
 
 
+def expected_payload(args: argparse.Namespace) -> bytes | None:
+    if args.expect_none:
+        return None
+    if args.expect_payload_hex is not None:
+        return args.expect_payload_hex
+    return magic_packet(args.expect_mac)
+
+
 def receive(args: argparse.Namespace) -> int:
-    expected = None if args.expect_none else magic_packet(args.expect_mac)
+    expected = expected_payload(args)
     deadline = time.monotonic() + args.timeout
 
     family = socket.AF_INET6 if args.family == 6 else socket.AF_INET
@@ -76,6 +106,10 @@ def receive(args: argparse.Namespace) -> int:
     with socket.socket(family, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((bind_address, args.port))
+        if args.join_group is not None:
+            # Multicast (mDNS) is only delivered to sockets that joined the group on the
+            # receiving interface; broadcast/all-nodes (WoL) needs no join.
+            join_group(sock, family, args.join_group, args.interface)
         print(f"receiver ready: UDP socket bound on port {args.port}", flush=True)
 
         while True:
@@ -126,9 +160,12 @@ def main() -> int:
     receive_parser.add_argument("--port", required=True, type=int, help="UDP port to bind")
     receive_parser.add_argument("--timeout", required=True, type=float, help="seconds to wait")
     receive_parser.add_argument("--family", default=4, type=int, choices=(4, 6), help="IP version to bind")
+    receive_parser.add_argument("--join-group", help="multicast group to join on --interface")
+    receive_parser.add_argument("--interface", help="interface to join the multicast group on")
 
     expectation = receive_parser.add_mutually_exclusive_group(required=True)
     expectation.add_argument("--expect-mac", help="MAC address whose magic packet must be received")
+    expectation.add_argument("--expect-payload-hex", type=parse_payload_hex, help="exact UDP payload that must be received")
     expectation.add_argument("--expect-none", action="store_true", help="fail if any UDP packet is received")
     receive_parser.set_defaults(func=receive)
 

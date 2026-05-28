@@ -28,6 +28,23 @@ RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
 CONTAINER_READY_TIMEOUT_SECONDS = 15.0
 REFLECTOR_SOURCE_IFNAME = "wol_src"
 REFLECTOR_TARGET_IFNAME = "wol_dst"
+RECEIVER_IFNAME = "probe0"
+
+MDNS_GROUP_V4 = "224.0.0.251"
+MDNS_GROUP_V6 = "ff02::fb"
+MDNS_PORT = 5353
+# A non-mDNS UDP port: the reflector's filter keys on dest_port 5353, so a datagram to the group on
+# this port is captured by the BPF but never dispatched to the reflector.
+MDNS_WRONG_PORT = 5354
+# Minimal mDNS messages: a 12-byte DNS header plus a 4-byte "test" tail (>= 12 bytes, what
+# ClassifyMdnsMessage needs). Only the QR bit — the high bit of the flags byte — is read: 0x0000
+# flags is a query (QR=0), 0x8400 is a response (QR=1, AA). The reflector relays the bytes verbatim,
+# so the receiver expects exactly what was sent.
+MDNS_QUERY_HEX = "00000000000100000000000074657374"
+MDNS_RESPONSE_HEX = "00008400000100010000000074657374"
+# A query (QR=0) truncated to 8 bytes, below the 12-byte DNS header. ClassifyMdnsMessage rejects it
+# on length before the QR bit is ever read, so it is dropped even when sent the query direction.
+MDNS_SHORT_QUERY_HEX = "0000000000010000"
 
 
 class CommandError(RuntimeError):
@@ -52,9 +69,19 @@ class TestCase:
     # IP version exercised end to end. The reflector runs both pipelines from one config;
     # each case drives just one of them.
     family: int = 4
+    # Reflection direction. "forward" sends from the source network and receives on the target
+    # (WoL, and mDNS queries); "reverse" swaps them (mDNS responses, target->source).
+    direction: str = "forward"
+    # Multicast group to send to and join on the receiver (mDNS). None keeps the WoL broadcast path.
+    group: str | None = None
+    # Exact payload the receiver must see, for protocols relayed verbatim (mDNS). None falls back to
+    # the magic-packet / expect-none expectation.
+    expect_payload_hex: str | None = None
 
     @property
     def send_address(self) -> str:
+        if self.group is not None:
+            return self.group
         return IPV6_ALL_NODES if self.family == 6 else "255.255.255.255"
 
 
@@ -107,6 +134,91 @@ TEST_CASES = [
         expect_mac=None,
         timeout_seconds=1.5,
         send_payload_hex=MALFORMED_MAGIC_PAYLOAD_HEX,
+    ),
+    # mDNS relays queries source->target and responses target->source. Reflected cases: the message
+    # travels its allowed direction and arrives verbatim.
+    TestCase(
+        name="reflects_mdns_query",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=MDNS_QUERY_HEX,
+        expect_payload_hex=MDNS_QUERY_HEX,
+        group=MDNS_GROUP_V4,
+    ),
+    TestCase(
+        name="reflects_mdns_query_ipv6",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=MDNS_QUERY_HEX,
+        expect_payload_hex=MDNS_QUERY_HEX,
+        group=MDNS_GROUP_V6,
+        family=6,
+    ),
+    TestCase(
+        name="reflects_mdns_response",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=MDNS_RESPONSE_HEX,
+        expect_payload_hex=MDNS_RESPONSE_HEX,
+        group=MDNS_GROUP_V4,
+        direction="reverse",
+    ),
+    TestCase(
+        name="reflects_mdns_response_ipv6",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=MDNS_RESPONSE_HEX,
+        expect_payload_hex=MDNS_RESPONSE_HEX,
+        group=MDNS_GROUP_V6,
+        direction="reverse",
+        family=6,
+    ),
+    # Dropped cases: a message travelling the wrong direction is not relayed. A query arriving on the
+    # target (response direction) or a response arriving on the source (query direction) is ignored.
+    TestCase(
+        name="ignores_mdns_query_in_response_direction",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=MDNS_QUERY_HEX,
+        group=MDNS_GROUP_V4,
+        direction="reverse",
+    ),
+    TestCase(
+        name="ignores_mdns_response_in_query_direction",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=MDNS_RESPONSE_HEX,
+        group=MDNS_GROUP_V4,
+    ),
+    TestCase(
+        name="ignores_mdns_too_short_query",
+        send_port=MDNS_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=MDNS_SHORT_QUERY_HEX,
+        group=MDNS_GROUP_V4,
+    ),
+    TestCase(
+        name="ignores_mdns_wrong_port",
+        send_port=MDNS_WRONG_PORT,
+        receive_port=MDNS_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=MDNS_QUERY_HEX,
+        group=MDNS_GROUP_V4,
     ),
 ]
 
@@ -166,6 +278,17 @@ class DockerE2E:
         self.containers = [self.sender_container, self.receiver_container, self.reflector_container]
         self.networks = [self.source_network, self.target_network]
         self.config_path = E2E_DIR / "config.toml"
+
+        # The sender lives on the network the traffic originates from and the receiver on the other;
+        # "reverse" cases (mDNS responses) swap which is which. The receiver's interface is pinned so
+        # the probe can join the multicast group on it.
+        if case.direction == "reverse":
+            self.sender_network, self.sender_ifname = self.target_network, REFLECTOR_TARGET_IFNAME
+            self.receiver_network = self.source_network
+        else:
+            self.sender_network, self.sender_ifname = self.source_network, REFLECTOR_SOURCE_IFNAME
+            self.receiver_network = self.target_network
+        self.receiver_ifname = RECEIVER_IFNAME
 
     def __enter__(self) -> DockerE2E:
         return self
@@ -251,7 +374,7 @@ class DockerE2E:
             "--name",
             self.receiver_container,
             "--network",
-            self.target_network,
+            f"name={self.receiver_network},driver-opt=com.docker.network.endpoint.ifname={self.receiver_ifname}",
             "--mount",
             f"type=bind,source={E2E_DIR},target=/e2e,readonly",
             self.args.helper_image,
@@ -263,12 +386,16 @@ class DockerE2E:
             "--timeout",
             str(self.case.timeout_seconds),
         ]
-        if self.case.expect_mac is None:
-            command.append("--expect-none")
-        else:
+        if self.case.expect_payload_hex is not None:
+            command.extend(["--expect-payload-hex", self.case.expect_payload_hex])
+        elif self.case.expect_mac is not None:
             command.extend(["--expect-mac", self.case.expect_mac])
+        else:
+            command.append("--expect-none")
 
         command.extend(["--family", str(self.case.family)])
+        if self.case.group is not None:
+            command.extend(["--join-group", self.case.group, "--interface", self.receiver_ifname])
 
         docker(command)
         self.wait_for_receiver()
@@ -289,10 +416,10 @@ class DockerE2E:
                 "run",
                 "--name",
                 self.sender_container,
-                # Pin the sender's source-network interface name so the IPv6 probe can scope
-                # ff02::1 to it deterministically (see start_reflector for the rationale).
+                # Pin the sender's interface name so the probe can scope multicast egress to it
+                # deterministically (see start_reflector for the rationale).
                 "--network",
-                f"name={self.source_network},driver-opt=com.docker.network.endpoint.ifname={REFLECTOR_SOURCE_IFNAME}",
+                f"name={self.sender_network},driver-opt=com.docker.network.endpoint.ifname={self.sender_ifname}",
                 "--mount",
                 f"type=bind,source={E2E_DIR},target=/e2e,readonly",
                 self.args.helper_image,
@@ -305,7 +432,7 @@ class DockerE2E:
                 "--address",
                 self.case.send_address,
                 "--interface",
-                REFLECTOR_SOURCE_IFNAME,
+                self.sender_ifname,
             ]
         )
 
