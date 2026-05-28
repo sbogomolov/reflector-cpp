@@ -2,28 +2,23 @@
 
 #include "config.h"
 #include "link_socket.h"
-#include "logger.h"
 #include "mac_address.h"
 #include "packet_dispatcher.h"
-#include "util/no_move.h"
+#include "reflector.h"
 
 #include <array>
 #include <cstddef>
 #include <optional>
 #include <span>
-#include <vector>
 
 namespace reflector {
 
-class WolReflector : NoMove {
+class WolReflector : public Reflector {
 public:
     // Captures WoL magic packets on `source_socket` and re-emits matching ones through
     // `target_socket`. Both must outlive this reflector.
     WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const WolConfig& config);
-    ~WolReflector() noexcept;
-
-    [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
 private:
     static constexpr size_t PREFIX_SIZE = 6;
@@ -39,9 +34,7 @@ private:
     [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
     void OnPacket(const Packet& packet) noexcept;
     [[nodiscard]] bool ReflectsFamily(IpAddress::Family family) const noexcept;
-    void Reset() noexcept;
 
-    Logger logger_;
     LinkSocket& target_socket_;
     // Families this reflector actually re-emits: the config uses the family and target_socket_
     // can originate it. A family the config merely *uses* (Default uses both, requires only v4)
@@ -52,7 +45,6 @@ private:
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.
     std::array<std::byte, MAGIC_PACKET_SIZE> expected_magic_packet_{};
-    std::vector<PacketDispatcher::Registration> registrations_;
 };
 
 } // namespace reflector

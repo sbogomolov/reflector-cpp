@@ -18,17 +18,13 @@ std::string LoggerName(const WolConfig& config) {
 
 WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const WolConfig& config)
-        : logger_{LoggerName(config)}
+        : Reflector{LoggerName(config)}
         , target_socket_{target_socket} {
     if (!ValidateConfig(config)) {
         return;
     }
 
     Initialize(packet_dispatcher, source_socket, config);
-}
-
-WolReflector::~WolReflector() noexcept {
-    Reset();
 }
 
 bool WolReflector::ValidateConfig(const WolConfig& config) {
@@ -166,10 +162,6 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
     const auto target = MacAddress::FromBytes(packet.payload.subspan<PREFIX_SIZE, MAC_SIZE>());
     logger_.Info("Reflected WoL packet for {} from {}:{} to {}:{}",
         target, packet.header.source_ip, packet.header.source_port, destination, port);
-}
-
-void WolReflector::Reset() noexcept {
-    registrations_.clear();
 }
 
 } // namespace reflector

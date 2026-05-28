@@ -3,14 +3,12 @@
 #include "config.h"
 #include "ip_address.h"
 #include "link_socket.h"
-#include "logger.h"
 #include "mdns_message.h"
 #include "packet.h"
 #include "packet_dispatcher.h"
-#include "util/no_move.h"
+#include "reflector.h"
 
 #include <cstdint>
-#include <vector>
 
 namespace reflector {
 
@@ -19,13 +17,10 @@ namespace reflector {
 // target->source. Unsolicited announcements are responses, so they flow target->source too. The
 // target->source direction can be restricted to one device by its frame source MAC (config.mac).
 // Both sockets must outlive this reflector.
-class MdnsReflector : NoMove {
+class MdnsReflector : public Reflector {
 public:
     MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const MdnsConfig& config);
-    ~MdnsReflector() noexcept;
-
-    [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
 private:
     static constexpr uint16_t MDNS_PORT = 5353;
@@ -46,12 +41,9 @@ private:
     // the other kind is dropped silently (normal bidirectional traffic).
     [[nodiscard]] bool ShouldRelay(const Packet& packet, MdnsMessageKind kind) noexcept;
     void Relay(LinkSocket& egress, const Packet& packet) noexcept;
-    void Reset() noexcept;
 
-    Logger logger_;
     LinkSocket& source_socket_;
     LinkSocket& target_socket_;
-    std::vector<PacketDispatcher::Registration> registrations_;
 };
 
 } // namespace reflector

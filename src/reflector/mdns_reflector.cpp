@@ -19,7 +19,7 @@ std::string LoggerName(const MdnsConfig& config) {
 
 MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const MdnsConfig& config)
-        : logger_{LoggerName(config)}
+        : Reflector{LoggerName(config)}
         , source_socket_{source_socket}
         , target_socket_{target_socket} {
     if (!ValidateConfig(config)) {
@@ -27,10 +27,6 @@ MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
     }
 
     Initialize(packet_dispatcher, source_socket, target_socket, config);
-}
-
-MdnsReflector::~MdnsReflector() noexcept {
-    Reset();
 }
 
 bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
@@ -145,10 +141,6 @@ void MdnsReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
         return;
     }
     logger_.Debug("Reflected mdns packet from {} to {}", packet.header.source_ip, group);
-}
-
-void MdnsReflector::Reset() noexcept {
-    registrations_.clear();
 }
 
 } // namespace reflector
