@@ -887,3 +887,182 @@ TEST(ConfigTest, RejectsNonStringLogLevel) {
     const auto config = Config::FromString("log_level = 7\n");
     ASSERT_FALSE(config.has_value());
 }
+
+// --- mDNS ---
+
+TEST(ConfigTest, ParsesMinimalMdnsConfig) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->MdnsConfigs().size(), 1);
+
+    const auto& mdns = config->MdnsConfigs().front();
+    EXPECT_EQ(mdns.name, "bridge");
+    EXPECT_FALSE(mdns.mac.has_value());
+    EXPECT_EQ(mdns.source_if, "lan");
+    EXPECT_EQ(mdns.target_if, "iot");
+    EXPECT_EQ(mdns.address_family, AddressFamily::Default);
+}
+
+TEST(ConfigTest, ParsesMdnsWithMacAndAddressFamily) {
+    std::string toml = R"(
+[[mdns]]
+name = "tv"
+mac = "00:11:22:33:44:55"
+source_if = "lan"
+target_if = "iot"
+address_family = "dual"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->MdnsConfigs().size(), 1);
+
+    const auto& mdns = config->MdnsConfigs().front();
+    ASSERT_TRUE(mdns.mac.has_value());
+    EXPECT_EQ(*mdns.mac, *MacAddress::FromString("00:11:22:33:44:55"));
+    EXPECT_EQ(mdns.address_family, AddressFamily::Dual);
+}
+
+TEST(ConfigTest, ParsesWolAndMdnsTogether) {
+    std::string toml = R"(
+[[wol]]
+name = "wake"
+source_if = "eth0"
+target_if = "eth1"
+
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1);
+    EXPECT_EQ(config->MdnsConfigs().size(), 1);
+}
+
+TEST(ConfigTest, MdnsOnlyConfigIsValid) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_TRUE(config->WolConfigs().empty());
+    EXPECT_EQ(config->MdnsConfigs().size(), 1);
+}
+
+TEST(ConfigTest, RejectsMdnsMissingSourceIf) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsMissingTargetIf) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsSameInterfaces) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "lan"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsPortsOption) {
+    // mDNS uses the fixed port 5353; ports is not a valid mdns option.
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+ports = [5353]
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsUnknownMdnsOption) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+extra = "x"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsInvalidMac) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+mac = "not-a-mac"
+source_if = "lan"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsInvalidAddressFamily) {
+    std::string toml = R"(
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+address_family = "ipx"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsDuplicateName) {
+    std::string toml = R"(
+[[mdns]]
+name = "dup"
+source_if = "lan"
+target_if = "iot"
+
+[[mdns]]
+name = "dup"
+source_if = "lan2"
+target_if = "iot2"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsMdnsDuplicateRule) {
+    // Same source_if/target_if, both unfiltered (any MAC) with overlapping families.
+    std::string toml = R"(
+[[mdns]]
+name = "a"
+source_if = "lan"
+target_if = "iot"
+
+[[mdns]]
+name = "b"
+source_if = "lan"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}

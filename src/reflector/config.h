@@ -56,11 +56,30 @@ struct WolConfig {
     [[nodiscard]] std::optional<Error> Verify() const;
 };
 
+// An mDNS reflector entry: reflects multicast DNS between source_if and target_if on UDP 5353.
+// Queries flow source->target and responses target->source; `mac`, when set, restricts the
+// target->source direction to frames whose L2 source MAC matches it (expose only that device).
+struct MdnsConfig {
+    std::string name;
+    std::optional<MacAddress> mac;
+    std::string source_if;
+    std::string target_if;
+    AddressFamily address_family = AddressFamily::Default;
+
+    [[nodiscard]] constexpr bool UsesIPv4() const noexcept { return reflector::UsesIPv4(address_family); }
+    [[nodiscard]] constexpr bool UsesIPv6() const noexcept { return reflector::UsesIPv6(address_family); }
+    [[nodiscard]] constexpr bool RequiresIPv4() const noexcept { return reflector::RequiresIPv4(address_family); }
+    [[nodiscard]] constexpr bool RequiresIPv6() const noexcept { return reflector::RequiresIPv6(address_family); }
+
+    [[nodiscard]] std::optional<Error> Verify() const;
+};
+
 class Config {
 public:
     [[nodiscard]] static std::expected<Config, Error> FromFile(const char* path);
     [[nodiscard]] static std::expected<Config, Error> FromString(std::string_view str);
     [[nodiscard]] const std::vector<WolConfig>& WolConfigs() const noexcept { return wol_configs_; }
+    [[nodiscard]] const std::vector<MdnsConfig>& MdnsConfigs() const noexcept { return mdns_configs_; }
     [[nodiscard]] LogLevel MinLogLevel() const noexcept { return log_level_; }
 
 private:
@@ -68,9 +87,12 @@ private:
     friend class TestConfigBuilder;
 
     Config() noexcept = default;
-    [[nodiscard]] size_t ReflectorCount() const noexcept { return wol_configs_.size(); }
+    [[nodiscard]] size_t ReflectorCount() const noexcept {
+        return wol_configs_.size() + mdns_configs_.size();
+    }
 
     std::vector<WolConfig> wol_configs_;
+    std::vector<MdnsConfig> mdns_configs_;
     LogLevel log_level_ = LogLevel::Info;
 };
 
@@ -140,6 +162,32 @@ struct std::formatter<reflector::WolConfig, char>
 };
 
 template <>
+struct std::formatter<reflector::MdnsConfig, char>
+{
+    template <class ParseContext>
+    constexpr ParseContext::iterator parse(ParseContext& ctx) {
+        auto it = ctx.begin();
+        if (it != ctx.end() && *it != '}') {
+            throw std::format_error("Invalid format args for MdnsConfig");
+        }
+
+        return it;
+    }
+
+    template <typename FmtContext>
+    FmtContext::iterator format(const reflector::MdnsConfig& c, FmtContext& ctx) const {
+        std::format_to(ctx.out(), "{{name: \"{}\", mac: ", c.name);
+        if (c.mac.has_value()) {
+            std::format_to(ctx.out(), "\"{}\"", *c.mac);
+        } else {
+            std::format_to(ctx.out(), "any");
+        }
+        return std::format_to(ctx.out(), ", source_if: \"{}\", target_if: \"{}\", address_family: {}}}",
+            c.source_if, c.target_if, c.address_family);
+    }
+};
+
+template <>
 struct std::formatter<reflector::Config, char>
 {
     template <class ParseContext>
@@ -164,6 +212,17 @@ struct std::formatter<reflector::Config, char>
                 std::format_to(ctx.out(), ", ");
             }
             std::format_to(ctx.out(), "{}", wol_config);
+        }
+
+        std::format_to(ctx.out(), "], mdns: [");
+        first = true;
+        for (const auto& mdns_config : c.MdnsConfigs()) {
+            if (first) {
+                first = false;
+            } else {
+                std::format_to(ctx.out(), ", ");
+            }
+            std::format_to(ctx.out(), "{}", mdns_config);
         }
 
         return std::format_to(ctx.out(), "]}}");
