@@ -144,6 +144,12 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
         std::memcpy(&v4->sin_addr, bytes_.data(), sizeof(v4->sin_addr));
+#if defined(__APPLE__)
+        // BSD carries the length in the sockaddr. bind/sendto ignore it (they take an explicit
+        // addrlen), but APIs that parse an embedded sockaddr — e.g. MCAST_JOIN_GROUP's gr_group —
+        // require it, so fill it here rather than at each such call site.
+        v4->sin_len = sizeof(sockaddr_in);
+#endif
         return sizeof(sockaddr_in);
     }
     case Family::V6: {
@@ -152,6 +158,9 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
         v6->sin6_port = htons(port);
         v6->sin6_scope_id = scope_id;
         std::memcpy(&v6->sin6_addr, bytes_.data(), sizeof(v6->sin6_addr));
+#if defined(__APPLE__)
+        v6->sin6_len = sizeof(sockaddr_in6);
+#endif
         return sizeof(sockaddr_in6);
     }
     }

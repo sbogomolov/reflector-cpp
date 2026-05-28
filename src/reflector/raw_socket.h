@@ -77,6 +77,12 @@ public:
     [[nodiscard]] bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;
 
+    // Joins `group` on a dedicated, unbound join-only fd (AF_INET / AF_INET6 per family) so the
+    // kernel delivers that group to this interface's capture path. The fd is held for the socket's
+    // lifetime to keep the membership alive; one is opened lazily per family. Idempotent — a
+    // re-join of an already-joined group is swallowed (EADDRINUSE) and reported as success.
+    [[nodiscard]] bool JoinMulticastGroup(IpAddress group) noexcept override;
+
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
     // Returns nullopt when no datagram is currently available (EAGAIN), or when the next
@@ -113,6 +119,10 @@ private:
     Logger logger_;
     std::string interface_;
     int fd_ = -1;
+    // Dedicated unbound fds that hold multicast group memberships alive, one per family, opened
+    // lazily by JoinMulticastGroup. Separate from fd_ (the capture/inject socket).
+    int join_fd_v4_ = -1;
+    int join_fd_v6_ = -1;
     unsigned interface_index_ = 0;
 
     // Source MAC and per-family source IPs of interface_, resolved once at open; the raw egress

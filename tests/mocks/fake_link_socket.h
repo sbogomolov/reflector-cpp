@@ -54,6 +54,14 @@ struct FakeLinkSocket : LinkSocket {
         return true;
     }
 
+    [[nodiscard]] bool JoinMulticastGroup(IpAddress group) noexcept override {
+        if (fail_join) {
+            return false;
+        }
+        joined_groups.push_back(group);
+        return true;
+    }
+
     [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index; }
     void RefreshAddresses() noexcept override { ++refresh_count; }
 
@@ -62,9 +70,11 @@ struct FakeLinkSocket : LinkSocket {
     bool can_send_v4 = true;
     bool can_send_v6 = true;
     bool fail_send = false;
+    bool fail_join = false;
     unsigned interface_index = 0;
     unsigned refresh_count = 0;
     std::vector<Sent> sent;
+    std::vector<IpAddress> joined_groups;
 };
 
 } // namespace reflector

@@ -49,6 +49,12 @@ public:
     [[nodiscard]] virtual bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
+    // Joins multicast `group` so this socket's interface receives that group's traffic (programs
+    // the kernel/NIC multicast filter — "gate 2"). Idempotent: re-joining a group already joined
+    // on this socket succeeds without effect. `group` must be a multicast address. Returns false
+    // (after logging) on failure.
+    [[nodiscard]] virtual bool JoinMulticastGroup(IpAddress group) noexcept = 0;
+
     // --- interface bookkeeping: the daemon refreshes cached addresses on change ---
 
     // The interface's kernel index (0 if unknown). The address monitor reports changes by index,

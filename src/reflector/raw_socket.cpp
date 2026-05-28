@@ -17,6 +17,7 @@
 #include <tuple>
 #include <fcntl.h>
 #include <net/if.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -400,6 +401,40 @@ bool RawSocket::SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t sr
     return true;
 }
 
+bool RawSocket::JoinMulticastGroup(IpAddress group) noexcept {
+    const bool v6 = group.IsV6();
+    int& join_fd = v6 ? join_fd_v6_ : join_fd_v4_;
+    if (join_fd < 0) {
+        join_fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
+        if (join_fd < 0) {
+            logger_.Error("Cannot open multicast-join socket for {}: {}", group.ToString(), Error::FromErrno());
+            return false;
+        }
+    }
+
+    // MCAST_JOIN_GROUP (RFC 3678) is protocol-independent and selects the interface strictly by
+    // index, so one path covers both families with no IPv4 by-address fallback to a wrong
+    // (default) interface. The group goes in as a sockaddr; ToSockaddr also sets the BSD sockaddr
+    // length field that the kernel requires for the embedded address here.
+    group_req request{};
+    request.gr_interface = interface_index_;
+    group.ToSockaddr(reinterpret_cast<sockaddr_storage&>(request.gr_group), /*port=*/0);
+
+    const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    if (setsockopt(join_fd, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
+        // Already a member (same group + interface on this fd) — idempotent success, not an error.
+        if (errno == EADDRINUSE) {
+            logger_.Debug("Already joined multicast group {}", group.ToString());
+            return true;
+        }
+        logger_.Error("Cannot join multicast group {}: {}", group.ToString(), Error::FromErrno());
+        return false;
+    }
+
+    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_index_);
+    return true;
+}
+
 #if defined(__APPLE__)
 bool RawSocket::HasBufferedData() const noexcept {
     return receive_buffer_offset_ < receive_buffer_filled_;
@@ -416,6 +451,12 @@ void RawSocket::Close() noexcept {
         logger_.Debug("Closing capture socket fd {}", fd_);
         close(fd_);
         fd_ = -1;
+    }
+    for (int* join_fd : {&join_fd_v4_, &join_fd_v6_}) {
+        if (*join_fd >= 0) {
+            close(*join_fd);
+            *join_fd = -1;
+        }
     }
 #if defined(__APPLE__)
     ClearBuffer();

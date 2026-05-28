@@ -467,6 +467,18 @@ TEST_F(RawSocketTest, Ipv6SourceEnablesIpv6AndRefusesIpv4Send) {
     });
 }
 
+// A non-multicast group is rejected by the kernel (EINVAL on both platforms) and surfaced as
+// false — the deterministic, root-free failure case. (A successful join needs a real
+// multicast-capable interface; that's the RequiresRoot veth test below. Joining a *valid* group
+// on this fd-less test socket isn't deterministic — interface index 0 falls back to the host's
+// default interface — so it isn't asserted here.)
+TEST_F(RawSocketTest, JoinMulticastGroupRejectsNonMulticastAddress) {
+    CaptureStdout([&] {  // swallow the expected error logs; the bool is the contract
+        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV4()));
+        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV6()));
+    });
+}
+
 #if defined(__APPLE__)
 // DLT_NULL is macOS-only — on Linux AF_PACKET delivers Ethernet frames for every
 // interface, lo included, so the parser never encounters loopback framing there.
@@ -876,6 +888,23 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
         INJECT_SRC_PORT, payload, /*ttl=*/64));
 
     ExpectReceived(receiver, payload);
+}
+
+// Joins the mDNS groups on a real multicast-capable interface: both families succeed, and a
+// repeat join of the same group is idempotent (the kernel's EADDRINUSE is swallowed). The inject
+// interface carries both an IPv4 and an IPv6 link-local address, so it can join either family.
+// (On a veth pair multicast is delivered regardless of membership, so this asserts the join
+// *succeeds*, not that it gates reception — the latter only matters on real NICs.)
+TEST_F(RawSocketInterfacePairRequiresRootTest, JoinsMulticastGroupsIdempotently) {
+    RawSocket socket{pair.InjectInterface()};
+    ASSERT_TRUE(socket.IsValid());
+    WaitForSource(socket, IpAddress::Family::V6);  // wait out DAD on the link-local
+
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
+    // Re-joining an already-joined group succeeds without effect.
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
 }
 
 } // namespace reflector

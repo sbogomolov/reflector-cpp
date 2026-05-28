@@ -57,8 +57,10 @@ public:
         return IsV6() && (std::to_integer<uint8_t>(bytes_[0]) & 0xe0) == 0x20;
     }
 
-    // `scope_id` populates sin6_scope_id for IPv6; ignored for IPv4.
-    [[nodiscard]] socklen_t ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id = 0) const noexcept;
+    // Fills `storage` and returns its used length (for bind/sendto's addrlen). The length may be
+    // ignored when it's implied by context — e.g. a fixed-size group_req — so this is not
+    // [[nodiscard]]. `scope_id` populates sin6_scope_id for IPv6; ignored for IPv4.
+    socklen_t ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id = 0) const noexcept;
 
     [[nodiscard]] std::string ToString() const;
 
