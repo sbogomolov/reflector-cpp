@@ -11,6 +11,11 @@
 
 namespace reflector {
 
+// IpAddress stores 16 network-order bytes; the platform address structs that ToSockaddr and
+// FromSockaddr memcpy to/from must fit within that (in_addr is 4 bytes, in6_addr 16).
+static_assert(sizeof(in_addr) <= sizeof(IpAddress::ByteArray));
+static_assert(sizeof(in6_addr) <= sizeof(IpAddress::ByteArray));
+
 namespace {
 
 Logger& GetLogger() noexcept {
