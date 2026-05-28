@@ -231,25 +231,17 @@ bool UdpSocket::JoinMulticastGroup(IpAddress group, const std::string& interface
         return false;
     }
 
-    // group.Bytes() is network-order with the first 4 octets significant for IPv4, all 16 for IPv6.
-    if (family_ == IpAddress::Family::V6) {
-        ipv6_mreq request{};
-        std::memcpy(&request.ipv6mr_multiaddr, group.Bytes().data(), sizeof(request.ipv6mr_multiaddr));
-        request.ipv6mr_interface = idx;
-        if (setsockopt(fd_, IPPROTO_IPV6, IPV6_JOIN_GROUP, &request, sizeof(request)) != 0) {
-            logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
-                          Error::FromErrno());
-            return false;
-        }
-    } else {
-        ip_mreqn request{};
-        std::memcpy(&request.imr_multiaddr, group.Bytes().data(), sizeof(request.imr_multiaddr));
-        request.imr_ifindex = static_cast<int>(idx);
-        if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &request, sizeof(request)) != 0) {
-            logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
-                          Error::FromErrno());
-            return false;
-        }
+    // Protocol-independent, interface-by-index join (RFC 3678) — one path for both families, no
+    // IPv4 by-address fallback. ToSockaddr fills the group sockaddr and the BSD length field the
+    // kernel requires for the embedded address. Mirrors RawSocket::JoinMulticastGroup.
+    group_req request{};
+    request.gr_interface = idx;
+    group.ToSockaddr(reinterpret_cast<sockaddr_storage&>(request.gr_group), /*port=*/0);
+    const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    if (setsockopt(fd_, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
+        logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
+                      Error::FromErrno());
+        return false;
     }
 
     return true;
