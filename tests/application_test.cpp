@@ -69,7 +69,7 @@ protected:
             .source_if = std::string{source_if},
             .target_if = std::string{target_if},
             .ports = std::move(ports),
-            .address_family = WolAddressFamily::IPv4,
+            .address_family = AddressFamily::IPv4,
         };
     }
 

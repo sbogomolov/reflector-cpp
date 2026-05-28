@@ -25,8 +25,8 @@ protected:
             .target_if = "dst",
             .ports = {9},
             .address_family = family == IpAddress::Family::V4
-                ? WolAddressFamily::IPv4
-                : WolAddressFamily::IPv6,
+                ? AddressFamily::IPv4
+                : AddressFamily::IPv6,
         };
     }
 
@@ -256,7 +256,7 @@ TEST_F(WolReflectorTest, IgnoresPacketOnUnconfiguredPort) {
 
 TEST_F(WolReflectorTest, DualModeValidWhenBothFamiliesAvailable) {
     auto config = MakeConfig(IpAddress::Family::V4);
-    config.address_family = WolAddressFamily::Dual;
+    config.address_family = AddressFamily::Dual;
     target.can_send_v4 = true;
     target.can_send_v6 = true;
 
@@ -267,7 +267,7 @@ TEST_F(WolReflectorTest, DualModeValidWhenBothFamiliesAvailable) {
 
 TEST_F(WolReflectorTest, DualModeInvalidWhenAFamilyIsUnavailable) {
     auto config = MakeConfig(IpAddress::Family::V4);
-    config.address_family = WolAddressFamily::Dual;
+    config.address_family = AddressFamily::Dual;
     target.can_send_v4 = true;
     target.can_send_v6 = false; // Dual requires v6 too
 
@@ -400,7 +400,7 @@ TEST_F(WolReflectorTest, IgnoresBadPrefixWhenMacIsUnspecified) {
 // then be silently dropped — not sent (which would fail) and not logged at ERROR per packet.
 TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6UnavailableInDefault) {
     auto config = MakeConfig(IpAddress::Family::V4);
-    config.address_family = WolAddressFamily::Default;
+    config.address_family = AddressFamily::Default;
     target.can_send_v4 = true;
     target.can_send_v6 = false;
 

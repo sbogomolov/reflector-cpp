@@ -16,12 +16,29 @@
 
 namespace reflector {
 
-enum class WolAddressFamily : uint8_t {
+enum class AddressFamily : uint8_t {
     Default,
     Dual,
     IPv4,
     IPv6,
 };
+
+// Which IP versions a reflector handles. "Uses" = will attempt the family; "Requires" = startup
+// fails if it can't be initialized. Default attempts both but only requires IPv4 (IPv6 is
+// best-effort); Dual requires both; IPv4 / IPv6 use only that one.
+[[nodiscard]] constexpr bool UsesIPv4(AddressFamily family) noexcept {
+    return family != AddressFamily::IPv6;
+}
+[[nodiscard]] constexpr bool UsesIPv6(AddressFamily family) noexcept {
+    return family != AddressFamily::IPv4;
+}
+[[nodiscard]] constexpr bool RequiresIPv4(AddressFamily family) noexcept {
+    return family == AddressFamily::Default || family == AddressFamily::Dual
+        || family == AddressFamily::IPv4;
+}
+[[nodiscard]] constexpr bool RequiresIPv6(AddressFamily family) noexcept {
+    return family == AddressFamily::Dual || family == AddressFamily::IPv6;
+}
 
 struct WolConfig {
     std::string name;
@@ -29,26 +46,12 @@ struct WolConfig {
     std::string source_if;
     std::string target_if;
     std::vector<uint16_t> ports{7, 9};
-    WolAddressFamily address_family = WolAddressFamily::Default;
+    AddressFamily address_family = AddressFamily::Default;
 
-    [[nodiscard]] constexpr bool UsesIPv4() const noexcept {
-        return address_family != WolAddressFamily::IPv6;
-    }
-
-    [[nodiscard]] constexpr bool UsesIPv6() const noexcept {
-        return address_family != WolAddressFamily::IPv4;
-    }
-
-    [[nodiscard]] constexpr bool RequiresIPv4() const noexcept {
-        return address_family == WolAddressFamily::Default
-            || address_family == WolAddressFamily::Dual
-            || address_family == WolAddressFamily::IPv4;
-    }
-
-    [[nodiscard]] constexpr bool RequiresIPv6() const noexcept {
-        return address_family == WolAddressFamily::Dual
-            || address_family == WolAddressFamily::IPv6;
-    }
+    [[nodiscard]] constexpr bool UsesIPv4() const noexcept { return reflector::UsesIPv4(address_family); }
+    [[nodiscard]] constexpr bool UsesIPv6() const noexcept { return reflector::UsesIPv6(address_family); }
+    [[nodiscard]] constexpr bool RequiresIPv4() const noexcept { return reflector::RequiresIPv4(address_family); }
+    [[nodiscard]] constexpr bool RequiresIPv6() const noexcept { return reflector::RequiresIPv6(address_family); }
 
     [[nodiscard]] std::optional<Error> Verify() const;
 };
@@ -74,22 +77,22 @@ private:
 } // namespace reflector
 
 template <>
-struct std::formatter<reflector::WolAddressFamily, char>
+struct std::formatter<reflector::AddressFamily, char>
 {
     template <class ParseContext>
     constexpr ParseContext::iterator parse(ParseContext& ctx) {
         auto it = ctx.begin();
         if (it != ctx.end() && *it != '}') {
-            throw std::format_error("Invalid format args for WolAddressFamily");
+            throw std::format_error("Invalid format args for AddressFamily");
         }
 
         return it;
     }
 
     template <typename FmtContext>
-    FmtContext::iterator format(reflector::WolAddressFamily address_family, FmtContext& ctx) const {
+    FmtContext::iterator format(reflector::AddressFamily address_family, FmtContext& ctx) const {
         switch (address_family) {
-        using enum reflector::WolAddressFamily;
+        using enum reflector::AddressFamily;
         case Default: return std::format_to(ctx.out(), "default");
         case Dual: return std::format_to(ctx.out(), "dual");
         case IPv4: return std::format_to(ctx.out(), "ipv4");

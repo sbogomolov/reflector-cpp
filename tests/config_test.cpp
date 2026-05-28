@@ -63,7 +63,7 @@ target_if = "eth1"
     EXPECT_EQ(wol.target_if, "eth1");
     const std::vector<uint16_t> expected_ports{7, 9};
     EXPECT_EQ(wol.ports, expected_ports);
-    EXPECT_EQ(wol.address_family, WolAddressFamily::Default);
+    EXPECT_EQ(wol.address_family, AddressFamily::Default);
 }
 
 TEST(ConfigTest, ParsesMultipleWolEntries) {
@@ -115,12 +115,12 @@ ports = [7, 9, 40000]
 }
 
 TEST(ConfigTest, ParsesAddressFamily) {
-    const std::vector<std::pair<std::string_view, WolAddressFamily>> cases{
-        {"default", WolAddressFamily::Default},
-        {"dual", WolAddressFamily::Dual},
-        {"ipv4", WolAddressFamily::IPv4},
-        {"ipv6", WolAddressFamily::IPv6},
-        {"IPv6", WolAddressFamily::IPv6},
+    const std::vector<std::pair<std::string_view, AddressFamily>> cases{
+        {"default", AddressFamily::Default},
+        {"dual", AddressFamily::Dual},
+        {"ipv4", AddressFamily::IPv4},
+        {"ipv6", AddressFamily::IPv6},
+        {"IPv6", AddressFamily::IPv6},
     };
 
     for (const auto& [value, expected] : cases) {
@@ -143,7 +143,7 @@ address_family = ")";
 
 TEST(ConfigTest, AddressFamilyRuntimePolicy) {
     struct Case {
-        WolAddressFamily address_family;
+        AddressFamily address_family;
         bool uses_v4;
         bool uses_v6;
         bool requires_v4;
@@ -151,10 +151,10 @@ TEST(ConfigTest, AddressFamilyRuntimePolicy) {
     };
 
     const std::vector<Case> cases{
-        {WolAddressFamily::Default, true, true, true, false},
-        {WolAddressFamily::Dual, true, true, true, true},
-        {WolAddressFamily::IPv4, true, false, true, false},
-        {WolAddressFamily::IPv6, false, true, false, true},
+        {AddressFamily::Default, true, true, true, false},
+        {AddressFamily::Dual, true, true, true, true},
+        {AddressFamily::IPv4, true, false, true, false},
+        {AddressFamily::IPv6, false, true, false, true},
     };
 
     for (const auto& c : cases) {
