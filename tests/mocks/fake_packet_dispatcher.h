@@ -18,20 +18,30 @@ public:
     // fail. Lets a test exercise a subscriber's mid-loop registration-failure handling.
     size_t fail_register_on_call = 0;
 
-    [[nodiscard]] PacketDispatcher::Registration Register(LinkSocket& /*socket*/, const PacketFilter& filter,
+    [[nodiscard]] PacketDispatcher::Registration Register(LinkSocket& socket, const PacketFilter& filter,
         const PacketCallback& callback) override {
         if (++register_calls_ == fail_register_on_call) {
             return {};
         }
         const auto id = next_id_++;
-        entries_.push_back(Entry{.id = id, .filter = filter, .callback = callback});
+        entries_.push_back(Entry{.id = id, .socket = &socket, .filter = filter, .callback = callback});
         return MakeRegistration(id);
     }
 
-    // Dispatches `packet` to every registration whose filter matches.
+    // Dispatches `packet` to every registration whose filter matches, regardless of socket.
     void Deliver(const Packet& packet) {
         for (const auto& entry : entries_) {
             if (entry.filter.Matches(packet)) {
+                entry.callback(packet);
+            }
+        }
+    }
+
+    // Dispatches `packet` as if captured on `socket`: only registrations made on that socket whose
+    // filter matches. Models the per-socket capture path a bidirectional reflector depends on.
+    void Deliver(const LinkSocket& socket, const Packet& packet) {
+        for (const auto& entry : entries_) {
+            if (entry.socket == &socket && entry.filter.Matches(packet)) {
                 entry.callback(packet);
             }
         }
@@ -47,6 +57,7 @@ private:
 
     struct Entry {
         PacketDispatcher::RegistrationId id;
+        const LinkSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
     };
