@@ -17,3 +17,8 @@ ports = [40011]
 name = "e2e-mdns"
 source_if = "wol_src"
 target_if = "wol_dst"
+
+[[ssdp]]
+name = "e2e-ssdp"
+source_if = "wol_src"
+target_if = "wol_dst"

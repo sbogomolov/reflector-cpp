@@ -46,6 +46,35 @@ MDNS_RESPONSE_HEX = "00008400000100010000000074657374"
 # on length before the QR bit is ever read, so it is dropped even when sent the query direction.
 MDNS_SHORT_QUERY_HEX = "0000000000010000"
 
+SSDP_GROUP_V4 = "239.255.255.250"
+SSDP_GROUP_V6 = "ff02::c"
+SSDP_PORT = 1900
+# A non-SSDP UDP port: the reflector's filter keys on dest_port 1900, so a datagram to the group on
+# this port is captured by the BPF but never dispatched to the reflector.
+SSDP_WRONG_PORT = 1901
+# SSDP discovery messages (HTTPU). The reflector classifies on the leading method token only and
+# relays the bytes verbatim, so the receiver expects exactly what was sent; the HOST line's address
+# is immaterial to the match.
+SSDP_MSEARCH_HEX = (
+    "M-SEARCH * HTTP/1.1\r\n"
+    "HOST: 239.255.255.250:1900\r\n"
+    'MAN: "ssdp:discover"\r\n'
+    "MX: 2\r\n"
+    "ST: ssdp:all\r\n\r\n"
+).encode().hex()
+SSDP_NOTIFY_HEX = (
+    "NOTIFY * HTTP/1.1\r\n"
+    "HOST: 239.255.255.250:1900\r\n"
+    "NT: upnp:rootdevice\r\n"
+    "NTS: ssdp:alive\r\n\r\n"
+).encode().hex()
+# A unicast-style search response that strayed onto the group: neither M-SEARCH nor NOTIFY, so the
+# reflector classifies it as non-SSDP and drops it.
+SSDP_HTTP_RESPONSE_HEX = (
+    "HTTP/1.1 200 OK\r\n"
+    "ST: ssdp:all\r\n\r\n"
+).encode().hex()
+
 
 class CommandError(RuntimeError):
     def __init__(self, command: list[str], result: subprocess.CompletedProcess[str]) -> None:
@@ -219,6 +248,91 @@ TEST_CASES = [
         timeout_seconds=1.5,
         send_payload_hex=MDNS_QUERY_HEX,
         group=MDNS_GROUP_V4,
+    ),
+    # SSDP relays M-SEARCH source->target and NOTIFY advertisements target->source. Reflected cases:
+    # the message travels its allowed direction and arrives verbatim.
+    TestCase(
+        name="reflects_ssdp_msearch",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=SSDP_MSEARCH_HEX,
+        expect_payload_hex=SSDP_MSEARCH_HEX,
+        group=SSDP_GROUP_V4,
+    ),
+    TestCase(
+        name="reflects_ssdp_msearch_ipv6",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=SSDP_MSEARCH_HEX,
+        expect_payload_hex=SSDP_MSEARCH_HEX,
+        group=SSDP_GROUP_V6,
+        family=6,
+    ),
+    TestCase(
+        name="reflects_ssdp_notify",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=SSDP_NOTIFY_HEX,
+        expect_payload_hex=SSDP_NOTIFY_HEX,
+        group=SSDP_GROUP_V4,
+        direction="reverse",
+    ),
+    TestCase(
+        name="reflects_ssdp_notify_ipv6",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=5.0,
+        send_payload_hex=SSDP_NOTIFY_HEX,
+        expect_payload_hex=SSDP_NOTIFY_HEX,
+        group=SSDP_GROUP_V6,
+        direction="reverse",
+        family=6,
+    ),
+    # Dropped cases: a message travelling the wrong direction, or one that is not an SSDP request, or
+    # one to the wrong port, is not relayed.
+    TestCase(
+        name="ignores_ssdp_msearch_in_notify_direction",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=SSDP_MSEARCH_HEX,
+        group=SSDP_GROUP_V4,
+        direction="reverse",
+    ),
+    TestCase(
+        name="ignores_ssdp_notify_in_msearch_direction",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=SSDP_NOTIFY_HEX,
+        group=SSDP_GROUP_V4,
+    ),
+    TestCase(
+        name="ignores_ssdp_http_response_on_group",
+        send_port=SSDP_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=SSDP_HTTP_RESPONSE_HEX,
+        group=SSDP_GROUP_V4,
+    ),
+    TestCase(
+        name="ignores_ssdp_wrong_port",
+        send_port=SSDP_WRONG_PORT,
+        receive_port=SSDP_PORT,
+        expect_mac=None,
+        timeout_seconds=1.5,
+        send_payload_hex=SSDP_MSEARCH_HEX,
+        group=SSDP_GROUP_V4,
     ),
 ]
 
