@@ -6,10 +6,12 @@
 #include <arpa/inet.h>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <format>
 #include <functional>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <vector>
 
 using namespace reflector;
 
@@ -82,6 +84,49 @@ TEST(IpAddressTest, MdnsGroupV6ReturnsMdnsMulticastAddress) {
 TEST(IpAddressTest, MdnsGroupForSelectsFamilyAppropriateAddress) {
     EXPECT_EQ(IpAddress::MdnsGroupFor(IpAddress::Family::V4), IpAddress::MdnsGroupV4());
     EXPECT_EQ(IpAddress::MdnsGroupFor(IpAddress::Family::V6), IpAddress::MdnsGroupV6());
+}
+
+TEST(IpAddressTest, SsdpGroupV4ReturnsSsdpMulticastAddress) {
+    const auto addr = IpAddress::SsdpGroupV4();
+
+    EXPECT_TRUE(addr.IsV4());
+    EXPECT_EQ(addr, IpAddress::FromV4Bytes(239, 255, 255, 250));
+    EXPECT_EQ(addr.ToString(), "239.255.255.250");
+}
+
+TEST(IpAddressTest, SsdpGroupV6LinkLocalReturnsLinkScopedSsdpAddress) {
+    const auto addr = IpAddress::SsdpGroupV6LinkLocal();
+
+    EXPECT_TRUE(addr.IsV6());
+    EXPECT_EQ(addr, IpAddress::FromString("ff02::c"));
+    EXPECT_EQ(addr.ToString(), "ff02::c");
+    EXPECT_EQ(std::to_integer<uint8_t>(addr.Bytes()[1]), 0x02);   // link-local scope
+    EXPECT_EQ(std::to_integer<uint8_t>(addr.Bytes()[15]), 0x0c);  // SSDP group id
+}
+
+TEST(IpAddressTest, SsdpGroupV6SiteLocalReturnsSiteScopedSsdpAddress) {
+    const auto addr = IpAddress::SsdpGroupV6SiteLocal();
+
+    EXPECT_TRUE(addr.IsV6());
+    EXPECT_EQ(addr, IpAddress::FromString("ff05::c"));
+    EXPECT_EQ(addr.ToString(), "ff05::c");
+    EXPECT_EQ(std::to_integer<uint8_t>(addr.Bytes()[1]), 0x05);   // site-local scope
+    EXPECT_EQ(std::to_integer<uint8_t>(addr.Bytes()[15]), 0x0c);  // SSDP group id
+}
+
+TEST(IpAddressTest, SsdpGroupsForReturnsSingleV4Group) {
+    const std::vector<IpAddress> groups = IpAddress::SsdpGroupsFor(IpAddress::Family::V4);
+
+    ASSERT_EQ(groups.size(), 1u);
+    EXPECT_EQ(groups[0], IpAddress::SsdpGroupV4());
+}
+
+TEST(IpAddressTest, SsdpGroupsForReturnsLinkThenSiteLocalV6Groups) {
+    const std::vector<IpAddress> groups = IpAddress::SsdpGroupsFor(IpAddress::Family::V6);
+
+    ASSERT_EQ(groups.size(), 2u);
+    EXPECT_EQ(groups[0], IpAddress::SsdpGroupV6LinkLocal());   // link-local first
+    EXPECT_EQ(groups[1], IpAddress::SsdpGroupV6SiteLocal());   // then site-local
 }
 
 TEST(IpAddressTest, LoopbackV4ReturnsLoopbackAddress) {

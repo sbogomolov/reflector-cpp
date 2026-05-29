@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 
 namespace reflector {
@@ -32,6 +33,12 @@ public:
     // The mDNS multicast group for the family (224.0.0.251 / ff02::fb): the destination for
     // both queries and responses on UDP 5353.
     [[nodiscard]] static IpAddress MdnsGroupFor(Family family) noexcept;
+    [[nodiscard]] static IpAddress SsdpGroupV4() noexcept;          // 239.255.255.250
+    [[nodiscard]] static IpAddress SsdpGroupV6LinkLocal() noexcept; // ff02::c
+    [[nodiscard]] static IpAddress SsdpGroupV6SiteLocal() noexcept; // ff05::c
+    // The SSDP multicast groups for the family, in join order: the single IPv4 group, or the
+    // IPv6 link-local then site-local groups, all served on UDP 1900.
+    [[nodiscard]] static std::vector<IpAddress> SsdpGroupsFor(Family family);
     [[nodiscard]] static IpAddress LoopbackV4() noexcept;           // 127.0.0.1
     [[nodiscard]] static IpAddress LoopbackV6() noexcept;           // ::1
     [[nodiscard]] static IpAddress FromV4Bytes(uint8_t a, uint8_t b, uint8_t c, uint8_t d) noexcept;

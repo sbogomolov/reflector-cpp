@@ -61,6 +61,33 @@ IpAddress IpAddress::MdnsGroupFor(Family family) noexcept {
     return family == Family::V4 ? MdnsGroupV4() : MdnsGroupV6();
 }
 
+IpAddress IpAddress::SsdpGroupV4() noexcept {
+    return FromV4Bytes(239, 255, 255, 250);
+}
+
+IpAddress IpAddress::SsdpGroupV6LinkLocal() noexcept {
+    ByteArray bytes{};
+    bytes[0] = std::byte{0xff};
+    bytes[1] = std::byte{0x02};
+    bytes[15] = std::byte{0x0c};
+    return IpAddress{Family::V6, bytes};
+}
+
+IpAddress IpAddress::SsdpGroupV6SiteLocal() noexcept {
+    ByteArray bytes{};
+    bytes[0] = std::byte{0xff};
+    bytes[1] = std::byte{0x05};
+    bytes[15] = std::byte{0x0c};
+    return IpAddress{Family::V6, bytes};
+}
+
+std::vector<IpAddress> IpAddress::SsdpGroupsFor(Family family) {
+    if (family == Family::V4) {
+        return {SsdpGroupV4()};
+    }
+    return {SsdpGroupV6LinkLocal(), SsdpGroupV6SiteLocal()};
+}
+
 IpAddress IpAddress::LoopbackV4() noexcept {
     return FromV4Bytes(127, 0, 0, 1);
 }
