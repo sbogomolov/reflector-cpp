@@ -51,6 +51,11 @@ public:
         return *this;
     }
 
+    TestConfigBuilder& Add(SsdpConfig ssdp) {
+        config_.ssdp_configs_.push_back(std::move(ssdp));
+        return *this;
+    }
+
     [[nodiscard]] Config Build() const { return config_; }
 
 private:

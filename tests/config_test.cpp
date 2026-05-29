@@ -1066,3 +1066,205 @@ target_if = "iot"
 )";
     EXPECT_FALSE(Config::FromString(toml).has_value());
 }
+
+TEST(ConfigTest, ParsesMinimalSsdpConfig) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->SsdpConfigs().size(), 1);
+
+    const auto& ssdp = config->SsdpConfigs().front();
+    EXPECT_EQ(ssdp.name, "cast");
+    EXPECT_FALSE(ssdp.mac.has_value());
+    EXPECT_EQ(ssdp.source_if, "lan");
+    EXPECT_EQ(ssdp.target_if, "iot");
+    EXPECT_EQ(ssdp.address_family, AddressFamily::Default);
+}
+
+TEST(ConfigTest, ParsesSsdpWithMacAndAddressFamily) {
+    std::string toml = R"(
+[[ssdp]]
+name = "tv"
+mac = "00:11:22:33:44:55"
+source_if = "lan"
+target_if = "iot"
+address_family = "dual"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->SsdpConfigs().size(), 1);
+
+    const auto& ssdp = config->SsdpConfigs().front();
+    ASSERT_TRUE(ssdp.mac.has_value());
+    EXPECT_EQ(*ssdp.mac, *MacAddress::FromString("00:11:22:33:44:55"));
+    EXPECT_EQ(ssdp.address_family, AddressFamily::Dual);
+}
+
+TEST(ConfigTest, ParsesWolMdnsAndSsdpTogether) {
+    std::string toml = R"(
+[[wol]]
+name = "wake"
+source_if = "eth0"
+target_if = "eth1"
+
+[[mdns]]
+name = "bridge"
+source_if = "lan"
+target_if = "iot"
+
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1);
+    EXPECT_EQ(config->MdnsConfigs().size(), 1);
+    EXPECT_EQ(config->SsdpConfigs().size(), 1);
+}
+
+TEST(ConfigTest, SsdpOnlyConfigIsValid) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+)";
+
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_TRUE(config->WolConfigs().empty());
+    EXPECT_TRUE(config->MdnsConfigs().empty());
+    EXPECT_EQ(config->SsdpConfigs().size(), 1);
+}
+
+TEST(ConfigTest, RejectsSsdpMissingSourceIf) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpMissingTargetIf) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpSameInterfaces) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "lan"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpPortsOption) {
+    // SSDP uses the fixed port 1900; ports is not a valid ssdp option.
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+ports = [1900]
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsUnknownSsdpOption) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+extra = "x"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpInvalidMac) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+mac = "not-a-mac"
+source_if = "lan"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpInvalidAddressFamily) {
+    std::string toml = R"(
+[[ssdp]]
+name = "cast"
+source_if = "lan"
+target_if = "iot"
+address_family = "ipx"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpDuplicateName) {
+    std::string toml = R"(
+[[ssdp]]
+name = "dup"
+source_if = "lan"
+target_if = "iot"
+
+[[ssdp]]
+name = "dup"
+source_if = "lan2"
+target_if = "iot2"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, RejectsSsdpDuplicateRule) {
+    // Same source_if/target_if, both unfiltered (any MAC) with overlapping families.
+    std::string toml = R"(
+[[ssdp]]
+name = "a"
+source_if = "lan"
+target_if = "iot"
+
+[[ssdp]]
+name = "b"
+source_if = "lan"
+target_if = "iot"
+)";
+    EXPECT_FALSE(Config::FromString(toml).has_value());
+}
+
+TEST(ConfigTest, AcceptsSsdpDisjointRules) {
+    // Same source_if but different target_if — cannot reflect the same packet twice, so both stand.
+    std::string toml = R"(
+[[ssdp]]
+name = "a"
+source_if = "lan"
+target_if = "iot"
+
+[[ssdp]]
+name = "b"
+source_if = "lan"
+target_if = "guest"
+)";
+    const auto config = Config::FromString(toml);
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->SsdpConfigs().size(), 2);
+}

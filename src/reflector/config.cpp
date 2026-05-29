@@ -290,6 +290,95 @@ std::expected<std::vector<MdnsConfig>, Error> ReadMdnsConfigs(const toml::node& 
     return mdns_configs;
 }
 
+std::expected<SsdpConfig, Error> ReadSsdpConfig(const toml::table& entry_table) {
+    SsdpConfig ssdp_config{};
+    for (const auto& [field_key, field_node] : entry_table) {
+        const auto field_name = ToStringView(field_key);
+        if (field_name == "name") {
+            auto field_value = ReadStringField(field_node, "ssdp", field_name);
+            if (!field_value.has_value()) {
+                return std::unexpected(std::move(field_value).error());
+            }
+            ssdp_config.name = *field_value;
+        } else if (field_name == "mac") {
+            auto field_value = ReadStringField(field_node, "ssdp", field_name);
+            if (!field_value.has_value()) {
+                return std::unexpected(std::move(field_value).error());
+            }
+            auto mac = MacAddress::FromString(*field_value);
+            if (!mac.has_value()) {
+                return std::unexpected(Error{"ssdp mac is not a valid MAC address: \"{}\": {}", *field_value, mac.error()});
+            }
+            ssdp_config.mac = *mac;
+        } else if (field_name == "source_if") {
+            auto field_value = ReadStringField(field_node, "ssdp", field_name);
+            if (!field_value.has_value()) {
+                return std::unexpected(std::move(field_value).error());
+            }
+            ssdp_config.source_if = *field_value;
+        } else if (field_name == "target_if") {
+            auto field_value = ReadStringField(field_node, "ssdp", field_name);
+            if (!field_value.has_value()) {
+                return std::unexpected(std::move(field_value).error());
+            }
+            ssdp_config.target_if = *field_value;
+        } else if (field_name == "address_family") {
+            const auto field_value = field_node.value<std::string_view>();
+            if (!field_value.has_value()) {
+                return std::unexpected(Error{"ssdp address_family must be a string"});
+            }
+            auto address_family = AddressFamilyFromString("ssdp", *field_value);
+            if (!address_family.has_value()) {
+                return std::unexpected(std::move(address_family).error());
+            }
+            ssdp_config.address_family = *address_family;
+        } else {
+            return std::unexpected(Error{"unexpected ssdp option: {}", field_name});
+        }
+    }
+    return ssdp_config;
+}
+
+std::expected<std::vector<SsdpConfig>, Error> ReadSsdpConfigs(const toml::node& ssdp_node) {
+    const auto* ssdp_array = ssdp_node.as_array();
+    if (!ssdp_array) {
+        return std::unexpected(Error{"ssdp node is not an array"});
+    }
+
+    std::vector<SsdpConfig> ssdp_configs;
+    ssdp_configs.reserve(ssdp_array->size());
+    for (const auto& entry_node : *ssdp_array) {
+        const auto* entry_table = entry_node.as_table();
+        if (!entry_table) {
+            return std::unexpected(Error{"ssdp entry is not a table"});
+        }
+
+        auto ssdp_config = ReadSsdpConfig(*entry_table);
+        if (!ssdp_config.has_value()) {
+            return std::unexpected(std::move(ssdp_config).error());
+        }
+        if (auto error = ssdp_config->Verify()) {
+            return std::unexpected(*std::move(error));
+        }
+        for (const auto& existing : ssdp_configs) {
+            if (existing.name == ssdp_config->name) {
+                return std::unexpected(Error{"duplicate ssdp name: \"{}\"", ssdp_config->name});
+            }
+            if (MacSelectionsOverlap(existing.mac, ssdp_config->mac)
+                    && existing.source_if == ssdp_config->source_if
+                    && existing.target_if == ssdp_config->target_if
+                    && AddressFamiliesOverlap(existing.address_family, ssdp_config->address_family)) {
+                return std::unexpected(Error{
+                    "duplicate ssdp rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
+                    existing.name, ssdp_config->name});
+            }
+        }
+        ssdp_configs.push_back(std::move(*ssdp_config));
+    }
+
+    return ssdp_configs;
+}
+
 } // namespace
 
 namespace reflector {
@@ -335,6 +424,22 @@ std::optional<Error> MdnsConfig::Verify() const {
     }
     if (source_if == target_if) {
         return Error{"mdns source_if and target_if must be different: \"{}\"", source_if};
+    }
+    return std::nullopt;
+}
+
+std::optional<Error> SsdpConfig::Verify() const {
+    if (name.empty()) {
+        return Error{"ssdp name is not configured"};
+    }
+    if (source_if.empty()) {
+        return Error{"ssdp source_if is not configured"};
+    }
+    if (target_if.empty()) {
+        return Error{"ssdp target_if is not configured"};
+    }
+    if (source_if == target_if) {
+        return Error{"ssdp source_if and target_if must be different: \"{}\"", source_if};
     }
     return std::nullopt;
 }
@@ -390,6 +495,12 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
                 return std::unexpected(Error{"cannot read mdns configuration: {}", mdns_configs.error().Message()});
             }
             config.mdns_configs_ = std::move(*mdns_configs);
+        } else if (section_name == "ssdp") {
+            auto ssdp_configs = ReadSsdpConfigs(value);
+            if (!ssdp_configs.has_value()) {
+                return std::unexpected(Error{"cannot read ssdp configuration: {}", ssdp_configs.error().Message()});
+            }
+            config.ssdp_configs_ = std::move(*ssdp_configs);
         } else if (section_name == "log_level") {
             const auto field_value = value.value<std::string_view>();
             if (!field_value.has_value()) {
