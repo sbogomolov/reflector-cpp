@@ -2,13 +2,15 @@
 
 Reflects link-local service traffic between two network interfaces. Useful when the devices that
 talk to each other live on different L2 segments that don't forward each other's broadcasts or
-multicasts — for example, a router bridging a wired LAN to a Wi-Fi network. Two protocols are
+multicasts — for example, a router bridging a wired LAN to a Wi-Fi network. Three protocols are
 supported today:
 
 - **Wake-on-LAN** — magic packets sent on one interface are re-emitted on another, so a sender can
   wake a host on a different segment.
 - **multicast DNS (mDNS)** — service discovery traffic is relayed between two interfaces, so clients
   on one segment can discover responders on the other.
+- **SSDP (UPnP/DLNA)** — discovery traffic is relayed between two interfaces, so a caster on one
+  segment can find renderers (TVs, media servers) on the other.
 
 By default, each reflector entry requires IPv4 handling and attempts IPv6 on a best-effort basis. If
 IPv4 cannot be initialized for an entry, startup fails; if only IPv6 cannot be initialized, IPv4
@@ -110,8 +112,8 @@ Log out and back in after installing for the group membership to take effect.
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one reflector entry — a `[[wol]]`
-or `[[mdns]]` table. `log_level` is the only top-level setting:
+`config.toml` contains optional top-level settings plus at least one reflector entry — a `[[wol]]`,
+`[[mdns]]`, or `[[ssdp]]` table. `log_level` is the only top-level setting:
 
 ```toml
 log_level = "info"             # optional; one of debug | info | warning | error (default: info)
@@ -153,6 +155,27 @@ When `mac` is set, it filters the target→source direction to frames whose L2 s
 `address_family` behaves as for WoL, except mDNS is bidirectional: a handled family must have a source address on **both** interfaces, since the target re-emits relayed queries and the source re-emits relayed responses.
 
 Every mDNS entry name must be unique. Beyond the name, two entries are rejected as duplicates only when they share `source_if`, `target_if`, overlapping MAC selection, and overlapping address-family handling (the same overlap rules as WoL, but without ports — mDNS is always on UDP 5353).
+
+### Simple Service Discovery (`[[ssdp]]`)
+
+```toml
+[[ssdp]]
+name      = "cast"               # human-readable label, used in logs
+source_if = "en0"                # interface clients search from (must differ from target_if)
+target_if = "lo0"                # interface the devices live on
+mac       = "B0:37:95:C5:60:BE"  # optional; restricts the target→source direction to this device
+address_family = "default"       # optional; default | dual | ipv4 | ipv6
+```
+
+Reflects SSDP (UPnP/DLNA discovery, UDP 1900) between `source_if` and `target_if`, joining the SSDP groups (`239.255.255.250` for IPv4; `ff02::c` link-local and `ff05::c` site-local for IPv6) on both. Relaying is directional by the message's start line: `M-SEARCH` searches flow source→target and `NOTIFY` advertisements (`ssdp:alive` / `ssdp:byebye`) flow target→source, so clients on `source_if` discover devices on `target_if` without exposing the `source_if` devices in return. Reflected datagrams are re-emitted to the same group on port 1900 with hop limit 2. No IP addresses appear in the config.
+
+When `mac` is set, it filters the target→source direction to frames whose L2 source MAC matches it, exposing only that one device on `target_if`; searches source→target are never MAC-filtered. With `mac` omitted, all SSDP traffic is reflected in both directions.
+
+`address_family` behaves as for mDNS: a handled family must have a source address on **both** interfaces, since the target re-emits relayed searches and the source re-emits relayed advertisements.
+
+Every SSDP entry name must be unique. Beyond the name, two entries are rejected as duplicates only when they share `source_if`, `target_if`, overlapping MAC selection, and overlapping address-family handling (the same overlap rules as mDNS — SSDP is always on UDP 1900).
+
+This multicast reflection delivers **passive** discovery: devices on `target_if` periodically send `NOTIFY ssdp:alive` advertisements, which appear on `source_if` so clients see them. **Active** discovery — a client's `M-SEARCH` and the device's unicast `200 OK` reply — is only half-bridged: the search is relayed, but the unicast response (sent directly to the searcher's address) is not carried across segments yet. Bridging it requires a stateful unicast proxy, planned as a later step.
 
 ## Tests
 

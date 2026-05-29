@@ -10,7 +10,7 @@
 
 namespace reflector {
 
-// Base for the per-protocol reflectors (WoL, mDNS, and SSDP to come). Holds what every reflector
+// Base for the per-protocol reflectors (WoL, mDNS, SSDP). Holds what every reflector
 // shares: a named logger, the packet-dispatcher registrations that keep its capture callbacks
 // alive, and the validity contract. Application owns reflectors through Reflector pointers and
 // tears them down uniformly — destroying registrations_ unregisters every callback. Immovable

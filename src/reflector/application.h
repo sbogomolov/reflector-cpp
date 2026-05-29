@@ -21,7 +21,7 @@
 namespace reflector {
 
 // Owns and wires together the sockets, the dispatcher and packet dispatcher, and the
-// reflectors for a set of WoL and mDNS configs, then runs the dispatcher event loop. Extracting
+// reflectors for a set of WoL, mDNS, and SSDP configs, then runs the dispatcher event loop. Extracting
 // this out of main() keeps the entry point thin (arg parsing, config load, signal setup) and makes
 // the wiring testable: ForTesting injects a fake dispatcher, address monitor, and socket factory,
 // so the dedup, failure, and address-refresh paths are exercisable without CAP_NET_RAW.
@@ -39,7 +39,7 @@ public:
     [[nodiscard]] static Application ForTesting(std::unique_ptr<Dispatcher> dispatcher,
         std::unique_ptr<AddressMonitor> monitor, SocketFactory socket_factory);
 
-    // Builds one reflector per WoL and mDNS config, sharing a single socket across configs on the
+    // Builds one reflector per WoL, mDNS, and SSDP config, sharing a single socket across configs on the
     // same interface (the packet dispatcher watches that socket's fd once, however many reflectors
     // register on it). Transactional: returns true with everything wired, or false (after logging)
     // on the first failure, having cleared any reflectors wired before it.
@@ -61,9 +61,9 @@ private:
     void StartMonitor();
 
     // Wires every entry in `configs` into a reflector of type R, sharing one socket per interface
-    // across all reflectors (see GetOrCreateSocket). WolReflector and MdnsReflector share the ctor
-    // shape (dispatcher, source, target, config) and the IsValid contract, so one template covers
-    // both; `protocol` only labels the error logs. Returns false on the first failure (already
+    // across all reflectors (see GetOrCreateSocket). WolReflector, MdnsReflector, and SsdpReflector
+    // share the ctor shape (dispatcher, source, target, config) and the IsValid contract, so one
+    // template covers them all; `protocol` only labels the error logs. Returns false on the first failure (already
     // logged); reflectors wired so far stay in reflectors_ for Configure to roll back.
     template <class ReflectorType, class ConfigType>
     bool ConfigureReflectors(const std::vector<ConfigType>& configs, std::string_view protocol);
