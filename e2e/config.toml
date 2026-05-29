@@ -1,24 +1,20 @@
 log_level = "debug"
 
-[[wol]]
-name = "e2e"
+[wol-mac]
+source_if = "wol_src"
+target_if = "wol_dst"
 mac = "02:42:ac:11:00:09"
-source_if = "wol_src"
-target_if = "wol_dst"
-ports = [40009]
+wol = true
+wol_ports = [40009]
 
-[[wol]]
-name = "e2e-any"
+[wol-any]
 source_if = "wol_src"
 target_if = "wol_dst"
-ports = [40011]
+wol = true
+wol_ports = [40011]
 
-[[mdns]]
-name = "e2e-mdns"
+[discovery]
 source_if = "wol_src"
 target_if = "wol_dst"
-
-[[ssdp]]
-name = "e2e-ssdp"
-source_if = "wol_src"
-target_if = "wol_dst"
+mdns = true
+ssdp = true

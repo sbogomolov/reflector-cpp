@@ -112,70 +112,52 @@ Log out and back in after installing for the group membership to take effect.
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one reflector entry — a `[[wol]]`,
-`[[mdns]]`, or `[[ssdp]]` table. `log_level` is the only top-level setting:
+`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the three protocols. `log_level` is the only top-level setting:
 
 ```toml
-log_level = "info"             # optional; one of debug | info | warning | error (default: info)
+log_level = "info"               # optional; one of debug | info | warning | error (default: info)
+
+[tv]
+source_if = "en0"                # required; interface to listen on (must differ from target_if)
+target_if = "lo0"                # required; interface to emit reflected traffic on
+mac       = "B0:37:95:C5:60:BE"  # optional; the device's MAC (see below). Omit for a whole network.
+wol       = true                 # optional; enable Wake-on-LAN reflection (default false)
+mdns      = true                 # optional; enable mDNS reflection (default false)
+ssdp      = true                 # optional; enable SSDP reflection (default false)
+wol_ports = [7, 9]               # optional; WoL UDP ports (default [7, 9]); only valid when wol = true
+address_family = "default"       # optional; default | dual | ipv4 | ipv6 (default "default")
 ```
 
-### Wake-on-LAN (`[[wol]]`)
+An entry must enable at least one protocol and expands into one reflector per enabled protocol, all sharing the entry's interfaces, `mac`, and `address_family`. The same shape serves a single device (set `mac`) or a whole network (omit `mac`). No IP addresses ever appear in the config.
 
-```toml
-[[wol]]
-name      = "tv"                # human-readable label, used in logs
-mac       = "B0:37:95:C5:60:BE" # optional; when omitted, all WoL magic packets are proxied
-source_if = "en0"               # interface to listen on (must differ from target_if)
-target_if = "lo0"               # interface to emit reflected packets on
-ports     = [7, 9]              # optional; defaults to [7, 9] (the standard WoL ports)
-address_family = "default"      # optional; default | dual | ipv4 | ipv6
-```
+### The `mac` field
 
-Each entry installs listeners on `source_if` for the listed UDP ports, matches incoming packets against the WoL magic-packet format for `mac` when configured, and re-emits matching packets on `target_if` on the same destination port. Matching requires the magic-packet sequence (six `0xFF` bytes followed by the target MAC repeated 16 times) to begin at the start of the UDP payload; trailing bytes, such as a SecureOn password, are ignored when matching and forwarded as-is. If `mac` is omitted, every valid WoL magic packet is re-emitted. IPv4 packets go to `255.255.255.255`; IPv6 packets go to `ff02::1`. No IP addresses appear in the config.
+`mac` is optional and, when set, names a single device — coherently across all three protocols, because a device's NIC MAC is both the target of its Wake-on-LAN magic packet and the L2 source of its mDNS/SSDP advertisements:
 
-`address_family = "default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort. Use `"dual"` to require both address families, or `"ipv4"` / `"ipv6"` to use only one.
+- **WoL** re-emits only magic packets whose payload targets `mac`.
+- **mDNS / SSDP** relay, in the target→source direction, only frames whose L2 source MAC is `mac` (exposing just that device); the source→target direction is never MAC-filtered.
 
-Every WoL entry name must be unique. Beyond the name, duplicate detection rejects only rules that could reflect the same packet twice: the entries must use the same `source_if`, the same `target_if`, at least one common UDP port, overlapping MAC selection, and overlapping address-family handling. MAC selection overlaps when both entries use the same `mac`, or when either entry omits `mac` and therefore accepts any MAC. Address-family handling overlaps when the two entries can both handle the same IP version — an `ipv4`-only rule and an `ipv6`-only rule never overlap, while `default`/`dual` handle both versions and so overlap with either. Rules with different source interfaces, target interfaces, disjoint port sets, or non-overlapping address families can coexist.
+Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and mDNS/SSDP reflect all traffic in both directions.
 
-### Multicast DNS (`[[mdns]]`)
+### `address_family`
 
-```toml
-[[mdns]]
-name      = "cast"               # human-readable label, used in logs
-source_if = "en0"                # interface clients query from (must differ from target_if)
-target_if = "lo0"                # interface the responders live on
-mac       = "B0:37:95:C5:60:BE"  # optional; restricts the target→source direction to this device
-address_family = "default"       # optional; default | dual | ipv4 | ipv6
-```
+`"default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort; `"dual"` requires both; `"ipv4"` / `"ipv6"` use only one. It applies to every protocol the entry enables. mDNS and SSDP are bidirectional, so a handled family must have a source address on **both** interfaces (the target re-emits relayed queries/searches, the source re-emits relayed responses/advertisements).
 
-Reflects multicast DNS (UDP 5353) between `source_if` and `target_if`, joining the mDNS group (`224.0.0.251` / `ff02::fb`) on both. Relaying is directional by the DNS header's QR bit: queries flow source→target and responses (including unsolicited announcements) flow target→source, so clients on `source_if` discover responders on `target_if` without exposing the `source_if` devices in return. Reflected datagrams are re-emitted to the same group on port 5353. No IP addresses appear in the config.
+### Per-protocol behavior
 
-When `mac` is set, it filters the target→source direction to frames whose L2 source MAC matches it, exposing only that one device on `target_if`; queries source→target are never MAC-filtered. With `mac` omitted, all mDNS traffic is reflected in both directions.
+| Protocol | Port(s) | Group / destination | Relay direction |
+|---|---|---|---|
+| WoL | `wol_ports` (default 7, 9) | `255.255.255.255` (v4) / `ff02::1` (v6) | magic packets source → target |
+| mDNS | 5353 | `224.0.0.251` / `ff02::fb` | queries source→target, responses target→source |
+| SSDP | 1900 | `239.255.255.250` / `ff02::c` + `ff05::c` | M-SEARCH source→target, NOTIFY target→source |
 
-`address_family` behaves as for WoL, except mDNS is bidirectional: a handled family must have a source address on **both** interfaces, since the target re-emits relayed queries and the source re-emits relayed responses.
+WoL matching requires the magic-packet sequence (six `0xFF` bytes followed by the target MAC repeated 16 times) at the start of the UDP payload; trailing bytes such as a SecureOn password are ignored when matching and forwarded as-is. mDNS responses include unsolicited announcements (so they flow target→source too); mDNS/SSDP datagrams are re-emitted verbatim to the same group (SSDP at hop limit 2).
 
-Every mDNS entry name must be unique. Beyond the name, two entries are rejected as duplicates only when they share `source_if`, `target_if`, overlapping MAC selection, and overlapping address-family handling (the same overlap rules as WoL, but without ports — mDNS is always on UDP 5353).
+For SSDP, multicast reflection delivers **passive** discovery — devices' periodic `NOTIFY ssdp:alive` advertisements reach the source segment so clients see them — while **active** discovery (a client's `M-SEARCH` and the device's unicast `200 OK` reply) is only half-bridged: the search is relayed, but the unicast reply (sent directly to the searcher's address) is not carried across segments yet. Bridging it requires a stateful unicast proxy, planned as a later step.
 
-### Simple Service Discovery (`[[ssdp]]`)
+### Duplicate detection
 
-```toml
-[[ssdp]]
-name      = "cast"               # human-readable label, used in logs
-source_if = "en0"                # interface clients search from (must differ from target_if)
-target_if = "lo0"                # interface the devices live on
-mac       = "B0:37:95:C5:60:BE"  # optional; restricts the target→source direction to this device
-address_family = "default"       # optional; default | dual | ipv4 | ipv6
-```
-
-Reflects SSDP (UPnP/DLNA discovery, UDP 1900) between `source_if` and `target_if`, joining the SSDP groups (`239.255.255.250` for IPv4; `ff02::c` link-local and `ff05::c` site-local for IPv6) on both. Relaying is directional by the message's start line: `M-SEARCH` searches flow source→target and `NOTIFY` advertisements (`ssdp:alive` / `ssdp:byebye`) flow target→source, so clients on `source_if` discover devices on `target_if` without exposing the `source_if` devices in return. Reflected datagrams are re-emitted to the same group on port 1900 with hop limit 2. No IP addresses appear in the config.
-
-When `mac` is set, it filters the target→source direction to frames whose L2 source MAC matches it, exposing only that one device on `target_if`; searches source→target are never MAC-filtered. With `mac` omitted, all SSDP traffic is reflected in both directions.
-
-`address_family` behaves as for mDNS: a handled family must have a source address on **both** interfaces, since the target re-emits relayed searches and the source re-emits relayed advertisements.
-
-Every SSDP entry name must be unique. Beyond the name, two entries are rejected as duplicates only when they share `source_if`, `target_if`, overlapping MAC selection, and overlapping address-family handling (the same overlap rules as mDNS — SSDP is always on UDP 1900).
-
-This multicast reflection delivers **passive** discovery: devices on `target_if` periodically send `NOTIFY ssdp:alive` advertisements, which appear on `source_if` so clients see them. **Active** discovery — a client's `M-SEARCH` and the device's unicast `200 OK` reply — is only half-bridged: the search is relayed, but the unicast response (sent directly to the searcher's address) is not carried across segments yet. Bridging it requires a stateful unicast proxy, planned as a later step.
+Entry names are unique (TOML rejects duplicate table names). Beyond that, two entries that enable the same protocol are rejected as a duplicate of that protocol only when they could reflect the same packet twice: same `source_if`, same `target_if`, overlapping MAC selection, overlapping address-family handling, and — for WoL — at least one shared port. MAC selection overlaps when both entries set the same `mac`, or when either omits `mac` (any device). Address-family handling overlaps when both can handle the same IP version: an `ipv4`-only and an `ipv6`-only entry never overlap, while `default`/`dual` overlap with either. Entries that differ in interface, MAC, address family (or WoL ports), or that enable *different* protocols, coexist.
 
 ## Tests
 

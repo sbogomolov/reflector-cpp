@@ -1,20 +1,20 @@
 # log_level = "info"  # debug | info | warning | error
 
-[[wol]]
-name = "tv"
+# A single device: bridge its Wake-on-LAN, mDNS, and SSDP. The one mac is the device's NIC MAC —
+# the WoL magic-packet target and the L2 source of its mDNS/SSDP advertisements.
+[tv]
 source_if = "en0"
 target_if = "lo0"
-mac = "B0:37:95:C5:60:BE"  # optional; when omitted, all WoL magic packets are proxied
-ports = [7, 9]             # optional; defaults to [7, 9]
+mac = "B0:37:95:C5:60:BE"  # optional; omit to bridge the whole network
+wol = true
+mdns = true
+ssdp = true
+# wol_ports = [7, 9]       # optional; defaults to [7, 9]
 
-[[mdns]]
-name = "cast"
-source_if = "en0"
-target_if = "lo0"
-mac = "B0:37:95:C5:60:BE"  # optional; restricts the target->source direction to this device
-
-[[ssdp]]
-name = "cast"
-source_if = "en0"
-target_if = "lo0"
-mac = "B0:37:95:C5:60:BE"  # optional; restricts the target->source direction to this device
+# A whole network (no mac): reflect all mDNS/SSDP discovery in both directions, on its own
+# interface pair (entries sharing source_if + target_if and a protocol would collide).
+[guest-discovery]
+source_if = "en1"
+target_if = "en2"
+mdns = true
+ssdp = true
