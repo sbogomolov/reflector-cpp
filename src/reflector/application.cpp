@@ -4,6 +4,7 @@
 #include "event_loop_dispatcher.h"
 #include "mdns_reflector.h"
 #include "raw_socket.h"
+#include "ssdp_reflector.h"
 #include "util/delegate.h"
 #include "wol_reflector.h"
 
@@ -86,7 +87,8 @@ bool Application::ConfigureReflectors(const std::vector<ConfigType>& configs, st
 
 bool Application::Configure(const Config& config) {
     if (ConfigureReflectors<WolReflector>(config.WolConfigs(), "wol")
-        && ConfigureReflectors<MdnsReflector>(config.MdnsConfigs(), "mdns")) {
+        && ConfigureReflectors<MdnsReflector>(config.MdnsConfigs(), "mdns")
+        && ConfigureReflectors<SsdpReflector>(config.SsdpConfigs(), "ssdp")) {
         return true;
     }
     // Fail closed: drop any reflectors wired before the failure so a config error never leaves a

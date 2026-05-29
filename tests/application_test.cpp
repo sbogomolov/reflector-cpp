@@ -85,6 +85,17 @@ protected:
         };
     }
 
+    static SsdpConfig MakeSsdpConfig(std::string_view name, std::string_view source_if,
+        std::string_view target_if, AddressFamily family = AddressFamily::IPv4) {
+        return SsdpConfig{
+            .name = std::string{name},
+            .mac = std::nullopt,
+            .source_if = std::string{source_if},
+            .target_if = std::string{target_if},
+            .address_family = family,
+        };
+    }
+
     FakeDispatcher* dispatcher_ = nullptr;
     FakeAddressMonitor* monitor_ = nullptr;
     bool monitor_starts_ = true;
@@ -299,6 +310,107 @@ TEST_F(ApplicationTest, ClearsWolReflectorWhenLaterMdnsFails) {
     const Config config = TestConfigBuilder{}
         .Add(MakeWolConfig("tv", "src", "dst", {9}))
         .Add(MakeMdnsConfig("cast", "src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0) << output; // the WoL reflector wired earlier is rolled back
+}
+
+TEST_F(ApplicationTest, WiresSsdpReflectorOnBothInterfaces) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeSsdpConfig("cast", "src", "dst"))  // IPv4: one group
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    EXPECT_EQ(factory_calls_, 2);
+    EXPECT_EQ(SocketCount(app), 2);
+    EXPECT_EQ(ReflectorCount(app), 1);
+    // SSDP captures on both interfaces, so each socket's fd is watched once (the dispatcher counts
+    // watched fds, not the per-group registrations behind them).
+    EXPECT_EQ(dispatcher_->RegistrationCount(), 2);
+    EXPECT_TRUE(dispatcher_->IsWatching(Socket("src")->fd));
+    EXPECT_TRUE(dispatcher_->IsWatching(Socket("dst")->fd));
+}
+
+TEST_F(ApplicationTest, SharesSocketsAcrossAllProtocols) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {9}))
+        .Add(MakeMdnsConfig("bridge", "src", "dst"))
+        .Add(MakeSsdpConfig("cast", "src", "dst"))
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    // All three protocols reuse the same per-interface sockets.
+    EXPECT_EQ(factory_calls_, 2);
+    EXPECT_EQ(SocketCount(app), 2);
+    EXPECT_EQ(ReflectorCount(app), 3);
+    // "src" and "dst" are each watched once however many reflectors register on them.
+    EXPECT_EQ(dispatcher_->RegistrationCount(), 2);
+}
+
+TEST_F(ApplicationTest, FailsWhenSsdpSourceSocketInvalid) {
+    ConfigureSocket("bad-src", {.valid = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeSsdpConfig("cast", "bad-src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0);
+    EXPECT_NE(output.find("ssdp"), std::string::npos) << output;     // the log names the protocol
+    EXPECT_NE(output.find("bad-src"), std::string::npos) << output;  // and the source interface
+}
+
+TEST_F(ApplicationTest, FailsWhenSsdpTargetSocketInvalid) {
+    ConfigureSocket("bad-dst", {.valid = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeSsdpConfig("cast", "src", "bad-dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0);
+    EXPECT_NE(output.find("bad-dst"), std::string::npos) << output;  // the log names the target interface
+}
+
+TEST_F(ApplicationTest, FailsWhenSsdpReflectorSetupFails) {
+    // SSDP needs the family sendable on both interfaces; the IPv4 config can't be reflected when the
+    // target can't originate IPv4, so the reflector fails to initialize.
+    ConfigureSocket("dst", {.can_send_v4 = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeSsdpConfig("cast", "src", "dst"))
+        .Build();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(config));
+    });
+
+    EXPECT_EQ(ReflectorCount(app), 0) << output;
+}
+
+TEST_F(ApplicationTest, ClearsEarlierReflectorsWhenSsdpFails) {
+    // SSDP is configured last; a source that can't originate IPv4 breaks SSDP (which reflects in
+    // both directions) but not the WoL reflector wired before it. Configure is transactional, so the
+    // earlier success is rolled back, leaving nothing wired.
+    ConfigureSocket("src", {.can_send_v4 = false});
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {9}))
+        .Add(MakeSsdpConfig("cast", "src", "dst"))
         .Build();
 
     const std::string output = CaptureStdout([&] {
