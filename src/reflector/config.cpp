@@ -104,279 +104,176 @@ bool AddressFamiliesOverlap(AddressFamily lhs, AddressFamily rhs) noexcept {
     return (UsesIPv4(lhs) && UsesIPv4(rhs)) || (UsesIPv6(lhs) && UsesIPv6(rhs));
 }
 
-std::expected<WolConfig, Error> ReadWolConfig(const toml::table& entry_table) {
-    WolConfig wol_config{};
-    for (const auto& [field_key, field_node] : entry_table) {
+// Verify one reflector config and reject it if it duplicates an already-accepted one of the same
+// protocol, then append it. Two rules collide when they could reflect the same captured packet:
+// overlapping MAC selection, same source_if and target_if, and overlapping address family (WoL also
+// requires an overlapping port). Names are not checked here: each config's name is its entry's TOML
+// table key, and TOML forbids duplicate table keys, so every entry — and thus every config — has a
+// unique name already (see Config::FromString).
+std::optional<Error> AppendWol(std::vector<WolConfig>& configs, WolConfig config) {
+    if (auto error = config.Verify()) {
+        return error;
+    }
+    for (const auto& existing : configs) {
+        if (MacSelectionsOverlap(existing.mac, config.mac)
+                && existing.source_if == config.source_if
+                && existing.target_if == config.target_if
+                && PortsOverlap(existing.ports, config.ports)
+                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+            return Error{
+                "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, ports, and address family",
+                existing.name, config.name};
+        }
+    }
+    configs.push_back(std::move(config));
+    return std::nullopt;
+}
+
+std::optional<Error> AppendMdns(std::vector<MdnsConfig>& configs, MdnsConfig config) {
+    if (auto error = config.Verify()) {
+        return error;
+    }
+    for (const auto& existing : configs) {
+        if (MacSelectionsOverlap(existing.mac, config.mac)
+                && existing.source_if == config.source_if
+                && existing.target_if == config.target_if
+                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+            return Error{
+                "duplicate mdns rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
+                existing.name, config.name};
+        }
+    }
+    configs.push_back(std::move(config));
+    return std::nullopt;
+}
+
+std::optional<Error> AppendSsdp(std::vector<SsdpConfig>& configs, SsdpConfig config) {
+    if (auto error = config.Verify()) {
+        return error;
+    }
+    for (const auto& existing : configs) {
+        if (MacSelectionsOverlap(existing.mac, config.mac)
+                && existing.source_if == config.source_if
+                && existing.target_if == config.target_if
+                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+            return Error{
+                "duplicate ssdp rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
+                existing.name, config.name};
+        }
+    }
+    configs.push_back(std::move(config));
+    return std::nullopt;
+}
+
+// Reads one [name] entry and appends a reflector config for each protocol it enables. The entry's
+// shared fields (mac, source_if, target_if, address_family) flow to every enabled protocol; for a
+// real device the one mac is both the WoL target and the mDNS/SSDP frame source.
+std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
+        std::vector<WolConfig>& wol_configs, std::vector<MdnsConfig>& mdns_configs,
+        std::vector<SsdpConfig>& ssdp_configs) {
+    std::string source_if;
+    std::string target_if;
+    std::optional<MacAddress> mac;
+    std::optional<std::vector<uint16_t>> wol_ports;
+    bool wol = false;
+    bool mdns = false;
+    bool ssdp = false;
+    AddressFamily address_family = AddressFamily::Default;
+
+    for (const auto& [field_key, field_node] : table) {
         const auto field_name = ToStringView(field_key);
-        if (field_name == "name") {
-            auto field_value = ReadStringField(field_node, "wol", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
+        if (field_name == "source_if") {
+            auto value = ReadStringField(field_node, "entry", field_name);
+            if (!value.has_value()) {
+                return std::move(value).error();
             }
-            wol_config.name = *field_value;
-        } else if (field_name == "mac") {
-            auto field_value = ReadStringField(field_node, "wol", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            auto mac = MacAddress::FromString(*field_value);
-            if (!mac.has_value()) {
-                return std::unexpected(Error{"wol mac is not a valid MAC address: \"{}\": {}", *field_value, mac.error()});
-            }
-            wol_config.mac = *mac;
-        } else if (field_name == "source_if") {
-            auto field_value = ReadStringField(field_node, "wol", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            wol_config.source_if = *field_value;
+            source_if = *value;
         } else if (field_name == "target_if") {
-            auto field_value = ReadStringField(field_node, "wol", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
+            auto value = ReadStringField(field_node, "entry", field_name);
+            if (!value.has_value()) {
+                return std::move(value).error();
             }
-            wol_config.target_if = *field_value;
-        } else if (field_name == "ports") {
+            target_if = *value;
+        } else if (field_name == "mac") {
+            auto value = ReadStringField(field_node, "entry", field_name);
+            if (!value.has_value()) {
+                return std::move(value).error();
+            }
+            auto parsed = MacAddress::FromString(*value);
+            if (!parsed.has_value()) {
+                return Error{"entry \"{}\" mac is not a valid MAC address: \"{}\": {}", name, *value, parsed.error()};
+            }
+            mac = *parsed;
+        } else if (field_name == "wol_ports") {
             auto ports = ReadPorts(field_node);
             if (!ports.has_value()) {
-                return std::unexpected(std::move(ports).error());
+                return std::move(ports).error();
             }
-            wol_config.ports = std::move(*ports);
+            wol_ports = std::move(*ports);
+        } else if (field_name == "wol" || field_name == "mdns" || field_name == "ssdp") {
+            const auto flag = field_node.value<bool>();
+            if (!flag.has_value()) {
+                return Error{"entry \"{}\" {} must be a boolean", name, field_name};
+            }
+            if (field_name == "wol") {
+                wol = *flag;
+            } else if (field_name == "mdns") {
+                mdns = *flag;
+            } else {
+                ssdp = *flag;
+            }
         } else if (field_name == "address_family") {
-            const auto field_value = field_node.value<std::string_view>();
-            if (!field_value.has_value()) {
-                return std::unexpected(Error{"wol address_family must be a string"});
+            const auto value = field_node.value<std::string_view>();
+            if (!value.has_value()) {
+                return Error{"entry \"{}\" address_family must be a string", name};
             }
-            auto address_family = AddressFamilyFromString("wol", *field_value);
-            if (!address_family.has_value()) {
-                return std::unexpected(std::move(address_family).error());
+            auto parsed = AddressFamilyFromString("entry", *value);
+            if (!parsed.has_value()) {
+                return std::move(parsed).error();
             }
-            wol_config.address_family = *address_family;
+            address_family = *parsed;
         } else {
-            return std::unexpected(Error{"unexpected wol option: {}", field_name});
+            return Error{"unexpected option in entry \"{}\": {}", name, field_name};
         }
     }
-    return wol_config;
-}
 
-std::expected<std::vector<WolConfig>, Error> ReadWolConfigs(const toml::node& wol_node) {
-    const auto* wol_array = wol_node.as_array();
-    if (!wol_array) {
-        return std::unexpected(Error{"wol node is not an array"});
+    if (!wol && !mdns && !ssdp) {
+        return Error{"entry \"{}\" enables no protocol (set wol, mdns, or ssdp)", name};
+    }
+    if (wol_ports.has_value() && !wol) {
+        return Error{"entry \"{}\" sets wol_ports but does not enable wol", name};
     }
 
-    std::vector<WolConfig> wol_configs;
-    wol_configs.reserve(wol_array->size());
-
-    for (const auto& entry_node : *wol_array) {
-        const auto* entry_table = entry_node.as_table();
-        if (!entry_table) {
-            return std::unexpected(Error{"wol entry is not a table"});
+    if (wol) {
+        WolConfig config{
+            .name = std::string{name},
+            .mac = mac,
+            .source_if = source_if,
+            .target_if = target_if,
+            .address_family = address_family,
+        };
+        if (wol_ports.has_value()) {
+            config.ports = *wol_ports;
         }
-
-        auto wol_config = ReadWolConfig(*entry_table);
-        if (!wol_config.has_value()) {
-            return std::unexpected(std::move(wol_config).error());
-        }
-        if (auto error = wol_config->Verify()) {
-            return std::unexpected(*std::move(error));
-        }
-        for (const auto& existing : wol_configs) {
-            if (existing.name == wol_config->name) {
-                return std::unexpected(Error{"duplicate wol name: \"{}\"", wol_config->name});
-            }
-            if (MacSelectionsOverlap(existing.mac, wol_config->mac)
-                    && existing.source_if == wol_config->source_if
-                    && existing.target_if == wol_config->target_if
-                    && PortsOverlap(existing.ports, wol_config->ports)
-                    && AddressFamiliesOverlap(existing.address_family, wol_config->address_family)) {
-                return std::unexpected(Error{
-                    "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, ports, and address family",
-                    existing.name, wol_config->name});
-            }
-        }
-        wol_configs.push_back(std::move(*wol_config));
-    }
-
-    return wol_configs;
-}
-
-std::expected<MdnsConfig, Error> ReadMdnsConfig(const toml::table& entry_table) {
-    MdnsConfig mdns_config{};
-    for (const auto& [field_key, field_node] : entry_table) {
-        const auto field_name = ToStringView(field_key);
-        if (field_name == "name") {
-            auto field_value = ReadStringField(field_node, "mdns", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            mdns_config.name = *field_value;
-        } else if (field_name == "mac") {
-            auto field_value = ReadStringField(field_node, "mdns", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            auto mac = MacAddress::FromString(*field_value);
-            if (!mac.has_value()) {
-                return std::unexpected(Error{"mdns mac is not a valid MAC address: \"{}\": {}", *field_value, mac.error()});
-            }
-            mdns_config.mac = *mac;
-        } else if (field_name == "source_if") {
-            auto field_value = ReadStringField(field_node, "mdns", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            mdns_config.source_if = *field_value;
-        } else if (field_name == "target_if") {
-            auto field_value = ReadStringField(field_node, "mdns", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            mdns_config.target_if = *field_value;
-        } else if (field_name == "address_family") {
-            const auto field_value = field_node.value<std::string_view>();
-            if (!field_value.has_value()) {
-                return std::unexpected(Error{"mdns address_family must be a string"});
-            }
-            auto address_family = AddressFamilyFromString("mdns", *field_value);
-            if (!address_family.has_value()) {
-                return std::unexpected(std::move(address_family).error());
-            }
-            mdns_config.address_family = *address_family;
-        } else {
-            return std::unexpected(Error{"unexpected mdns option: {}", field_name});
+        if (auto error = AppendWol(wol_configs, std::move(config))) {
+            return error;
         }
     }
-    return mdns_config;
-}
-
-std::expected<std::vector<MdnsConfig>, Error> ReadMdnsConfigs(const toml::node& mdns_node) {
-    const auto* mdns_array = mdns_node.as_array();
-    if (!mdns_array) {
-        return std::unexpected(Error{"mdns node is not an array"});
-    }
-
-    std::vector<MdnsConfig> mdns_configs;
-    mdns_configs.reserve(mdns_array->size());
-    for (const auto& entry_node : *mdns_array) {
-        const auto* entry_table = entry_node.as_table();
-        if (!entry_table) {
-            return std::unexpected(Error{"mdns entry is not a table"});
-        }
-
-        auto mdns_config = ReadMdnsConfig(*entry_table);
-        if (!mdns_config.has_value()) {
-            return std::unexpected(std::move(mdns_config).error());
-        }
-        if (auto error = mdns_config->Verify()) {
-            return std::unexpected(*std::move(error));
-        }
-        for (const auto& existing : mdns_configs) {
-            if (existing.name == mdns_config->name) {
-                return std::unexpected(Error{"duplicate mdns name: \"{}\"", mdns_config->name});
-            }
-            if (MacSelectionsOverlap(existing.mac, mdns_config->mac)
-                    && existing.source_if == mdns_config->source_if
-                    && existing.target_if == mdns_config->target_if
-                    && AddressFamiliesOverlap(existing.address_family, mdns_config->address_family)) {
-                return std::unexpected(Error{
-                    "duplicate mdns rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
-                    existing.name, mdns_config->name});
-            }
-        }
-        mdns_configs.push_back(std::move(*mdns_config));
-    }
-
-    return mdns_configs;
-}
-
-std::expected<SsdpConfig, Error> ReadSsdpConfig(const toml::table& entry_table) {
-    SsdpConfig ssdp_config{};
-    for (const auto& [field_key, field_node] : entry_table) {
-        const auto field_name = ToStringView(field_key);
-        if (field_name == "name") {
-            auto field_value = ReadStringField(field_node, "ssdp", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            ssdp_config.name = *field_value;
-        } else if (field_name == "mac") {
-            auto field_value = ReadStringField(field_node, "ssdp", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            auto mac = MacAddress::FromString(*field_value);
-            if (!mac.has_value()) {
-                return std::unexpected(Error{"ssdp mac is not a valid MAC address: \"{}\": {}", *field_value, mac.error()});
-            }
-            ssdp_config.mac = *mac;
-        } else if (field_name == "source_if") {
-            auto field_value = ReadStringField(field_node, "ssdp", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            ssdp_config.source_if = *field_value;
-        } else if (field_name == "target_if") {
-            auto field_value = ReadStringField(field_node, "ssdp", field_name);
-            if (!field_value.has_value()) {
-                return std::unexpected(std::move(field_value).error());
-            }
-            ssdp_config.target_if = *field_value;
-        } else if (field_name == "address_family") {
-            const auto field_value = field_node.value<std::string_view>();
-            if (!field_value.has_value()) {
-                return std::unexpected(Error{"ssdp address_family must be a string"});
-            }
-            auto address_family = AddressFamilyFromString("ssdp", *field_value);
-            if (!address_family.has_value()) {
-                return std::unexpected(std::move(address_family).error());
-            }
-            ssdp_config.address_family = *address_family;
-        } else {
-            return std::unexpected(Error{"unexpected ssdp option: {}", field_name});
+    if (mdns) {
+        if (auto error = AppendMdns(mdns_configs, MdnsConfig{
+                .name = std::string{name}, .mac = mac, .source_if = source_if,
+                .target_if = target_if, .address_family = address_family})) {
+            return error;
         }
     }
-    return ssdp_config;
-}
-
-std::expected<std::vector<SsdpConfig>, Error> ReadSsdpConfigs(const toml::node& ssdp_node) {
-    const auto* ssdp_array = ssdp_node.as_array();
-    if (!ssdp_array) {
-        return std::unexpected(Error{"ssdp node is not an array"});
+    if (ssdp) {
+        if (auto error = AppendSsdp(ssdp_configs, SsdpConfig{
+                .name = std::string{name}, .mac = mac, .source_if = source_if,
+                .target_if = target_if, .address_family = address_family})) {
+            return error;
+        }
     }
-
-    std::vector<SsdpConfig> ssdp_configs;
-    ssdp_configs.reserve(ssdp_array->size());
-    for (const auto& entry_node : *ssdp_array) {
-        const auto* entry_table = entry_node.as_table();
-        if (!entry_table) {
-            return std::unexpected(Error{"ssdp entry is not a table"});
-        }
-
-        auto ssdp_config = ReadSsdpConfig(*entry_table);
-        if (!ssdp_config.has_value()) {
-            return std::unexpected(std::move(ssdp_config).error());
-        }
-        if (auto error = ssdp_config->Verify()) {
-            return std::unexpected(*std::move(error));
-        }
-        for (const auto& existing : ssdp_configs) {
-            if (existing.name == ssdp_config->name) {
-                return std::unexpected(Error{"duplicate ssdp name: \"{}\"", ssdp_config->name});
-            }
-            if (MacSelectionsOverlap(existing.mac, ssdp_config->mac)
-                    && existing.source_if == ssdp_config->source_if
-                    && existing.target_if == ssdp_config->target_if
-                    && AddressFamiliesOverlap(existing.address_family, ssdp_config->address_family)) {
-                return std::unexpected(Error{
-                    "duplicate ssdp rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
-                    existing.name, ssdp_config->name});
-            }
-        }
-        ssdp_configs.push_back(std::move(*ssdp_config));
-    }
-
-    return ssdp_configs;
+    return std::nullopt;
 }
 
 } // namespace
@@ -482,26 +379,15 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
     }
 
     for (const auto& [key, value] : root_table) {
-        const auto section_name = ToStringView(key);
-        if (section_name == "wol") {
-            auto wol_configs = ReadWolConfigs(value);
-            if (!wol_configs.has_value()) {
-                return std::unexpected(Error{"cannot read wol configuration: {}", wol_configs.error().Message()});
+        const auto key_name = ToStringView(key);
+        // A top-level table is a reflector entry (its key is the entry name); the lone known scalar
+        // is log_level; any other top-level scalar is a mistyped setting.
+        if (const auto* entry_table = value.as_table()) {
+            if (auto error = ReadEntry(key_name, *entry_table,
+                    config.wol_configs_, config.mdns_configs_, config.ssdp_configs_)) {
+                return std::unexpected(*std::move(error));
             }
-            config.wol_configs_ = std::move(*wol_configs);
-        } else if (section_name == "mdns") {
-            auto mdns_configs = ReadMdnsConfigs(value);
-            if (!mdns_configs.has_value()) {
-                return std::unexpected(Error{"cannot read mdns configuration: {}", mdns_configs.error().Message()});
-            }
-            config.mdns_configs_ = std::move(*mdns_configs);
-        } else if (section_name == "ssdp") {
-            auto ssdp_configs = ReadSsdpConfigs(value);
-            if (!ssdp_configs.has_value()) {
-                return std::unexpected(Error{"cannot read ssdp configuration: {}", ssdp_configs.error().Message()});
-            }
-            config.ssdp_configs_ = std::move(*ssdp_configs);
-        } else if (section_name == "log_level") {
+        } else if (key_name == "log_level") {
             const auto field_value = value.value<std::string_view>();
             if (!field_value.has_value()) {
                 return std::unexpected(Error{"log_level must be a string"});
@@ -512,7 +398,7 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
             }
             config.log_level_ = *level;
         } else {
-            return std::unexpected(Error{"unexpected configuration section: {}", section_name});
+            return std::unexpected(Error{"unexpected top-level key: \"{}\" (expected an entry table or log_level)", key_name});
         }
     }
 
