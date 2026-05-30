@@ -8,6 +8,8 @@
 
 namespace reflector {
 
+class Dispatcher;
+
 // Registers filtered packet callbacks and dispatches matching captured packets to them — the
 // "initiation dispatcher" of the reactor pattern. DefaultPacketDispatcher is the production
 // implementation (layered on the Dispatcher reactor); tests substitute a fake.
@@ -24,6 +26,10 @@ public:
     // dispatcher.
     [[nodiscard]] virtual Registration Register(
         LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) = 0;
+
+    // The reactor this packet dispatcher is layered on — lets a consumer register a Timer on the
+    // same single-threaded event loop.
+    [[nodiscard]] virtual Dispatcher& UnderlyingDispatcher() noexcept = 0;
 
 protected:
     [[nodiscard]] Registration MakeRegistration(RegistrationId id) noexcept { return Registration{this, id}; }

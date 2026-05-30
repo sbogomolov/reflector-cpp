@@ -2,9 +2,12 @@
 
 #include "reflector/dispatcher.h"
 
+#include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <unordered_map>
+#include <vector>
 
 namespace reflector {
 
@@ -35,13 +38,45 @@ public:
         }
     }
 
+    // Fires every registered timer once, copying each callback before invoking (a callback may
+    // unregister a timer mid-fire), mirroring FireReadable and the production copy-before-invoke.
+    void FireTimers() {
+        const auto snapshot = timers_;
+        for (const auto& entry : snapshot) {
+            entry.callback();
+        }
+    }
+
+    [[nodiscard]] size_t TimerCount() const noexcept { return timers_.size(); }
+
     [[nodiscard]] bool IsWatching(int fd) const noexcept { return callbacks_.contains(fd); }
     [[nodiscard]] size_t RegistrationCount() const noexcept { return callbacks_.size(); }
 
 private:
     bool Unregister(int fd) noexcept override { return callbacks_.erase(fd) > 0; }
 
+    [[nodiscard]] TimerId RegisterTimer(
+        std::chrono::milliseconds interval, const OnTimerCallback& callback) override {
+        if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
+            return TimerId{};
+        }
+        const auto id = static_cast<TimerId>(next_timer_id_++);
+        timers_.push_back(TimerEntry{.id = id, .callback = callback});
+        return id;
+    }
+
+    void UnregisterTimer(TimerId id) noexcept override {
+        std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; });
+    }
+
+    struct TimerEntry {
+        TimerId id;
+        OnTimerCallback callback;
+    };
+
     std::unordered_map<int, OnReadableCallback> callbacks_;
+    std::vector<TimerEntry> timers_;
+    uint64_t next_timer_id_ = 1;
 };
 
 } // namespace reflector

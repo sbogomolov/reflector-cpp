@@ -25,6 +25,8 @@ public:
     [[nodiscard]] PacketDispatcher::Registration Register(
         LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) override;
 
+    [[nodiscard]] Dispatcher& UnderlyingDispatcher() noexcept override { return *dispatcher_; }
+
 private:
     friend class DefaultPacketDispatcherTest;
 

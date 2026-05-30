@@ -3,7 +3,9 @@
 #include "util/delegate.h"
 #include "util/registration.h"
 
+#include <chrono>
 #include <csignal>
+#include <cstdint>
 
 namespace reflector {
 
@@ -18,6 +20,10 @@ class Dispatcher {
 public:
     // RAII handle for one fd registration (keyed by the fd); resetting it unregisters the callback.
     using Registration = reflector::Registration<Dispatcher, int>;
+    using OnTimerCallback = Delegate<void()>;
+    // Strong id so a timer registration is never confused with the fd `int` registration. 0 is the
+    // invalid sentinel; real ids start at 1.
+    enum class TimerId : uint64_t {};
 
     virtual ~Dispatcher() noexcept = default;
 
@@ -36,8 +42,19 @@ protected:
 
 private:
     friend Registration;
+    // Timer is the RAII face of the timer registration: it calls RegisterTimer on construction and
+    // UnregisterTimer on destruction, so the raw pair below stays private — a periodic timer is only
+    // ever obtained as a Timer (never a bare TimerId the caller must remember to release).
+    friend class Timer;
 
     virtual bool Unregister(int fd) noexcept = 0;
+
+    // RegisterTimer rejects interval <= 0 / an invalid callback by returning TimerId{} (a
+    // non-positive interval would busy-loop and an unset Delegate is UB to invoke); UnregisterTimer
+    // is a no-op for an unknown/already-removed id.
+    [[nodiscard]] virtual TimerId RegisterTimer(
+        std::chrono::milliseconds interval, const OnTimerCallback& callback) = 0;
+    virtual void UnregisterTimer(TimerId id) noexcept = 0;
 };
 
 } // namespace reflector

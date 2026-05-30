@@ -3,6 +3,7 @@
 #include "reflector/link_socket.h"
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
+#include "fake_dispatcher.h"
 
 #include <cstddef>
 #include <vector>
@@ -30,7 +31,14 @@ public:
 
     // Dispatches `packet` to every registration whose filter matches, regardless of socket.
     void Deliver(const Packet& packet) {
-        for (const auto& entry : entries_) {
+        // Iterate a snapshot so a callback that Registers mid-dispatch (appending to entries_, which
+        // may reallocate) can't invalidate the walk; the new entry isn't dispatched for this packet.
+        // NOTE: this is safe only because no callback UNregisters during a Deliver — the snapshot
+        // holds copied callbacks, so a registration removed mid-dispatch would still be invoked here,
+        // with a possibly-dangling target. Production's DispatchPacket walks live to handle removal;
+        // this fake deliberately doesn't, since no test removes a registration mid-Deliver.
+        const auto snapshot = entries_;
+        for (const auto& entry : snapshot) {
             if (entry.filter.Matches(packet)) {
                 entry.callback(packet);
             }
@@ -40,12 +48,18 @@ public:
     // Dispatches `packet` as if captured on `socket`: only registrations made on that socket whose
     // filter matches. Models the per-socket capture path a bidirectional reflector depends on.
     void Deliver(const LinkSocket& socket, const Packet& packet) {
-        for (const auto& entry : entries_) {
+        const auto snapshot = entries_;  // see Deliver(packet): append-safe, no removal mid-dispatch
+        for (const auto& entry : snapshot) {
             if (entry.socket == &socket && entry.filter.Matches(packet)) {
                 entry.callback(packet);
             }
         }
     }
+
+    [[nodiscard]] Dispatcher& UnderlyingDispatcher() noexcept override { return dispatcher; }
+
+    // Direct access so a test can drive the timers a subscriber registered (e.g. eviction sweeps).
+    FakeDispatcher dispatcher;
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return entries_.size(); }
 

@@ -1,5 +1,6 @@
 #include "reflector/event_loop_dispatcher.h"
 
+#include "reflector/timer.h"
 #include "reflector/util/delegate.h"
 
 #include <gtest/gtest.h>
@@ -204,6 +205,90 @@ TEST_F(EventLoopDispatcherTest, RunPollsUntilStopRequested) {
     dispatcher.Run(stop_requested);
 
     EXPECT_EQ(counter.count, 1);
+}
+
+struct TimerCounter {
+    int count = 0;
+    void Tick() { ++count; }
+};
+
+// Fires, then unregisters another timer mid-round (by resetting its handle) — used to prove a
+// timer cancelled by an earlier callback in the same FireDueTimers pass does not itself fire.
+struct TimerUnregisterer {
+    Timer* other = nullptr;
+    int count = 0;
+    void Tick() {
+        ++count;
+        if (other != nullptr) {
+            *other = {};
+        }
+    }
+};
+
+TEST_F(EventLoopDispatcherTest, NextTimeoutReturnsCapWhenNoTimers) {
+    const auto now = std::chrono::steady_clock::now();
+    EXPECT_EQ(dispatcher.NextTimeout(now), std::chrono::milliseconds{1000});
+}
+
+TEST_F(EventLoopDispatcherTest, FireDueTimersInvokesAndReschedulesDueTimer) {
+    TimerCounter counter;
+    Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
+    ASSERT_TRUE(timer.IsValid());
+    const auto t0 = std::chrono::steady_clock::now();
+
+    // Not yet due at t0: no fire.
+    dispatcher.FireDueTimers(t0);
+    EXPECT_EQ(counter.count, 0);
+
+    // Due at t0 + interval: fires once, then reschedules — a second call at the same instant does not refire.
+    dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{50});
+    EXPECT_EQ(counter.count, 1);
+    dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{50});
+    EXPECT_EQ(counter.count, 1);
+
+    // Due again a full interval later.
+    dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{100});
+    EXPECT_EQ(counter.count, 2);
+
+    timer = {};  // RAII unregister
+    dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{1000});
+    EXPECT_EQ(counter.count, 2);  // unregistered: no further fires
+}
+
+TEST_F(EventLoopDispatcherTest, NextTimeoutClampsToSoonestDeadlineAndFloorsAtZero) {
+    TimerCounter counter;
+    const Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
+    ASSERT_TRUE(timer.IsValid());
+    const auto t0 = std::chrono::steady_clock::now();
+
+    // Halfway to the deadline: ~25ms remain, clamped under the 1000ms cap.
+    const auto remaining = dispatcher.NextTimeout(t0 + std::chrono::milliseconds{25});
+    EXPECT_GT(remaining, std::chrono::milliseconds{0});
+    EXPECT_LE(remaining, std::chrono::milliseconds{50});
+
+    // Past due: floored at 0 (never a negative timeout to the kernel).
+    EXPECT_EQ(dispatcher.NextTimeout(t0 + std::chrono::milliseconds{100}), std::chrono::milliseconds{0});
+}
+
+TEST_F(EventLoopDispatcherTest, TimerRejectsNonPositiveInterval) {
+    TimerCounter counter;
+    const Timer timer{dispatcher, std::chrono::milliseconds{0}, CreateDelegate<&TimerCounter::Tick>(&counter)};
+    EXPECT_FALSE(timer.IsValid());
+}
+
+TEST_F(EventLoopDispatcherTest, CallbackCanUnregisterAnotherDueTimerBeforeItFires) {
+    TimerUnregisterer first;
+    TimerCounter second;
+    // Same interval, so both come due together; `first` (registered first, so fired first) cancels
+    // `second` before the walk reaches it.
+    Timer first_timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerUnregisterer::Tick>(&first)};
+    Timer second_timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&second)};
+    first.other = &second_timer;
+    const auto t0 = std::chrono::steady_clock::now();
+
+    dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{50});
+    EXPECT_EQ(first.count, 1);
+    EXPECT_EQ(second.count, 0);  // cancelled mid-round → never fired (a snapshot walk would fire it)
 }
 
 } // namespace reflector

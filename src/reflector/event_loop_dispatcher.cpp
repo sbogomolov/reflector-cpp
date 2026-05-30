@@ -3,8 +3,10 @@
 #include "error.h"
 #include "logger.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <ctime>
+#include <vector>
 #include <unistd.h>
 
 #if !defined(__APPLE__) && !defined(__linux__)
@@ -57,6 +59,9 @@ EventLoopDispatcher::~EventLoopDispatcher() noexcept {
     if (!callbacks_.empty()) {
         GetLogger().Error("Destroying dispatcher with {} fd callback registration(s) still active", callbacks_.size());
     }
+    if (!timers_.empty()) {
+        GetLogger().Error("Destroying dispatcher with {} timer registration(s) still active", timers_.size());
+    }
 
     if (event_fd_ >= 0) {
         GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_);
@@ -102,8 +107,17 @@ bool EventLoopDispatcher::Unregister(int fd) noexcept {
 
 void EventLoopDispatcher::Run(const volatile std::sig_atomic_t& stop_requested) {
     GetLogger().Info("Starting dispatcher event loop");
+    if (event_fd_ < 0) {
+        GetLogger().Error("Cannot run dispatcher: event queue is invalid");
+        return;
+    }
     while (stop_requested == 0) {
-        PollOnce(std::chrono::milliseconds{1000});
+        const auto now = std::chrono::steady_clock::now();
+        // Fire what's due, then block only until the next deadline. FireDueTimers reschedules the
+        // timers it fires to now + interval, so the same `now` drives a correct NextTimeout; a timer
+        // that comes due during the wait fires on the next iteration (within one MAX_POLL_INTERVAL).
+        FireDueTimers(now);
+        PollOnce(NextTimeout(now));
     }
     GetLogger().Info("Stopped dispatcher event loop");
 }
@@ -166,6 +180,60 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     auto on_readable = it->second;
     on_readable(fd);
     return true;
+}
+
+EventLoopDispatcher::TimerId EventLoopDispatcher::RegisterTimer(
+    std::chrono::milliseconds interval, const OnTimerCallback& callback) {
+    if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
+        GetLogger().Error("Cannot register timer: non-positive interval or invalid callback");
+        return TimerId{};
+    }
+    const auto id = static_cast<TimerId>(next_timer_id_++);
+    timers_.push_back(TimerEntry{
+        .id = id,
+        .interval = interval,
+        .next = std::chrono::steady_clock::now() + interval,
+        .callback = callback,
+    });
+    return id;
+}
+
+void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {
+    std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; });
+}
+
+void EventLoopDispatcher::FireDueTimers(std::chrono::steady_clock::time_point now) {
+    // Walk timers_ live (no snapshot): a callback may RegisterTimer (append, possibly reallocating)
+    // or UnregisterTimer (erase, shifting elements), so after each fire we re-check that our slot
+    // still holds the entry we fired (by id) and restart from the front otherwise — the same merge
+    // walk DispatchPacket uses. Rescheduling a fired timer to now + interval (before invoking) makes
+    // it no longer due, so a restart never re-fires it: that reschedule is the timer equivalent of
+    // DispatchPacket's last_dispatched_id. A timer unregistered by an earlier callback in the round
+    // is simply gone from timers_, so it is correctly not fired (a snapshot would fire it anyway).
+    for (size_t idx = 0; idx < timers_.size();) {
+        TimerEntry& entry = timers_[idx];
+        if (entry.next <= now) {
+            const auto id = entry.id;
+            entry.next = now + entry.interval;  // forward from now; never += interval (no backlog spin)
+            entry.callback();  // may mutate timers_; entry's pointers are loaded before the call
+
+            if (idx >= timers_.size() || timers_[idx].id != id) {
+                idx = 0;
+                continue;
+            }
+        }
+        ++idx;
+    }
+}
+
+std::chrono::milliseconds EventLoopDispatcher::NextTimeout(std::chrono::steady_clock::time_point now) const {
+    auto timeout = MAX_POLL_INTERVAL;
+    for (const auto& entry : timers_) {
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(entry.next - now);
+        timeout = std::min(timeout, remaining);
+    }
+    return std::max(timeout, std::chrono::milliseconds{0});
 }
 
 bool EventLoopDispatcher::AddReadEvent(int fd) noexcept {
