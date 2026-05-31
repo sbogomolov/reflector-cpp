@@ -79,8 +79,8 @@ private:
     PacketDispatcher& packet_dispatcher_;  // retained so OnSourcePacket can register response captures
     std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response capture
     std::vector<Session> sessions_;
-    Timer eviction_timer_;  // armed only while sessions are in flight (lazy); declared last ->
-                            // destroyed first (unregisters before the sessions it sweeps drop)
+    Timer eviction_timer_;  // started only while sessions are in flight (lazy); declared last ->
+                            // destroyed first (stops before the sessions it sweeps drop)
 };
 
 } // namespace reflector

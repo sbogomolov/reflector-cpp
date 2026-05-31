@@ -221,7 +221,7 @@ struct TimerUnregisterer {
     void Tick(std::chrono::steady_clock::time_point) {
         ++count;
         if (other != nullptr) {
-            *other = {};
+            other->Stop();
         }
     }
 };
@@ -233,8 +233,9 @@ TEST_F(EventLoopDispatcherTest, NextTimeoutReturnsCapWhenNoTimers) {
 
 TEST_F(EventLoopDispatcherTest, FireDueTimersInvokesAndReschedulesDueTimer) {
     TimerCounter counter;
-    Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
-    ASSERT_TRUE(timer.IsValid());
+    Timer timer{dispatcher};
+    timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter));
+    ASSERT_TRUE(timer.IsRunning());
     const auto t0 = std::chrono::steady_clock::now();
 
     // Not yet due at t0: no fire.
@@ -251,15 +252,16 @@ TEST_F(EventLoopDispatcherTest, FireDueTimersInvokesAndReschedulesDueTimer) {
     dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{100});
     EXPECT_EQ(counter.count, 2);
 
-    timer = {};  // RAII unregister
+    timer.Stop();
     dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{1000});
-    EXPECT_EQ(counter.count, 2);  // unregistered: no further fires
+    EXPECT_EQ(counter.count, 2);  // stopped: no further fires
 }
 
 TEST_F(EventLoopDispatcherTest, FireDueTimersPassesItsNowToTheCallback) {
     TimerCounter counter;
-    Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
-    ASSERT_TRUE(timer.IsValid());
+    Timer timer{dispatcher};
+    timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter));
+    ASSERT_TRUE(timer.IsRunning());
 
     // The callback receives exactly the `now` FireDueTimers was given (the one fire-cycle clock read),
     // not a value it sampled itself.
@@ -271,8 +273,9 @@ TEST_F(EventLoopDispatcherTest, FireDueTimersPassesItsNowToTheCallback) {
 
 TEST_F(EventLoopDispatcherTest, NextTimeoutClampsToSoonestDeadlineAndFloorsAtZero) {
     TimerCounter counter;
-    const Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
-    ASSERT_TRUE(timer.IsValid());
+    Timer timer{dispatcher};
+    timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter));
+    ASSERT_TRUE(timer.IsRunning());
     const auto t0 = std::chrono::steady_clock::now();
 
     // Halfway to the deadline: ~25ms remain, clamped under the 1000ms cap.
@@ -286,8 +289,9 @@ TEST_F(EventLoopDispatcherTest, NextTimeoutClampsToSoonestDeadlineAndFloorsAtZer
 
 TEST_F(EventLoopDispatcherTest, TimerRejectsNonPositiveInterval) {
     TimerCounter counter;
-    const Timer timer{dispatcher, std::chrono::milliseconds{0}, CreateDelegate<&TimerCounter::Tick>(&counter)};
-    EXPECT_FALSE(timer.IsValid());
+    Timer timer{dispatcher};
+    timer.Start(std::chrono::milliseconds{0}, CreateDelegate<&TimerCounter::Tick>(&counter));
+    EXPECT_FALSE(timer.IsRunning());
 }
 
 TEST_F(EventLoopDispatcherTest, CallbackCanUnregisterAnotherDueTimerBeforeItFires) {
@@ -295,8 +299,10 @@ TEST_F(EventLoopDispatcherTest, CallbackCanUnregisterAnotherDueTimerBeforeItFire
     TimerCounter second;
     // Same interval, so both come due together; `first` (registered first, so fired first) cancels
     // `second` before the walk reaches it.
-    Timer first_timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerUnregisterer::Tick>(&first)};
-    Timer second_timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&second)};
+    Timer first_timer{dispatcher};
+    first_timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerUnregisterer::Tick>(&first));
+    Timer second_timer{dispatcher};
+    second_timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&second));
     first.other = &second_timer;
     const auto t0 = std::chrono::steady_clock::now();
 

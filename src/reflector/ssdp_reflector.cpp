@@ -26,7 +26,8 @@ SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
         , source_socket_{source_socket}
         , target_socket_{target_socket}
         , packet_dispatcher_{packet_dispatcher}
-        , config_mac_{config.mac} {
+        , config_mac_{config.mac}
+        , eviction_timer_{packet_dispatcher.UnderlyingDispatcher()} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -159,11 +160,10 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
 
     sessions_.push_back(std::move(*new_session));
-    // Arm the eviction sweep on the first in-flight session; EvictExpired disarms it once the table
+    // Start the eviction sweep on the first in-flight session; EvictExpired stops it once the table
     // empties, so the reactor isn't woken every interval while there's nothing to sweep.
-    if (!eviction_timer_.IsValid()) {
-        eviction_timer_ = Timer{packet_dispatcher_.UnderlyingDispatcher(), EVICTION_INTERVAL,
-            CreateDelegate<&SsdpReflector::EvictExpired>(this)};
+    if (!eviction_timer_.IsRunning()) {
+        eviction_timer_.Start(EVICTION_INTERVAL, CreateDelegate<&SsdpReflector::EvictExpired>(this));
     }
 }
 
@@ -263,9 +263,9 @@ void SsdpReflector::Reflect(LinkSocket& egress, const Packet& packet) noexcept {
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
     std::erase_if(sessions_, [now](const Session& session) { return session.expiry <= now; });
     if (sessions_.empty()) {
-        // Nothing left to sweep: disarm. Safe self-unregister — the dispatcher's timer merge-walk
+        // Nothing left to sweep: stop. Safe self-unregister — the dispatcher's timer merge-walk
         // tolerates a callback dropping its own timer.
-        eviction_timer_.Reset();
+        eviction_timer_.Stop();
     }
 }
 

@@ -45,18 +45,21 @@ protected:
 
 private:
     friend Registration;
-    // Timer is the RAII face of the timer registration: it calls RegisterTimer on construction and
-    // UnregisterTimer on destruction, so the raw pair below stays private — a periodic timer is only
-    // ever obtained as a Timer (never a bare TimerId the caller must remember to release).
+    // Timer is the RAII face of a timer registration: it holds one TimerId for its whole life and
+    // (un)registers under it via Start/Stop, so the trio below stays private — a periodic timer is
+    // only ever driven through a Timer (never a bare TimerId the caller must remember to release).
     friend class Timer;
 
     virtual bool Unregister(int fd) noexcept = 0;
 
-    // RegisterTimer rejects interval <= 0 / an invalid callback by returning TimerId{} (a
-    // non-positive interval would busy-loop and an unset Delegate is UB to invoke); UnregisterTimer
-    // is a no-op for an unknown/already-removed id.
-    [[nodiscard]] virtual TimerId RegisterTimer(
-        std::chrono::milliseconds interval, const OnTimerCallback& callback) = 0;
+    // AllocateTimerId reserves a unique id without registering anything (a Timer holds it for life).
+    // RegisterTimer registers `callback` to fire every `interval` under that id, first dropping any
+    // prior registration of the id (a re-register is a restart). It returns false on an id this
+    // dispatcher never allocated, a non-positive interval (would busy-loop), or an unset callback (UB
+    // to invoke). UnregisterTimer is a no-op for an unknown/already-removed id.
+    [[nodiscard]] virtual TimerId AllocateTimerId() noexcept = 0;
+    [[nodiscard]] virtual bool RegisterTimer(
+        TimerId id, std::chrono::milliseconds interval, const OnTimerCallback& callback) = 0;
     virtual void UnregisterTimer(TimerId id) noexcept = 0;
 };
 

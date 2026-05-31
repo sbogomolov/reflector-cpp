@@ -44,8 +44,9 @@ private:
         OnTimerCallback callback;
     };
 
-    [[nodiscard]] TimerId RegisterTimer(
-        std::chrono::milliseconds interval, const OnTimerCallback& callback) override;
+    [[nodiscard]] TimerId AllocateTimerId() noexcept override;
+    [[nodiscard]] bool RegisterTimer(
+        TimerId id, std::chrono::milliseconds interval, const OnTimerCallback& callback) override;
     void UnregisterTimer(TimerId id) noexcept override;
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return callbacks_.size(); }

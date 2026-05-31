@@ -17,51 +17,73 @@ struct Counter {
 
 using namespace std::chrono_literals;
 
-TEST(TimerTest, RegistersOnConstructionAndIsValid) {
+TEST(TimerTest, ConstructedTimerIsNotRunning) {
+    FakeDispatcher dispatcher;
+    const Timer timer{dispatcher};
+    EXPECT_FALSE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);  // a stable id is reserved; nothing is registered yet
+}
+
+TEST(TimerTest, StartRegistersAndStopUnregisters) {
     FakeDispatcher dispatcher;
     Counter counter;
-    const Timer timer{dispatcher, 1s, CreateDelegate<&Counter::Tick>(&counter)};
-    EXPECT_TRUE(timer.IsValid());
+    Timer timer{dispatcher};
+
+    timer.Start(1s, CreateDelegate<&Counter::Tick>(&counter));
+    EXPECT_TRUE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 1u);
+
+    timer.Stop();
+    EXPECT_FALSE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);
+}
+
+TEST(TimerTest, StartRejectsNonPositiveInterval) {
+    FakeDispatcher dispatcher;
+    Counter counter;
+    Timer timer{dispatcher};
+    timer.Start(0s, CreateDelegate<&Counter::Tick>(&counter));
+    EXPECT_FALSE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);
+}
+
+TEST(TimerTest, StartRejectsInvalidCallback) {
+    FakeDispatcher dispatcher;
+    Timer timer{dispatcher};
+    timer.Start(1s, Dispatcher::OnTimerCallback{});  // unset
+    EXPECT_FALSE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);
+}
+
+TEST(TimerTest, StartOnARunningTimerRestartsIt) {
+    FakeDispatcher dispatcher;
+    Counter counter;
+    Timer timer{dispatcher};
+    timer.Start(1s, CreateDelegate<&Counter::Tick>(&counter));
+    timer.Start(1s, CreateDelegate<&Counter::Tick>(&counter));  // restart, not a second registration
+    EXPECT_TRUE(timer.IsRunning());
     EXPECT_EQ(dispatcher.TimerCount(), 1u);
 }
 
-TEST(TimerTest, RejectsNonPositiveIntervalAndIsInvalid) {
-    FakeDispatcher dispatcher;
-    Counter counter;
-    const Timer timer{dispatcher, 0s, CreateDelegate<&Counter::Tick>(&counter)};
-    EXPECT_FALSE(timer.IsValid());
-    EXPECT_EQ(dispatcher.TimerCount(), 0u);
-}
-
-TEST(TimerTest, RejectsInvalidCallbackAndIsInvalid) {
-    FakeDispatcher dispatcher;
-    const Timer timer{dispatcher, 1s, Dispatcher::OnTimerCallback{}};  // default Delegate: unset
-    EXPECT_FALSE(timer.IsValid());
-    EXPECT_EQ(dispatcher.TimerCount(), 0u);
-}
-
-TEST(TimerTest, DefaultConstructedIsInvalid) {
-    const Timer timer;
-    EXPECT_FALSE(timer.IsValid());
-}
-
-TEST(TimerTest, UnregistersOnDestruction) {
+TEST(TimerTest, StopsOnDestruction) {
     FakeDispatcher dispatcher;
     Counter counter;
     {
-        const Timer timer{dispatcher, 1s, CreateDelegate<&Counter::Tick>(&counter)};
+        Timer timer{dispatcher};
+        timer.Start(1s, CreateDelegate<&Counter::Tick>(&counter));
         ASSERT_EQ(dispatcher.TimerCount(), 1u);
     }
     EXPECT_EQ(dispatcher.TimerCount(), 0u);
 }
 
-TEST(TimerTest, MoveDoesNotDoubleUnregister) {
+TEST(TimerTest, MoveTransfersTheRunningRegistrationWithoutDoubleUnregister) {
     FakeDispatcher dispatcher;
     Counter counter;
     {
-        Timer first{dispatcher, 1s, CreateDelegate<&Counter::Tick>(&counter)};
+        Timer first{dispatcher};
+        first.Start(1s, CreateDelegate<&Counter::Tick>(&counter));
         Timer second = std::move(first);
-        EXPECT_TRUE(second.IsValid());
+        EXPECT_TRUE(second.IsRunning());
         EXPECT_EQ(dispatcher.TimerCount(), 1u);
     }
     EXPECT_EQ(dispatcher.TimerCount(), 0u);  // exactly one unregister, from `second`
@@ -70,7 +92,8 @@ TEST(TimerTest, MoveDoesNotDoubleUnregister) {
 TEST(TimerTest, FiringInvokesTheCallback) {
     FakeDispatcher dispatcher;
     Counter counter;
-    const Timer timer{dispatcher, 1s, CreateDelegate<&Counter::Tick>(&counter)};
+    Timer timer{dispatcher};
+    timer.Start(1s, CreateDelegate<&Counter::Tick>(&counter));
     dispatcher.FireTimers(std::chrono::steady_clock::now());
     EXPECT_EQ(counter.count, 1);
 }

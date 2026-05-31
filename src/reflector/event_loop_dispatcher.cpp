@@ -182,20 +182,29 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     return true;
 }
 
-EventLoopDispatcher::TimerId EventLoopDispatcher::RegisterTimer(
-    std::chrono::milliseconds interval, const OnTimerCallback& callback) {
+EventLoopDispatcher::TimerId EventLoopDispatcher::AllocateTimerId() noexcept {
+    return static_cast<TimerId>(next_timer_id_++);
+}
+
+bool EventLoopDispatcher::RegisterTimer(
+    TimerId id, std::chrono::milliseconds interval, const OnTimerCallback& callback) {
+    if (static_cast<uint64_t>(id) >= next_timer_id_) {
+        GetLogger().Error("Cannot register timer: TimerId {} was not allocated by this dispatcher",
+            static_cast<uint64_t>(id));
+        return false;
+    }
+    UnregisterTimer(id);  // restart: a re-register under the same id replaces the prior registration
     if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
         GetLogger().Error("Cannot register timer: non-positive interval or invalid callback");
-        return TimerId{};
+        return false;
     }
-    const auto id = static_cast<TimerId>(next_timer_id_++);
     timers_.push_back(TimerEntry{
         .id = id,
         .interval = interval,
         .next = std::chrono::steady_clock::now() + interval,
         .callback = callback,
     });
-    return id;
+    return true;
 }
 
 void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {

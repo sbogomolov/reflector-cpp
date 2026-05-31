@@ -1,48 +1,58 @@
 #pragma once
 
 #include "dispatcher.h"
+#include "util/no_copy.h"
 
 #include <chrono>
 #include <utility>
 
 namespace reflector {
 
-// Owns one periodic timer registration on a Dispatcher and cancels it on destruction — the RAII
-// face of the dispatcher's private register/unregister pair (it is the dispatcher's friend, so its
-// construction registers and its destruction unregisters). Move-only. Invalid (IsValid() == false)
-// when the interval is <= 0 or the callback is unset.
-class Timer {
+// RAII face of a single periodic timer on a Dispatcher. Holds one TimerId for its whole life
+// (allocated at construction, registered nowhere yet); Start() registers it and Stop() unregisters
+// it under that same stable id, so the timer can be toggled without churning ids. Stops on
+// destruction. Move-only.
+class Timer : NoCopy {
 public:
-    Timer() noexcept = default;
-    Timer(Dispatcher& dispatcher, std::chrono::milliseconds interval,
-        const Dispatcher::OnTimerCallback& callback)
-            : dispatcher_{&dispatcher}, id_{dispatcher.RegisterTimer(interval, callback)} {}
+    explicit Timer(Dispatcher& dispatcher)
+            : dispatcher_{&dispatcher}, id_{dispatcher.AllocateTimerId()} {}
 
     Timer(Timer&& other) noexcept
-            : dispatcher_{std::exchange(other.dispatcher_, nullptr)}, id_{other.id_} {}
+            : dispatcher_{std::exchange(other.dispatcher_, nullptr)}
+            , id_{other.id_}
+            , running_{std::exchange(other.running_, false)} {}
     Timer& operator=(Timer&& other) noexcept {
         if (this != &other) {
-            Reset();
+            Stop();
             dispatcher_ = std::exchange(other.dispatcher_, nullptr);
             id_ = other.id_;
+            running_ = std::exchange(other.running_, false);
         }
         return *this;
     }
-    ~Timer() noexcept { Reset(); }
+    ~Timer() noexcept { Stop(); }
 
-    [[nodiscard]] bool IsValid() const noexcept { return dispatcher_ != nullptr && id_ != Dispatcher::TimerId{}; }
+    // Registers the timer to fire every `interval` until Stop()/destruction; if already running,
+    // RegisterTimer replaces the prior registration (a restart). A non-positive interval or unset
+    // callback leaves it stopped (IsRunning() == false).
+    void Start(std::chrono::milliseconds interval, const Dispatcher::OnTimerCallback& callback) {
+        running_ = dispatcher_->RegisterTimer(id_, interval, callback);
+    }
 
-    // Cancels the timer now (unregisters from the dispatcher); IsValid() becomes false afterwards.
-    // Idempotent — a no-op on an already-invalid timer. The destructor and move-assignment call it too.
-    void Reset() noexcept {
-        if (dispatcher_ != nullptr) {
-            std::exchange(dispatcher_, nullptr)->UnregisterTimer(id_);
+    // Cancels the timer (a no-op when not running). The destructor and move-assignment call it.
+    void Stop() noexcept {
+        if (running_ && dispatcher_ != nullptr) {
+            dispatcher_->UnregisterTimer(id_);
+            running_ = false;
         }
     }
 
+    [[nodiscard]] bool IsRunning() const noexcept { return running_; }
+
 private:
-    Dispatcher* dispatcher_ = nullptr;
-    Dispatcher::TimerId id_{};
+    Dispatcher* dispatcher_;
+    Dispatcher::TimerId id_;
+    bool running_ = false;
 };
 
 } // namespace reflector
