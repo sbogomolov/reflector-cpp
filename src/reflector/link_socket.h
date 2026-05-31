@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_address.h"
+#include "mac_address.h"
 #include "packet.h"
 
 #include <cstddef>
@@ -40,14 +41,26 @@ public:
     // --- send side: a reflector emits reflected datagrams through this ---
 
     // True if this socket can originate a datagram of `family` (e.g. the bound interface has a
-    // source address of that family). Gate SendUdpDatagram calls on it.
+    // source address of that family). Gate the Send* calls on it.
     [[nodiscard]] virtual bool CanSend(IpAddress::Family family) const noexcept = 0;
 
-    // Sends a UDP datagram to `dst_ip`:`dst_port` from `src_port`, with the given TTL / hop
-    // limit. Returns false (after logging) on failure. The result is unspecified when
-    // !CanSend(dst_ip.AddressFamily()); gate with CanSend first.
-    [[nodiscard]] virtual bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
-        std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
+    // Sends a UDP datagram to an explicit unicast L2 destination `dst_mac` — the egress path does no
+    // ARP/ND, so the caller supplies the peer's MAC (e.g. an SSDP searcher whose frame we captured).
+    // Originates from this interface's own source address; `dst_ip` must be unicast. Returns false
+    // (after logging) on failure; the result is unspecified when !CanSend(dst_ip.AddressFamily()),
+    // so gate with CanSend first.
+    [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
+
+    // Sends a UDP datagram to multicast `group` (must be IpAddress::IsMulticast()), deriving the L2
+    // destination from the group. Same source/failure contract as SendUdpDatagram.
+    [[nodiscard]] virtual bool SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
+
+    // Sends a UDP datagram to the IPv4 limited broadcast (255.255.255.255), using the all-ones L2
+    // destination. Same source/failure contract as SendUdpDatagram.
+    [[nodiscard]] virtual bool SendUdpBroadcastDatagram(uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
     // Joins multicast `group` so this socket's interface receives that group's traffic (programs
     // the kernel/NIC multicast filter — "gate 2"). Idempotent: re-joining a group already joined
@@ -56,6 +69,11 @@ public:
     [[nodiscard]] virtual bool JoinMulticastGroup(IpAddress group) noexcept = 0;
 
     // --- interface bookkeeping: the daemon refreshes cached addresses on change ---
+
+    // The interface's source address for `family` — the address the Send* calls originate from, and
+    // the destination a unicast reply to a relayed datagram of that family is sent to. nullopt if the
+    // interface has none (then CanSend(family) is also false). IPv6 returns the link-local address.
+    [[nodiscard]] virtual std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept = 0;
 
     // The interface's kernel index (0 if unknown). The address monitor reports changes by index,
     // so the owner can map a changed index back to the socket whose addresses need refreshing.

@@ -37,8 +37,8 @@ TEST(MulticastMacForTest, Ipv4Multicast) {
     EXPECT_EQ(MulticastMacFor(*IpAddress::FromString("239.255.255.250")), Mac({0x01, 0x00, 0x5e, 0x7f, 0xff, 0xfa}));
 }
 
-TEST(MulticastMacForTest, Ipv4Broadcast) {
-    EXPECT_EQ(MulticastMacFor(IpAddress::BroadcastV4()), Mac({0xff, 0xff, 0xff, 0xff, 0xff, 0xff}));
+TEST(BroadcastMacTest, IsAllOnes) {
+    EXPECT_EQ(BroadcastMac(), Mac({0xff, 0xff, 0xff, 0xff, 0xff, 0xff}));
 }
 
 TEST(MulticastMacForTest, Ipv6Multicast) {

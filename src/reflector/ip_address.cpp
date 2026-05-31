@@ -41,10 +41,6 @@ IpAddress IpAddress::AllNodesLinkLocalV6() noexcept {
     return IpAddress{Family::V6, bytes};
 }
 
-IpAddress IpAddress::LinkFanoutFor(Family family) noexcept {
-    return family == Family::V4 ? BroadcastV4() : AllNodesLinkLocalV6();
-}
-
 IpAddress IpAddress::MdnsGroupV4() noexcept {
     return FromV4Bytes(224, 0, 0, 251);
 }

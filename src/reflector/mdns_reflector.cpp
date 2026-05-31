@@ -136,7 +136,7 @@ void MdnsReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
     // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the mDNS port, with the conventional 255 hop limit.
     const auto& group = packet.header.dest_ip;
-    if (!egress.SendUdpDatagram(group, MDNS_PORT, MDNS_PORT, packet.payload, MDNS_TTL)) {
+    if (!egress.SendUdpMulticastDatagram(group, MDNS_PORT, MDNS_PORT, packet.payload, MDNS_TTL)) {
         logger_.Error("Cannot reflect mdns packet from {} to {}", packet.header.source_ip, group);
         return;
     }

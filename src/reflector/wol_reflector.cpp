@@ -147,11 +147,18 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
         return;
     }
 
-    const auto destination = IpAddress::LinkFanoutFor(family);
     const auto port = packet.header.dest_port;
-    // Re-emit with the captured TTL / hop limit so the reflected datagram preserves the
-    // sender's reach instead of resetting it.
-    if (!target_socket_.SendUdpDatagram(destination, port, packet.header.source_port, packet.payload, packet.header.ttl)) {
+    // Fan the magic packet out to "everyone on the target link": the IPv4 limited broadcast, or the
+    // IPv6 link-local all-nodes multicast group. Re-emit with the captured TTL / hop limit so the
+    // reflected datagram preserves the sender's reach instead of resetting it.
+    const bool v4 = family == IpAddress::Family::V4;
+    const auto destination = v4 ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6();
+    const bool sent = v4
+        ? target_socket_.SendUdpBroadcastDatagram(
+              port, packet.header.source_port, packet.payload, packet.header.ttl)
+        : target_socket_.SendUdpMulticastDatagram(
+              destination, port, packet.header.source_port, packet.payload, packet.header.ttl);
+    if (!sent) {
         logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
             packet.header.source_ip, packet.header.source_port, destination, port);
         return;

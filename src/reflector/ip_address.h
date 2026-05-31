@@ -25,9 +25,6 @@ public:
     [[nodiscard]] static constexpr IpAddress AnyV6() noexcept { return IpAddress{Family::V6, {}}; }
     [[nodiscard]] static IpAddress BroadcastV4() noexcept;          // 255.255.255.255
     [[nodiscard]] static IpAddress AllNodesLinkLocalV6() noexcept;  // ff02::1
-    // The family's "everyone on the local link" destination: the IPv4 limited broadcast, or
-    // the IPv6 link-local all-nodes multicast.
-    [[nodiscard]] static IpAddress LinkFanoutFor(Family family) noexcept;
     [[nodiscard]] static IpAddress MdnsGroupV4() noexcept;          // 224.0.0.251
     [[nodiscard]] static IpAddress MdnsGroupV6() noexcept;          // ff02::fb
     // The mDNS multicast group for the family (224.0.0.251 / ff02::fb): the destination for
@@ -50,6 +47,18 @@ public:
     [[nodiscard]] constexpr Family AddressFamily() const noexcept { return family_; }
     [[nodiscard]] constexpr bool IsV4() const noexcept { return family_ == Family::V4; }
     [[nodiscard]] constexpr bool IsV6() const noexcept { return family_ == Family::V6; }
+
+    // Multicast: IPv4 224.0.0.0/4 or IPv6 ff00::/8. (The L2 destination is MulticastMacFor.)
+    [[nodiscard]] constexpr bool IsMulticast() const noexcept {
+        return IsV4() ? (std::to_integer<uint8_t>(bytes_[0]) & 0xf0) == 0xe0
+                      : std::to_integer<uint8_t>(bytes_[0]) == 0xff;
+    }
+    // The IPv4 limited broadcast 255.255.255.255 (IPv6 has no broadcast, so always false there).
+    [[nodiscard]] constexpr bool IsBroadcast() const noexcept {
+        return IsV4()
+            && std::to_integer<uint8_t>(bytes_[0]) == 0xff && std::to_integer<uint8_t>(bytes_[1]) == 0xff
+            && std::to_integer<uint8_t>(bytes_[2]) == 0xff && std::to_integer<uint8_t>(bytes_[3]) == 0xff;
+    }
 
     // IPv6 scope classification (all false for IPv4): link-local fe80::/10, unique-local fc00::/7,
     // global unicast 2000::/3.

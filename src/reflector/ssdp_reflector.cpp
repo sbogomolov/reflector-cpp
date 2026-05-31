@@ -138,7 +138,7 @@ void SsdpReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
     // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
     const auto& group = packet.header.dest_ip;
-    if (!egress.SendUdpDatagram(group, SSDP_PORT, SSDP_PORT, packet.payload, SSDP_TTL)) {
+    if (!egress.SendUdpMulticastDatagram(group, SSDP_PORT, SSDP_PORT, packet.payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source_ip, group);
         return;
     }

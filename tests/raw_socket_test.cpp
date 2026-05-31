@@ -449,7 +449,7 @@ TEST_F(RawSocketTest, Ipv4SourceEnablesIpv4AndRefusesIpv6Send) {
     // successful V4 send needs a real raw socket — see the RequiresRoot inject tests below.)
     const std::array payload{std::byte{0xde}, std::byte{0xad}};
     CaptureStdout([&] {  // swallow the expected "no source" error; the bool is the contract
-        EXPECT_FALSE(socket.SendUdpDatagram(
+        EXPECT_FALSE(socket.SendUdpMulticastDatagram(
             IpAddress::AllNodesLinkLocalV6(), 9, 9, payload, /*ttl=*/64));
     });
 }
@@ -462,9 +462,21 @@ TEST_F(RawSocketTest, Ipv6SourceEnablesIpv6AndRefusesIpv4Send) {
 
     const std::array payload{std::byte{0xde}, std::byte{0xad}};
     CaptureStdout([&] {
-        EXPECT_FALSE(socket.SendUdpDatagram(
-            IpAddress::BroadcastV4(), 9, 9, payload, /*ttl=*/64));
+        EXPECT_FALSE(socket.SendUdpBroadcastDatagram(9, 9, payload, /*ttl=*/64));
     });
+}
+
+TEST_F(RawSocketTest, SourceAddressReportsConfiguredSourcePerFamily) {
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), std::nullopt);
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), std::nullopt);
+
+    SetSource(IpAddress::FromV4Bytes(192, 0, 2, 7), *IpAddress::FromString("fe80::1"));
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), IpAddress::FromV4Bytes(192, 0, 2, 7));
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), *IpAddress::FromString("fe80::1"));
+
+    SetSource(std::nullopt, std::nullopt);
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), std::nullopt);
+    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), std::nullopt);
 }
 
 // A non-multicast group is rejected by the kernel (EINVAL on both platforms) and surfaced as
@@ -770,7 +782,7 @@ TEST_F(RawSocketRequiresRootTest, ResolvesInterfaceIndexAndAddresses) {
 TEST_F(RawSocketRequiresRootTest, InjectsUdpDatagram) {
     const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
 
-    EXPECT_TRUE(socket->SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+    EXPECT_TRUE(socket->SendUdpBroadcastDatagram(INJECT_DST_PORT, INJECT_SRC_PORT,
         payload, /*ttl=*/64));
 }
 
@@ -787,7 +799,7 @@ TEST_F(RawSocketRequiresRootTest, InjectsUdpDatagram) {
 TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
     const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
 
-    ASSERT_TRUE(socket->SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+    ASSERT_TRUE(socket->SendUdpBroadcastDatagram(INJECT_DST_PORT, INJECT_SRC_PORT,
         payload, /*ttl=*/64));
 
     // lo carries unrelated traffic too; drain until we see the frame we just injected.
@@ -893,7 +905,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPee
     ASSERT_TRUE(peer.IsValid());
 
     const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
-    ASSERT_TRUE(injector.SendUdpDatagram(IpAddress::BroadcastV4(), INJECT_DST_PORT, INJECT_SRC_PORT,
+    ASSERT_TRUE(injector.SendUdpBroadcastDatagram(INJECT_DST_PORT, INJECT_SRC_PORT,
         payload, /*ttl=*/64));
 
     const auto captured = CaptureInjected(peer, IpAddress::BroadcastV4());
@@ -919,7 +931,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
         pair.ReceiveInterface()));
 
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
-    ASSERT_TRUE(injector.SendUdpDatagram(IpAddress::AllNodesLinkLocalV6(), BoundPort(receiver),
+    ASSERT_TRUE(injector.SendUdpMulticastDatagram(IpAddress::AllNodesLinkLocalV6(), BoundPort(receiver),
         INJECT_SRC_PORT, payload, /*ttl=*/64));
 
     ExpectReceived(receiver, payload);

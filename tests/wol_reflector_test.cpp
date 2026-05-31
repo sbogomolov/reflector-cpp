@@ -47,7 +47,7 @@ protected:
         return Packet{
             .header = PacketHeader{
                 .source_ip = source_ip,
-                .dest_ip = IpAddress::LinkFanoutFor(source_ip.AddressFamily()),
+                .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
                 .source_port = 12345,
                 .dest_port = dest_port,
                 .ttl = ttl,
@@ -143,9 +143,9 @@ TEST_P(WolReflectorPerFamilyTest, ReflectsMagicPacket) {
 
     ASSERT_EQ(target.sent.size(), 1u);
     const auto& sent = target.sent.front();
-    // Fans out to the family's link-everyone address (the V4/V6 mapping itself is covered by
-    // the IpAddress::LinkFanoutFor test).
-    EXPECT_EQ(sent.dst_ip, IpAddress::LinkFanoutFor(family));
+    // Fans out to the family's link-everyone address: broadcast for v4, all-nodes multicast for v6.
+    EXPECT_EQ(sent.dst_ip, family == IpAddress::Family::V4 ? IpAddress::BroadcastV4()
+                                                           : IpAddress::AllNodesLinkLocalV6());
     EXPECT_EQ(sent.dst_port, dest_port);
     EXPECT_EQ(sent.src_port, 12345);     // the original datagram's source port is preserved
     EXPECT_EQ(sent.ttl, source_ttl);     // re-emitted with the captured TTL, not a fixed one

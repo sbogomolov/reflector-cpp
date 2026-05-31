@@ -95,16 +95,12 @@ MacAddress MulticastMacFor(IpAddress address) noexcept {
     const auto& bytes = address.Bytes();
     MacAddress::ByteArray mac{};
     if (address.IsV4()) {
-        if (address == IpAddress::BroadcastV4()) {
-            mac.fill(std::byte{0xff});
-        } else {
-            mac[0] = std::byte{0x01};
-            mac[1] = std::byte{0x00};
-            mac[2] = std::byte{0x5e};
-            mac[3] = bytes[1] & std::byte{0x7f};  // top bit cleared: only the low 23 address bits map
-            mac[4] = bytes[2];
-            mac[5] = bytes[3];
-        }
+        mac[0] = std::byte{0x01};
+        mac[1] = std::byte{0x00};
+        mac[2] = std::byte{0x5e};
+        mac[3] = bytes[1] & std::byte{0x7f};  // top bit cleared: only the low 23 address bits map
+        mac[4] = bytes[2];
+        mac[5] = bytes[3];
     } else {
         mac[0] = std::byte{0x33};
         mac[1] = std::byte{0x33};
@@ -113,6 +109,12 @@ MacAddress MulticastMacFor(IpAddress address) noexcept {
         mac[4] = bytes[14];
         mac[5] = bytes[15];
     }
+    return MacAddress{mac};
+}
+
+MacAddress BroadcastMac() noexcept {
+    MacAddress::ByteArray mac{};
+    mac.fill(std::byte{0xff});
     return MacAddress{mac};
 }
 

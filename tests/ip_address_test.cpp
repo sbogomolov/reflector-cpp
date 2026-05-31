@@ -60,9 +60,23 @@ TEST(IpAddressTest, AllNodesLinkLocalV6ReturnsAllNodesMulticastAddress) {
     EXPECT_EQ(addr.ToString(), "ff02::1");
 }
 
-TEST(IpAddressTest, LinkFanoutForSelectsFamilyAppropriateAddress) {
-    EXPECT_EQ(IpAddress::LinkFanoutFor(IpAddress::Family::V4), IpAddress::BroadcastV4());
-    EXPECT_EQ(IpAddress::LinkFanoutFor(IpAddress::Family::V6), IpAddress::AllNodesLinkLocalV6());
+TEST(IpAddressTest, ClassifiesMulticast) {
+    EXPECT_TRUE(Parse("224.0.0.251").IsMulticast());     // 224.0.0.0/4 low edge
+    EXPECT_TRUE(Parse("239.255.255.250").IsMulticast()); // 224.0.0.0/4 high edge
+    EXPECT_FALSE(Parse("223.255.255.255").IsMulticast()); // just below the range
+    EXPECT_FALSE(Parse("240.0.0.1").IsMulticast());       // just above the range
+    EXPECT_FALSE(Parse("192.168.1.1").IsMulticast());
+    EXPECT_FALSE(Parse("255.255.255.255").IsMulticast()); // broadcast is not multicast
+    EXPECT_TRUE(Parse("ff02::c").IsMulticast());          // IPv6 ff00::/8
+    EXPECT_FALSE(Parse("fe80::1").IsMulticast());
+}
+
+TEST(IpAddressTest, ClassifiesBroadcast) {
+    EXPECT_TRUE(Parse("255.255.255.255").IsBroadcast());
+    EXPECT_FALSE(Parse("255.255.255.254").IsBroadcast());
+    EXPECT_FALSE(Parse("239.255.255.250").IsBroadcast()); // multicast is not broadcast
+    EXPECT_FALSE(Parse("192.168.1.1").IsBroadcast());
+    EXPECT_FALSE(Parse("ff02::1").IsBroadcast());          // IPv6 has no broadcast
 }
 
 TEST(IpAddressTest, MdnsGroupV4ReturnsMdnsMulticastAddress) {

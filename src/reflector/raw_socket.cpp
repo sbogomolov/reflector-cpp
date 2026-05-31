@@ -9,6 +9,7 @@
 #include <array>
 #include <arpa/inet.h>
 #include <bit>
+#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -345,6 +346,10 @@ bool RawSocket::CanSend(IpAddress::Family family) const noexcept {
     return (family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6).has_value();
 }
 
+std::optional<IpAddress> RawSocket::SourceAddress(IpAddress::Family family) const noexcept {
+    return family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
+}
+
 void RawSocket::RefreshAddresses() noexcept {
 #if defined(__linux__)
     addresses_ = ResolveInterfaceAddresses(interface_index_);
@@ -357,7 +362,24 @@ void RawSocket::RefreshAddresses() noexcept {
         addresses_.v6 ? addresses_.v6->ToString() : "none");
 }
 
-bool RawSocket::SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
+bool RawSocket::SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept {
+    assert(!dst_ip.IsMulticast() && !dst_ip.IsBroadcast());  // use the multicast/broadcast variants
+    return SendFrame(dst_mac, dst_ip, dst_port, src_port, payload, ttl);
+}
+
+bool RawSocket::SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept {
+    assert(group.IsMulticast());
+    return SendFrame(MulticastMacFor(group), group, dst_port, src_port, payload, ttl);
+}
+
+bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept {
+    return SendFrame(BroadcastMac(), IpAddress::BroadcastV4(), dst_port, src_port, payload, ttl);
+}
+
+bool RawSocket::SendFrame(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     const auto family = dst_ip.AddressFamily();
     const auto& source = family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
@@ -369,12 +391,12 @@ bool RawSocket::SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t sr
 
     std::array<std::byte, SEND_BUFFER_SIZE> frame{};
 #if defined(__linux__)
-    const size_t length = BuildUdpFrame(MulticastMacFor(dst_ip), addresses_.mac, *source, dst_ip,
+    const size_t length = BuildUdpFrame(dst_mac, addresses_.mac, *source, dst_ip,
         src_port, dst_port, payload, ttl, frame);
 #elif defined(__APPLE__)
     const size_t length = link_type_ == LinkType::Loopback
         ? BuildLoopbackUdpFrame(*source, dst_ip, src_port, dst_port, payload, ttl, frame)
-        : BuildUdpFrame(MulticastMacFor(dst_ip), addresses_.mac, *source, dst_ip, src_port,
+        : BuildUdpFrame(dst_mac, addresses_.mac, *source, dst_ip, src_port,
               dst_port, payload, ttl, frame);
 #endif
     if (length == 0) {

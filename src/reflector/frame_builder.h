@@ -9,10 +9,13 @@
 
 namespace reflector {
 
-// L2 destination MAC for an IPv4/IPv6 multicast or limited-broadcast address: the IPv4 limited
-// broadcast maps to ff:ff:ff:ff:ff:ff, an IPv4 multicast to 01:00:5e + the low 23 address bits
-// (RFC 1112), and an IPv6 multicast to 33:33 + the low 32 address bits (RFC 2464).
+// L2 destination MAC for a multicast `address`: IPv4 multicast maps to 01:00:5e + the low 23 address
+// bits (RFC 1112), IPv6 multicast to 33:33 + the low 32 address bits (RFC 2464). The caller must pass
+// a multicast address (IpAddress::IsMulticast()); the limited broadcast uses BroadcastMac instead.
 [[nodiscard]] MacAddress MulticastMacFor(IpAddress address) noexcept;
+
+// The L2 destination MAC for the IPv4 limited broadcast: ff:ff:ff:ff:ff:ff.
+[[nodiscard]] MacAddress BroadcastMac() noexcept;
 
 // Builds an Ethernet frame carrying one UDP datagram (IPv4/IPv6 + UDP headers, with the IPv4
 // header checksum and UDP checksum filled in) into `out`. Returns the frame length, or 0 if

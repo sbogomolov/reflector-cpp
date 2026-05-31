@@ -63,18 +63,27 @@ public:
     // this instead of probing.
     [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept override;
 
+    // The interface's cached source address for `family` (the one the Send* calls originate from),
+    // or nullopt if it has none. IPv6 returns the link-local address.
+    [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept override;
+
     // Re-resolves the interface's source addresses. The address monitor calls this when the
     // kernel reports an address change on this interface, so a long-running daemon's cached
     // source addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
     void RefreshAddresses() noexcept override;
 
-    // Injects a UDP datagram out this interface as a raw L2 frame: builds the Ethernet/IP/UDP
-    // headers and checksums from the interface's cached source MAC/IP, derives the destination
-    // MAC from `dst_ip`, and writes the frame to the kernel. `dst_ip` must be multicast or the
-    // IPv4 limited broadcast — unicast neighbour resolution is out of scope. `ttl` sets the IPv4
-    // TTL / IPv6 hop limit. Fails (after logging) if the interface has no source address for
-    // `dst_ip`'s family; gate callers with CanSend(dst_ip.AddressFamily()).
-    [[nodiscard]] bool SendUdpDatagram(IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
+    // Injects a UDP datagram out this interface as a raw L2 frame, building the Ethernet/IP/UDP
+    // headers and checksums from the interface's cached source MAC/IP and writing the frame to the
+    // kernel. These three differ only in the L2 destination: SendUdpDatagram takes an explicit
+    // unicast `dst_mac` (no ARP/ND), SendUdpMulticastDatagram derives it from a multicast group, and
+    // SendUdpBroadcastDatagram uses the all-ones broadcast MAC (always IPv4). `ttl` sets the IPv4 TTL
+    // / IPv6 hop limit. Each fails (after logging) if the interface has no source address for the
+    // datagram's family; gate first with CanSend (CanSend(Family::V4) for the broadcast).
+    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override;
+    [[nodiscard]] bool SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept override;
+    [[nodiscard]] bool SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;
 
     // Joins `group` on a dedicated, unbound join-only fd (AF_INET / AF_INET6 per family) so the
@@ -115,6 +124,12 @@ private:
     void Close() noexcept;
 
     [[nodiscard]] std::optional<Packet> ParseFrame(std::span<const std::byte> frame) noexcept;
+
+    // Shared body of the three public sends: builds the frame to `dst_mac` from this interface's
+    // cached source MAC/IP and writes it. The callers compute `dst_mac` (explicit unicast, derived
+    // multicast, or broadcast) and enforce their address-type precondition first.
+    [[nodiscard]] bool SendFrame(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept;
 
     Logger logger_;
     std::string interface_;
