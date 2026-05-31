@@ -1,7 +1,11 @@
 #include "ssdp_message.h"
 
+#include <algorithm>
+#include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -21,6 +25,22 @@ bool StartsWith(std::span<const std::byte> payload, std::string_view token) noex
 constexpr std::string_view SEARCH_TOKEN = "M-SEARCH ";
 constexpr std::string_view ADVERTISEMENT_TOKEN = "NOTIFY ";
 
+constexpr uint8_t MX_MIN = 1;
+constexpr uint8_t MX_MAX = 5;
+
+// Case-insensitive prefix match of an ASCII header name.
+bool HeaderNameMatches(std::string_view line, std::string_view name) noexcept {
+    if (line.size() < name.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < name.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(line[i])) != std::tolower(static_cast<unsigned char>(name[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> payload) noexcept {
@@ -31,6 +51,34 @@ std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> pa
         return SsdpMessageKind::Advertisement;
     }
     return std::nullopt;
+}
+
+std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexcept {
+    const std::string_view text{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const auto end = text.find("\r\n", pos);
+        const auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
+        if (HeaderNameMatches(line, "MX:")) {
+            auto value = line.substr(3);
+            const auto first = value.find_first_not_of(" \t");
+            if (first != std::string_view::npos) {
+                value = value.substr(first);
+                unsigned parsed = 0;
+                const auto* begin = value.data();
+                const auto* stop = value.data() + value.size();
+                if (std::from_chars(begin, stop, parsed).ec == std::errc{}) {
+                    return static_cast<uint8_t>(std::clamp<unsigned>(parsed, MX_MIN, MX_MAX));
+                }
+            }
+            return std::nullopt;  // MX present but unparseable
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        pos = end + 2;
+    }
+    return std::nullopt;  // no MX header at all
 }
 
 } // namespace reflector

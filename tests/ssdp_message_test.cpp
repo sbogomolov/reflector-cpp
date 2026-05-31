@@ -68,3 +68,23 @@ TEST(SsdpMessageTest, RejectsMethodTokenWithoutTrailingSpace) {
     // by the length guard (the too-short case is covered separately above).
     EXPECT_EQ(ClassifySsdpMessage(Bytes("NOTIFYX")), std::nullopt);
 }
+
+TEST(SsdpMessageTest, ParsesMxHeaderValue) {
+    const auto payload = Bytes(
+        "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMX: 4\r\nST: ssdp:all\r\n\r\n");
+    EXPECT_EQ(ParseMSearchMx(payload), 4);
+}
+
+TEST(SsdpMessageTest, ClampsMxToOneToFive) {
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 0\r\n\r\n")), 1);
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 9\r\n\r\n")), 5);
+}
+
+TEST(SsdpMessageTest, ReturnsNulloptWhenMxAbsentOrUnparseable) {
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nST: ssdp:all\r\n\r\n")), std::nullopt);
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: abc\r\n\r\n")), std::nullopt);
+}
+
+TEST(SsdpMessageTest, ParsesMxHeaderNameCaseInsensitively) {
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nmx: 2\r\n\r\n")), 2);
+}

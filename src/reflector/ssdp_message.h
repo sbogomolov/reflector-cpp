@@ -21,4 +21,15 @@ enum class SsdpMessageKind : uint8_t {
 // a payload too short to hold the token, or anything else.
 [[nodiscard]] std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> payload) noexcept;
 
+// The fallback M-SEARCH response window (seconds) a caller applies when ParseMSearchMx reports no
+// usable MX. Per UDA 2.0 a multicast M-SEARCH MUST carry MX, so an absent/unparseable one is a
+// non-conformant searcher — the caller proxies anyway with this fallback and logs it.
+inline constexpr uint8_t MSEARCH_MX_DEFAULT = 3;
+
+// Parses the MX header of an M-SEARCH (the searcher's max response wait, in seconds), returning the
+// value clamped to [1, 5] per UPnP Device Architecture 2.0. Returns nullopt when MX is absent or
+// unparseable, leaving the fallback (MSEARCH_MX_DEFAULT) and the logging to the caller, which has the
+// searcher's address for context. Scans only the header block; case-insensitive on the field name.
+[[nodiscard]] std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexcept;
+
 } // namespace reflector
