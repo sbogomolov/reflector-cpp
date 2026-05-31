@@ -7,7 +7,7 @@
 
 namespace reflector {
 
-// A reservation over a single ephemeral UDP port. SSDP step 2 re-emits a relayed M-SEARCH from this
+// A reservation over a single ephemeral UDP port. The SSDP reflector reflects an M-SEARCH from this
 // port so devices unicast their 200 OK back to it; the port must stay "claimed" for the session's
 // lifetime so the kernel's UDP socket lookup succeeds and it does NOT answer the response with an
 // ICMP port-unreachable. The bound socket is never read — the real datagram is captured by the raw

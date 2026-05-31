@@ -8,7 +8,7 @@
 namespace reflector {
 
 // An SSDP discovery message is either a multicast search (M-SEARCH) or an advertisement (NOTIFY).
-// These are the two kinds a multicast reflector relays — search source->target, advertisement
+// These are the two kinds a multicast reflector reflects — search source->target, advertisement
 // target->source. The unicast search response (HTTP/1.1 200 OK) is neither and isn't classified here.
 enum class SsdpMessageKind : uint8_t {
     Search,
@@ -23,7 +23,7 @@ enum class SsdpMessageKind : uint8_t {
 
 // The fallback M-SEARCH response window (seconds) a caller applies when ParseMSearchMx reports no
 // usable MX. Per UDA 2.0 a multicast M-SEARCH MUST carry MX, so an absent/unparseable one is a
-// non-conformant searcher — the caller proxies anyway with this fallback and logs it.
+// non-conformant searcher — the caller reflects it anyway with this fallback window and logs it.
 inline constexpr uint8_t MSEARCH_MX_DEFAULT = 3;
 
 // Parses the MX header of an M-SEARCH (the searcher's max response wait, in seconds), returning the
