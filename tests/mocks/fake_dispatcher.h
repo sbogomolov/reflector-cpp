@@ -38,12 +38,13 @@ public:
         }
     }
 
-    // Fires every registered timer once, copying each callback before invoking (a callback may
-    // unregister a timer mid-fire), mirroring FireReadable and the production copy-before-invoke.
-    void FireTimers() {
+    // Fires every registered timer once with the simulated fire time `now`, copying each callback
+    // before invoking (a callback may unregister a timer mid-fire), mirroring FireReadable and the
+    // production copy-before-invoke. Tests pass `now` to drive time-based callbacks (e.g. eviction).
+    void FireTimers(std::chrono::steady_clock::time_point now) {
         const auto snapshot = timers_;
         for (const auto& entry : snapshot) {
-            entry.callback();
+            entry.callback(now);
         }
     }
 

@@ -32,13 +32,15 @@ public:
 
     [[nodiscard]] bool IsValid() const noexcept { return dispatcher_ != nullptr && id_ != Dispatcher::TimerId{}; }
 
-private:
+    // Cancels the timer now (unregisters from the dispatcher); IsValid() becomes false afterwards.
+    // Idempotent — a no-op on an already-invalid timer. The destructor and move-assignment call it too.
     void Reset() noexcept {
         if (dispatcher_ != nullptr) {
             std::exchange(dispatcher_, nullptr)->UnregisterTimer(id_);
         }
     }
 
+private:
     Dispatcher* dispatcher_ = nullptr;
     Dispatcher::TimerId id_{};
 };

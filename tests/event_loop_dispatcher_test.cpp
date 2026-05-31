@@ -209,7 +209,8 @@ TEST_F(EventLoopDispatcherTest, RunPollsUntilStopRequested) {
 
 struct TimerCounter {
     int count = 0;
-    void Tick() { ++count; }
+    std::chrono::steady_clock::time_point last_now{};
+    void Tick(std::chrono::steady_clock::time_point now) { ++count; last_now = now; }
 };
 
 // Fires, then unregisters another timer mid-round (by resetting its handle) — used to prove a
@@ -217,7 +218,7 @@ struct TimerCounter {
 struct TimerUnregisterer {
     Timer* other = nullptr;
     int count = 0;
-    void Tick() {
+    void Tick(std::chrono::steady_clock::time_point) {
         ++count;
         if (other != nullptr) {
             *other = {};
@@ -253,6 +254,19 @@ TEST_F(EventLoopDispatcherTest, FireDueTimersInvokesAndReschedulesDueTimer) {
     timer = {};  // RAII unregister
     dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{1000});
     EXPECT_EQ(counter.count, 2);  // unregistered: no further fires
+}
+
+TEST_F(EventLoopDispatcherTest, FireDueTimersPassesItsNowToTheCallback) {
+    TimerCounter counter;
+    Timer timer{dispatcher, std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&counter)};
+    ASSERT_TRUE(timer.IsValid());
+
+    // The callback receives exactly the `now` FireDueTimers was given (the one fire-cycle clock read),
+    // not a value it sampled itself.
+    const auto fire_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    dispatcher.FireDueTimers(fire_time);
+    ASSERT_EQ(counter.count, 1);
+    EXPECT_EQ(counter.last_now, fire_time);
 }
 
 TEST_F(EventLoopDispatcherTest, NextTimeoutClampsToSoonestDeadlineAndFloorsAtZero) {

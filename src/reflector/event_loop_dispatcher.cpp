@@ -215,7 +215,7 @@ void EventLoopDispatcher::FireDueTimers(std::chrono::steady_clock::time_point no
         if (entry.next <= now) {
             const auto id = entry.id;
             entry.next = now + entry.interval;  // forward from now; never += interval (no backlog spin)
-            entry.callback();  // may mutate timers_; entry's pointers are loaded before the call
+            entry.callback(now);  // may mutate timers_; entry's pointers are loaded before the call
 
             if (idx >= timers_.size() || timers_[idx].id != id) {
                 idx = 0;

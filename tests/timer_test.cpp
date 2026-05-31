@@ -12,7 +12,7 @@ namespace reflector {
 
 struct Counter {
     int count = 0;
-    void Tick() { ++count; }
+    void Tick(std::chrono::steady_clock::time_point) { ++count; }
 };
 
 using namespace std::chrono_literals;
@@ -71,7 +71,7 @@ TEST(TimerTest, FiringInvokesTheCallback) {
     FakeDispatcher dispatcher;
     Counter counter;
     const Timer timer{dispatcher, 1s, CreateDelegate<&Counter::Tick>(&counter)};
-    dispatcher.FireTimers();
+    dispatcher.FireTimers(std::chrono::steady_clock::now());
     EXPECT_EQ(counter.count, 1);
 }
 

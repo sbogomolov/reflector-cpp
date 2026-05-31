@@ -20,7 +20,10 @@ class Dispatcher {
 public:
     // RAII handle for one fd registration (keyed by the fd); resetting it unregisters the callback.
     using Registration = reflector::Registration<Dispatcher, int>;
-    using OnTimerCallback = Delegate<void()>;
+    // Invoked when a periodic timer comes due, with the reactor's fire-cycle `now` — passed so the
+    // callback reuses that one clock read (consistent across every timer fired in the cycle) instead
+    // of reading the clock again.
+    using OnTimerCallback = Delegate<void(std::chrono::steady_clock::time_point)>;
     // Strong id so a timer registration is never confused with the fd `int` registration. 0 is the
     // invalid sentinel; real ids start at 1.
     enum class TimerId : uint64_t {};
