@@ -74,6 +74,16 @@ SSDP_HTTP_RESPONSE_HEX = (
     "HTTP/1.1 200 OK\r\n"
     "ST: ssdp:all\r\n\r\n"
 ).encode().hex()
+# The unicast 200 OK a device sends back to an M-SEARCH; the round-trip responder replies with this
+# and the searcher asserts it arrives verbatim after the reflector proxies it across segments.
+SSDP_OK_HEX = (
+    "HTTP/1.1 200 OK\r\n"
+    "CACHE-CONTROL: max-age=1800\r\n"
+    "ST: ssdp:all\r\n"
+    "USN: uuid:device::ssdp:all\r\n"
+    "LOCATION: http://device.invalid/desc.xml\r\n\r\n"
+).encode().hex()
+SEARCHER_SOURCE_PORT = 49152
 
 
 class CommandError(RuntimeError):
@@ -337,6 +347,29 @@ TEST_CASES = [
 ]
 
 
+@dataclasses.dataclass(frozen=True)
+class RoundTripCase:
+    name: str
+    family: int          # 4 or 6
+    group: str
+    timeout_seconds: float = 8.0
+    # When False, no responder is started and the searcher must receive nothing — the reflector must
+    # not fabricate or loop back a reply to an M-SEARCH no device answered.
+    expect_reply: bool = True
+
+
+ROUNDTRIP_CASES = [
+    RoundTripCase(name="ssdp_msearch_roundtrip", family=4, group=SSDP_GROUP_V4),
+    RoundTripCase(name="ssdp_msearch_roundtrip_ipv6", family=6, group=SSDP_GROUP_V6),
+    RoundTripCase(name="ssdp_msearch_no_responder_no_reply", family=4, group=SSDP_GROUP_V4,
+        timeout_seconds=2.0, expect_reply=False),
+]
+
+# Every selectable case, regardless of runner. Round trips are first-class: in the full suite and
+# addressable by --case like any other. The runner is chosen per case by type (see make_runner).
+ALL_CASES: list[TestCase | RoundTripCase] = [*TEST_CASES, *ROUNDTRIP_CASES]
+
+
 def format_command(command: list[str]) -> str:
     return " ".join(command)
 
@@ -574,7 +607,7 @@ class DockerE2E:
 
     def print_diagnostics(self) -> None:
         print(f"\n--- diagnostics for {self.case.name} ({self.prefix}) ---", file=sys.stderr, flush=True)
-        for container in [self.reflector_container, self.receiver_container, self.sender_container]:
+        for container in self.containers:
             inspect = docker(["inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", container], check=False)
             if inspect.returncode == 0:
                 print(f"{container}: {inspect.stdout.strip()}", file=sys.stderr, flush=True)
@@ -606,15 +639,79 @@ class DockerE2E:
             self.print_reflector_logs()
 
 
+class DockerRoundTrip(DockerE2E):
+    def __init__(self, args: argparse.Namespace, case: RoundTripCase) -> None:
+        # The base __init__ only reads case.name and case.direction; a TestCase shim reuses all its
+        # network/reflector setup + cleanup with no duplication.
+        shim = TestCase(name=case.name, send_port=SSDP_PORT, receive_port=SSDP_PORT,
+            expect_mac=None, timeout_seconds=case.timeout_seconds, family=case.family,
+            group=case.group, direction="forward")
+        super().__init__(args, shim)
+        self.rt = case
+        self.responder_container = f"{self.prefix}-responder"
+        self.searcher_container = f"{self.prefix}-searcher"
+        self.containers = [self.searcher_container, self.responder_container, self.reflector_container]
+
+    def start_responder(self) -> None:
+        docker([
+            "run", "-d", "--name", self.responder_container,
+            "--network", f"name={self.target_network},driver-opt=com.docker.network.endpoint.ifname={RECEIVER_IFNAME}",
+            "--mount", f"type=bind,source={E2E_DIR},target=/e2e,readonly",
+            self.args.helper_image, "python3", "/e2e/probe.py", "respond",
+            "--port", str(SSDP_PORT), "--timeout", str(self.rt.timeout_seconds),
+            "--family", str(self.rt.family), "--join-group", self.rt.group,
+            "--interface", RECEIVER_IFNAME, "--reply-hex", SSDP_OK_HEX,
+        ])
+        self.wait_for_container_log(self.responder_container, "responder ready", "responder")
+
+    def run_searcher(self) -> None:
+        expectation = ["--expect-payload-hex", SSDP_OK_HEX] if self.rt.expect_reply else ["--expect-none"]
+        docker([
+            "run", "-d", "--name", self.searcher_container,
+            "--network", f"name={self.source_network},driver-opt=com.docker.network.endpoint.ifname={REFLECTOR_SOURCE_IFNAME}",
+            "--mount", f"type=bind,source={E2E_DIR},target=/e2e,readonly",
+            self.args.helper_image, "python3", "/e2e/probe.py", "search",
+            "--source-port", str(SEARCHER_SOURCE_PORT), "--port", str(SSDP_PORT),
+            "--address", self.rt.group, "--interface", REFLECTOR_SOURCE_IFNAME,
+            "--family", str(self.rt.family), "--payload-hex", SSDP_MSEARCH_HEX,
+            "--timeout", str(self.rt.timeout_seconds), *expectation,
+        ])
+
+    def wait_for_searcher(self) -> None:
+        exit_code = docker(["wait", self.searcher_container]).stdout.strip()
+        logs = docker(["logs", self.searcher_container], check=False)
+        if logs.stdout:
+            print(logs.stdout, end="", flush=True)
+        if exit_code != "0":
+            raise RuntimeError(f"searcher failed with exit code {exit_code}")
+
+    def run(self) -> None:
+        print(f"\n=== {self.rt.name} ===", flush=True)
+        self.setup_networks()
+        self.start_reflector()
+        if self.rt.expect_reply:
+            self.start_responder()   # must be listening before the search goes out
+        self.run_searcher()
+        self.wait_for_searcher()
+        print(f"PASS {self.rt.name}", flush=True)
+        if self.args.show_reflector_logs:
+            time.sleep(0.5)
+            self.print_reflector_logs()
+
+
+def make_runner(args: argparse.Namespace, case: TestCase | RoundTripCase) -> DockerE2E:
+    return DockerRoundTrip(args, case) if isinstance(case, RoundTripCase) else DockerE2E(args, case)
+
+
 def build_reflector_image(image: str) -> None:
     docker(["build", "-t", image, "."], capture=False)
 
 
-def select_cases(case_names: list[str]) -> list[TestCase]:
+def select_cases(case_names: list[str]) -> list[TestCase | RoundTripCase]:
     if not case_names:
-        return TEST_CASES
+        return ALL_CASES
 
-    cases_by_name = {case.name: case for case in TEST_CASES}
+    cases_by_name = {case.name: case for case in ALL_CASES}
     unknown = sorted(set(case_names) - set(cases_by_name))
     if unknown:
         available = ", ".join(sorted(cases_by_name))
@@ -634,7 +731,7 @@ def parse_args() -> argparse.Namespace:
         "--case",
         action="append",
         default=[],
-        choices=[case.name for case in TEST_CASES],
+        choices=[case.name for case in ALL_CASES],
         help="e2e case to run; may be passed more than once",
     )
     return parser.parse_args()
@@ -651,7 +748,7 @@ def main() -> int:
         build_reflector_image(args.image)
 
     for case in cases:
-        with DockerE2E(args, case) as runner:
+        with make_runner(args, case) as runner:
             runner.run()
 
     print(f"\nPASS {len(cases)} e2e case(s)", flush=True)
