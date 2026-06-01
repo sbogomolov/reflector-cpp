@@ -135,7 +135,7 @@ An entry must enable at least one protocol and expands into one reflector per en
 `mac` is optional and, when set, names a single device — coherently across all three protocols, because a device's NIC MAC is both the target of its Wake-on-LAN magic packet and the L2 source of its mDNS/SSDP advertisements:
 
 - **WoL** re-emits only magic packets whose payload targets `mac`.
-- **mDNS / SSDP** relay, in the target→source direction, only frames whose L2 source MAC is `mac` (exposing just that device); the source→target direction is never MAC-filtered.
+- **mDNS / SSDP** relay, in the target→source direction, only frames whose L2 source MAC is `mac` (exposing just that device); the source→target direction is never MAC-filtered. For SSDP the same filter scopes the proxied unicast `200 OK` replies — only `mac`'s responses are carried back to a searcher.
 
 Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and mDNS/SSDP reflect all traffic in both directions.
 
@@ -153,7 +153,7 @@ Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and 
 
 WoL matching requires the magic-packet sequence (six `0xFF` bytes followed by the target MAC repeated 16 times) at the start of the UDP payload; trailing bytes such as a SecureOn password are ignored when matching and forwarded as-is. mDNS responses include unsolicited announcements (so they flow target→source too); mDNS/SSDP datagrams are re-emitted verbatim to the same group (SSDP at hop limit 2).
 
-For SSDP, multicast reflection delivers **passive** discovery — devices' periodic `NOTIFY ssdp:alive` advertisements reach the source segment so clients see them — while **active** discovery (a client's `M-SEARCH` and the device's unicast `200 OK` reply) is only half-bridged: the search is relayed, but the unicast reply (sent directly to the searcher's address) is not carried across segments yet. Bridging it requires a stateful unicast proxy, planned as a later step.
+For SSDP, multicast reflection delivers **passive** discovery — devices' periodic `NOTIFY ssdp:alive` advertisements reach the source segment so clients see them. **Active** discovery works end to end as well: a client's `M-SEARCH` is relayed to the target segment from a reserved ephemeral port, and the device's unicast `HTTP/1.1 200 OK` reply to that port is proxied back across to the original searcher. The proxy is always on whenever `ssdp` is enabled — it keeps one short-lived session per in-flight search (expiring shortly after the search's `MX` window) and needs no configuration. Reaching a device's `LOCATION` URL or driving DIAL across segments remains out of scope.
 
 ### Duplicate detection
 
