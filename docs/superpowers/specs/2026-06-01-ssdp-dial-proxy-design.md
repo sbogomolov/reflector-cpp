@@ -1,0 +1,554 @@
+# SSDP reflection — step 3 (DIAL application proxy)
+
+**Status:** design draft, pending user review
+**Date:** 2026-06-01
+**Scope:** Step 3 of the 3-step SSDP roadmap (multicast forwarding → unicast proxy → **DIAL proxy**).
+Builds on step 2's `SsdpReflector` (on `main`); see `2026-05-30-ssdp-unicast-proxy-design.md`.
+
+## 1. Goal and scope
+
+Steps 1–2 make SSDP *discovery* work cross-segment: a source-side client's `M-SEARCH` reaches
+target-side devices and their unicast `200 OK` (and multicast `NOTIFY`) replies come back, so the
+client now sees the device's `LOCATION` URL. But for **DIAL** (UPnP "Discovery And Launch", how a
+phone's YouTube app launches YouTube on a TV) discovery is only the first hop. After it, the client
+opens a **TCP/HTTP** connection to the device to fetch its description and drive the DIAL REST API —
+and that connection cannot cross the segments today.
+
+The driving case: the user's **LG webOS TV accepts DIAL connections only from its own subnet.** Today
+a router NAT masquerades the client's connection onto the TV's subnet so the TV accepts it. Step 3's
+goal is to make the **reflector self-contained** — DIAL works through the reflector alone, with no
+router NAT rule — so the deployment is one config and portable to any host. Once step 3 lands, the
+two segments need no IP route between them for DIAL.
+
+**Opt-in, default off.** DIAL is a `dial = true` flag on an existing SSDP entry (§9). It opens
+listening TCP sockets and does L7 HTTP rewriting — more invasive than UDP reflection — so it is off
+unless explicitly enabled. It reuses the entry's `source_if` (client side), `target_if` (device
+side), `address_family`, and `mac` filter.
+
+This design is grounded in a packet capture of the user's actual LG TV (a YouTube cast: discovery →
+description → launch → stop). The empirical facts that shaped it are in §2.2.
+
+## 2. The core problem and why this mechanism
+
+### 2.1 Why terminate TCP (and why not raw-socket packet proxying)
+
+The reflector today is pure L2/UDP: `RawSocket` captures and injects Ethernet frames over
+AF_PACKET / BPF; there are no kernel TCP sockets in the data path. The tempting reuse is to proxy
+DIAL's TCP at the packet level with the same raw sockets — no kernel TCP, no per-connection
+machinery. **That path is not viable, and it is harder, not easier.** The decisive reason:
+
+> **The kernel RST cannot be defeated without a real listening socket — and a listening socket _is_
+> TCP termination.** When the client connects to the reflector's own `source_if` IP (the only address
+> it can reach once the router NAT is gone), the host kernel sees a `SYN` to a local address with no
+> listener and replies `RST`, killing the connection. This is the TCP analog of the ICMP
+> port-unreachable step 2 suppressed — but fatal, and step 2's `PortReservation` trick has no TCP
+> equivalent: UDP is connectionless, so a bound-but-unread socket satisfies the kernel's lookup; TCP
+> needs a real state machine to complete the handshake. The only in-model way to stop the RST and
+> handle the connection is `listen()`/`accept()`, which is termination.
+
+It compounds: the entire datapath is UDP-shaped (the BPF/AF_PACKET filters are UDP-only;
+`Packet` carries no TCP sequence/ack/flags), so raw-socket DIAL would mean a *second* protocol stack
+plus a hand-rolled single-threaded conntrack plus a **bidirectional sequence-rewriting ALG** (every
+in-stream byte rewrite shifts all subsequent TCP sequence numbers in both directions). Terminating
+TCP instead hands reassembly, retransmission, sequencing, and checksums to the kernel and leaves us
+two independent connections with separate sequence spaces — so a header rewrite never perturbs
+framing. **Terminating is the light path; the kernel does the hard parts.** (This verdict came from a
+4-architect design panel that steelmanned the raw-socket approach and rejected it on the above.)
+
+### 2.2 What the LG TV actually does (the capture)
+
+A `tshark` follow of a real YouTube cast to the TV established the shape of the traffic. The facts
+that drive the design:
+
+| Fact | Evidence | Consequence |
+|---|---|---|
+| Two device endpoints on **different ports** | description `GET /` on `TV:1461`; REST on `TV:36866` | one reflector listener per endpoint |
+| Description port is **dynamic** | `:1637` in one capture, `:1461` in another | ports are never hardcoded; learned from discovery / headers |
+| `Application-URL` is **absolute**, a response **header**, on the REST port | `Application-URL: http://10.1.3.80:36866/apps` | rewrite this header → reflector authority |
+| Launch `POST /apps/YouTube` → **`201`** with absolute **`LOCATION`** header | `LOCATION: http://10.1.3.80:36866/apps/YouTube/run` | rewrite this header too (same REST listener); header name case varies → case-insensitive |
+| Device-description and REST bodies are **relative-only** | `SCPDURL=/WebOS_Dial/...`, `<link href="run"/>` | **no body rewriting** — relative URLs resolve against the reflector authority for free |
+| Responses use **both** `Content-Length` (description) and `Transfer-Encoding: chunked` (REST) | streams 0 vs 1 | framing must handle both, but only to find message *boundaries* |
+| Requests carry bodies | launch `POST` `Content-Length: 74` | handle Content-Length on the request leg |
+| Client requests `Connection: keep-alive` | every request | support multiple messages per connection |
+| TV accepts a **its-subnet source** for the full GET/POST round trip | client appears as `10.1.3.1` (router's TV-subnet address) | binding the upstream `connect()` to `target_if`'s address reproduces exactly what the NAT does today |
+
+**The key simplification the capture buys:** every absolute URL the TV emits points at one of the two
+endpoints we already hold a listener for, and every URL *inside a body* is relative. So the proxy
+**rewrites only four headers** (all authority swaps `TV:port → reflector:listener`) and **never
+touches a body byte** — no de-chunking, no body rewriting, no `Content-Length` recompute. The HTTP
+layer is "parse the start line + headers, find the body framing, rewrite a tiny header set, stream
+the rest through verbatim, loop for keep-alive." This is the right altitude: lighter than a general
+HTTP/1.1 reverse proxy (no chunked re-framing, no body mutation), heavier than the strictest "reject
+chunked / assume close" cut (which the capture disproves).
+
+### 2.3 What the DIAL spec says (read from the v1.6.4 spec text)
+
+The spec (§5.4) defines the REST endpoint as its own absolute URL advertised in the device-description
+response, independent of the `LOCATION`:
+
+> "the HTTP response SHALL contain an additional header field, `Application-URL`, the value of which
+> SHALL be an absolute HTTP URL. This URL, minus any trailing … '/' character, identifies the DIAL
+> REST Service … `Application-URL = "Application-URL" ":" absoluteURI`"
+
+Because it is a full `absoluteURI` advertised separately, the REST service is an **independent endpoint
+by design** — it MAY share a host:port with the device description or differ, and the spec mandates
+neither. Both are conformant and both occur in the wild:
+- Netflix's DIAL **reference server** serves the device description *and* the REST service on **one
+  fixed port** (`#define DIAL_PORT (56789)`, a single mongoose server).
+- The user's **LG webOS TV** uses **different** ports — a *dynamic* device-description port (`:1461`,
+  was `:1637`) and a *stable* REST port (`:36866`).
+
+So the proxy keys listeners by `ip:port` and handles both, collapsing to one listener when a device
+shares a port. Three further spec facts pin design choices here:
+- **Header-name matching is case-insensitive** ("matching of HTTP header names is case-insensitive") —
+  the TV sends `LOCATION` upper-case and `Application-URL` mixed, so §4.3's rewrite is case-insensitive.
+- The host portion **"SHALL either resolve to an IPv4 address or be an IPv4 address"** — DIAL is **IPv4
+  by spec**; the rewritten authority uses the reflector's `source_if` IPv4 address (§12).
+- The device-description and M-SEARCH responses **"SHALL NOT be redirected"** — so we must
+  reverse-proxy transparently (rewrite + forward), never answer a `3xx`; our design does exactly that.
+
+The spec sets **no** port-stability or lifetime requirement; its model is that a client re-fetches the
+device description to obtain the `Application-URL`, not that it caches a port indefinitely. In the
+capture the client re-fetches the description only *periodically* (every few seconds) and makes
+*several* REST calls in between — e.g. `GET /apps/YouTube` then `POST /apps/YouTube` (launch)
+back-to-back on the REST endpoint with **no** description fetch between them, each on its own
+short-lived connection. So a listener is kept warm by **its own connection activity** (§5), not by
+description fetches. Lifetime is therefore an engineering choice, so we give the two listener roles
+**different lifetimes and caps** (§5). Sources: DIAL protocol spec v1.6.4 §5.4/§6; Netflix
+`dial-reference` `server/dial_server.c`.
+
+## 3. End-to-end data flow
+
+With `dial = true`, for one cast:
+
+```
+DISCOVERY (UDP, existing SSDP paths + a LOCATION rewrite hook)
+  client --M-SEARCH(dial)--> [reflector relays] --> dev
+  dev --200 OK, LOCATION: http://dev:Pdesc/ --> [reflector captures on target_if]
+      [DIAL] SsdpReflector: EnsureDiscoveryListener(dev:Pdesc) -> listener L1 on source_if;
+      RewriteAuthority: LOCATION -> http://<source_if-addr>:L1/
+  [reflector injects rewritten 200 OK to client]            (NOTIFY rewritten the same way)
+
+DESCRIPTION FETCH (TCP, new)
+  client --GET / --> reflector:L1
+      DialProxy accepts on L1; connect() to dev:Pdesc bound to target_if's address
+      forward request (rewrite Host -> dev:Pdesc); read response
+      rewrite Application-URL: http://dev:Prest/apps -> http://<source_if-addr>:L2/apps
+         (ensuring listener L2 -> dev:Prest); forward response (Content-Length body verbatim)
+
+DIAL REST (TCP, new) -- query / launch / stop
+  client --GET|POST|DELETE /apps/YouTube[/run] --> reflector:L2
+      accept on L2; connect() to dev:Prest bound to target_if's address
+      forward request (rewrite Host); read response
+      rewrite LOCATION (on 201) -> http://<source_if-addr>:L2/apps/YouTube/run
+      forward response (chunked body streamed verbatim)
+```
+
+(`dev` is the DIAL device — a TV, streaming stick, speaker, etc.) After launch the device streams
+media via its own direct internet connection — **not** through the reflector. The proxy only carries
+the small DIAL control HTTP.
+
+## 4. Components
+
+### 4.1 Reactor: read/write interest control (`dispatcher.h`, `event_loop_dispatcher.{h,cpp}`) — new capability
+
+The reactor is readability-only today (`Register(fd, on_readable)`), with read interest permanently on.
+TCP needs two new controls:
+- **Writability** — a non-blocking `connect()` signals completion by becoming writable, and a
+  partially-drained send buffer is flushed on the next writable.
+- **Pausing reads** — flow control (§4.4) stops draining a source when the sink is backed up. On a
+  *level-triggered* reactor (epoll/kqueue), a readable fd we stop reading would re-fire its callback
+  forever (busy-spin) unless we disable its read interest — so read interest must be toggleable too.
+
+This is the one genuinely new reactor capability — landed and tested **in isolation, exactly like the
+step-2 timer commit**, before any DIAL code.
+
+`Dispatcher` gains a write callback and dynamic arm/disarm of **both** directions:
+
+```cpp
+using OnWritableCallback = Delegate<void(int)>;  // fd became writable
+
+// Register fd for readability now (read interest starts ARMED, as today); the write callback is stored
+// but write interest starts DISARMED. (The existing 2-arg Register stays valid via a default-empty
+// on_writable.)
+[[nodiscard]] virtual Registration Register(
+    int fd, const OnReadableCallback& on_readable, const OnWritableCallback& on_writable) = 0;
+
+// Toggle writability notification for an already-registered fd (epoll EPOLL_CTL_MOD +/- EPOLLOUT;
+// kqueue EVFILT_WRITE EV_ENABLE/EV_DISABLE). Disarm once the send buffer drains to avoid a
+// writable-spin. Idempotent; false on an unknown fd.
+virtual bool SetWriteInterest(int fd, bool enabled) noexcept = 0;
+
+// Toggle readability notification for an already-registered fd (epoll EPOLL_CTL_MOD +/- EPOLLIN;
+// kqueue EVFILT_READ EV_ENABLE/EV_DISABLE). Read interest defaults ARMED at Register, so existing
+// consumers are unaffected; DIAL disarms it to apply backpressure (flow control, §4.4) without
+// busy-spinning a level-triggered reactor. Idempotent; false on an unknown fd.
+virtual bool SetReadInterest(int fd, bool enabled) noexcept = 0;
+```
+
+`EventLoopDispatcher::callbacks_` changes from `unordered_map<int, OnReadableCallback>` to
+`unordered_map<int, FdCallbacks>` with `FdCallbacks = { OnReadableCallback read; bool read_armed = true;
+OnWritableCallback write; bool write_armed = false; }`. The poll loop dispatches by filter: a read-ready
+event invokes `read`, a write-ready event invokes `write`. Everything else (the fd key, RAII
+`Registration`, the copy-callback-before-invoke discipline) is unchanged. The `~EventLoopDispatcher`
+non-empty-`callbacks_` warning already covers leftover TCP fds.
+
+This commit ships with the **fake**: `FakeDispatcher` records the write callback + armed state and
+gains `FireWritable(fd)` (mirroring `FireReadable`) so the proxy's connect/backpressure logic is
+driven deterministically with no real sockets.
+
+### 4.2 `tcp_socket.{h,cpp}` — non-blocking TCP RAII (new)
+
+A move-only fd owner wrapping the non-blocking-TCP syscalls, so the proxy never touches raw `fd`s:
+
+- `Listen(addr, iface)` — `socket`/`SO_REUSEADDR`/`bind` to `(source_if-addr, port 0)` (ephemeral) /
+  `listen`; `getsockname` reads the chosen port back. Bound to the interface address (not `0.0.0.0`)
+  so only the client subnet can reach it.
+- `Accept()` — accept the next client and set it non-blocking (`accept4(SOCK_NONBLOCK)` on Linux,
+  `accept` + `fcntl(O_NONBLOCK)` on macOS) → a connected `TcpSocket` (or `nullopt`/EAGAIN).
+- `Connect(dst, bind_addr, iface)` — non-blocking `socket`; bind to `target_if`'s address and pin
+  egress to `target_if` (`SO_BINDTODEVICE` on Linux, `IP_BOUND_IF` on macOS — so a host with a route
+  toward the client subnet still egresses the upstream out `target_if`); `connect` → `EINPROGRESS`.
+- `Read`/`Write(span)` — return bytes moved or an EAGAIN/closed/error status. **SIGPIPE-safe**:
+  `SO_NOSIGPIPE` (macOS) at creation + `MSG_NOSIGNAL` (Linux) per send. No SIGPIPE handling exists in
+  `src/reflector/` today; omitting it would crash the single-threaded daemon when a peer disconnects
+  mid-write.
+- Destructor closes the fd.
+
+Tested over real loopback (`127.0.0.1` listener + connect) so accept/connect/partial-write/EAGAIN run
+against the kernel, not a mock.
+
+### 4.3 `http_message.{h,cpp}` — minimal HTTP/1.1 framing + header rewrite (new)
+
+A small incremental parser. It is **not** a general HTTP engine — it does the minimum to find
+boundaries and rewrite headers:
+
+- Parse the start line (request: method/target; response: status) and the header block up to the
+  blank line, into a header list preserving order and original bytes.
+- Determine body framing: `Content-Length: N`, `Transfer-Encoding: chunked`, or none (e.g. a bodyless
+  `GET` / `204`). For chunked, parse only the chunk-size lines to find the terminating `0`-chunk —
+  the chunk *data* is opaque and forwarded verbatim.
+- **Rewrite** a fixed, case-insensitive header set by authority substitution `device:port →
+  reflector:authority`, via a small shared `RewriteAuthority(text, device_endpoint, reflector_authority)`
+  primitive (also used by the SSDP `LOCATION` path, §4.5): on requests, `Host`; on responses,
+  `Application-URL` and `Location`. A header value is rewritten only if its authority matches a known
+  DIAL endpoint — so non-DIAL headers pass through untouched.
+- Re-emit: the (possibly modified) header block, then the body streamed verbatim. Because only
+  headers change and the body is never touched, **`Content-Length` is never recomputed** (it describes
+  the body) and chunked framing is never rebuilt.
+
+Bounds: a header block over `dial_max_header_bytes` (default 64 KB) is refused and the connection
+closed — the only unbounded-buffer risk, since bodies are streamed, not accumulated.
+
+### 4.4 `dial_proxy.{h,cpp}` — the orchestrator (new)
+
+Owned by `SsdpReflector` as `std::optional<DialProxy>`, constructed only when `config.dial`. It owns
+all TCP/HTTP state and drives it through the reactor it reaches via
+`PacketDispatcher::UnderlyingDispatcher()` (the same handle step 2's eviction `Timer` uses).
+
+State:
+
+```cpp
+struct Endpoint {              // a discovered DIAL-device ip:port and its reflector listener
+    enum class Role { Discovery, Rest };  // Discovery = from SSDP LOCATION; Rest = from Application-URL/201
+    IpEndpoint   device;       // the device's endpoint, e.g. 10.1.3.80:1461 (description) or :36866 (REST)
+    Role         role;         // sets the idle lifetime (§5) and which cap it counts against
+    TcpSocket    listener;     // bound to source_if-addr:ephemeral, registered for accept
+    Dispatcher::Registration accept_reg;
+    std::chrono::steady_clock::time_point last_active;  // refreshed on each accept + rewrite naming it
+};
+
+struct Connection {            // one client<->device proxied TCP pair
+    TcpSocket client;          // accepted on a listener
+    TcpSocket upstream;        // connect() to the listener's device endpoint, bound to target_if
+    Dispatcher::Registration client_reg, upstream_reg;
+    HttpFraming c2u, u2c;      // per-direction framing + rewrite state
+    SendBuffer pending_to_client, pending_to_upstream;  // bounded FIFO of unflushed bytes (flow control)
+    enum { Connecting, Open } phase;
+    std::chrono::steady_clock::time_point deadline;  // connect deadline, then idle deadline
+};
+```
+
+- `std::vector<Endpoint> endpoints_` keyed by `device`, role-tagged, with **two separate caps** (the
+  roles scale differently — §5): `MAX_REST_LISTENERS` (≈ max DIAL devices) and `MAX_DISCOVERY_LISTENERS`
+  (transient). An `Endpoint` referenced as both roles (a device serving description + REST on one port,
+  like the reference server) is tagged `Rest` — the longer-lived role — and counts against the REST cap.
+- `std::vector<Connection> connections_`; `MAX_CONNECTIONS = 32` drop-new (mirrors SSDP's
+  `MAX_SESSIONS`).
+- Eviction `Timer` (lazy-start/self-stop, like SSDP) sweeping: connections past their **connect**
+  deadline (a `Connecting` pair never fires a read/write event, so it needs an explicit deadline,
+  distinct from idle) or **idle** deadline; and `Endpoint`s idle (no connections referencing them and
+  `last_active` older than the role's grace). Erasing either is RAII — sockets close, registrations
+  drop.
+
+`DialProxy` is **owned by `SsdpReflector`** and has **no external consumers**. Its only cross-boundary
+method is the listener primitive the owner needs while rewriting a discovered `LOCATION`; everything
+else (accepting clients, the upstream connect, the HTTP header rewrites, the REST listener it spins up
+internally when it rewrites a description response's `Application-URL`, eviction) is reactor-driven
+internals that nothing outside calls:
+
+```cpp
+// Find or create a Discovery-role listener for a device's description endpoint, returning the
+// reflector authority (source_if-addr:listener-port) to advertise in the rewritten LOCATION. Called
+// only by the owning SsdpReflector, from its SSDP dispatch callback; refreshes the endpoint's
+// last_active. nullopt if the listener cap is hit or listen/bind fails (then the LOCATION is injected
+// unchanged — discovery still works via the router until DIAL is reachable).
+[[nodiscard]] std::optional<IpEndpoint> EnsureDiscoveryListener(IpEndpoint device);
+```
+
+`DialProxy` never sees an SSDP message: the DIAL-service classification, `LOCATION` parse, and authority
+splice live in the SSDP path (§4.5), using the shared `RewriteAuthority` helper (§4.3) that the TCP
+header rewrites also use.
+
+Connection mechanics (all non-blocking, reactor-driven, single-threaded):
+
+1. **Accept** (listener readable): `Accept()` → if at `MAX_CONNECTIONS`, close immediately (drop-new);
+   else create `Connection`, `Connect()` to the listener's device endpoint (`EINPROGRESS`), register both
+   fds (`Register(fd, on_readable, on_writable)`), `SetWriteInterest(upstream, true)`, set the connect
+   deadline, phase `Connecting`.
+2. **Connect completes** (upstream writable): check `SO_ERROR`; on success disarm write interest, go
+   `Open`, start reading both sides; on failure tear the `Connection` down.
+3. **Forward** (either side readable): read into a reusable scratch buffer → feed the per-direction
+   `HttpFraming` (rewrite headers, pass body) → write to the peer. On a short/EAGAIN write, append the
+   unwritten remainder to that peer's `SendBuffer` and `SetWriteInterest(peer, true)`; flush on the
+   peer's writable, disarming when drained. **Flow control:** when a peer's `SendBuffer` reaches the
+   high-water mark, stop reading the *source* — `SetReadInterest(source, false)` (§4.1) so the backlog
+   can't grow unboundedly and a level-triggered reactor doesn't busy-spin; resume with
+   `SetReadInterest(source, true)` once it drains below the low-water mark.
+4. **Close**: peer EOF / error → half-close, then tear the pair down (RAII releases both fds +
+   registrations).
+
+Each accept (step 1) refreshes the listener `Endpoint`'s `last_active`, and each forwarded byte
+(step 3) refreshes the `Connection`'s idle deadline — so an active flow is never reaped, independent
+of how often the client re-fetches the description.
+
+`EnsureDiscoveryListener` (called from the SSDP path) and the description-response's `Application-URL`
+rewrite (internal, on the TCP path) are what *create* endpoints and their listeners on first sight; the
+launch `LOCATION` reuses the REST endpoint's existing listener.
+
+**Bounded buffering.** Flow control caps each direction's `SendBuffer` at the high-water mark, so a
+connection's memory is bounded (≤ ~2×high-water) no matter how slow or stalled a peer is — which also
+keeps the long-running daemon's RSS flat (no unbounded proxy buffer). Given that bound and DIAL's tiny,
+low-rate control messages, `SendBuffer` is a **simple growable byte buffer with a consumed-head offset**
+(compacted on drain — a ≤64 KB memmove is negligible and rare). We deliberately avoid
+`std::deque<std::byte>` (its small fixed per-node block churns allocations and cache lines for a byte
+stream). If a future high-throughput use ever needs it, the same `SendBuffer` interface can be backed by
+a chunk-chain (a list of fixed-size buffers — append fills the tail, consume frees the head, no
+memmove); that is over-engineered for DIAL and out of scope now. (Header accumulation in `HttpFraming`
+is separately bounded by `dial_max_header_bytes`, §4.3.)
+
+### 4.5 `ssdp_reflector.{h,cpp}` integration
+
+`SsdpReflector` gains `std::optional<DialProxy> dial_proxy_`, constructed in `Initialize` on the
+success path when `config.dial` (and torn down before the dispatcher, via member-order, same contract
+as the eviction `Timer`). Both injection sites gain the same hook, applied to the payload **before**
+the existing injection — and the hook lives in `SsdpReflector` (which already classifies SSDP), so
+`DialProxy` stays SSDP-agnostic:
+
+- `OnUnicastResponse` (the `M-SEARCH` `200 OK`) and `OnTargetPacket` (`NOTIFY`): if the message
+  advertises the DIAL service type (`urn:dial-multiscreen-org:...` in `ST`/`NT`/`USN`) and carries a
+  `LOCATION`, parse the device's description endpoint, call `dial_proxy_->EnsureDiscoveryListener(device)`,
+  and splice the returned reflector authority into the `LOCATION` via the shared `RewriteAuthority`
+  helper (§4.3) — yielding the payload to inject. A resized payload is fine: the datagram is built from
+  a payload span and UDP has no sequence numbers (unlike TCP). On `nullopt` (cap/bind failure) the
+  `LOCATION` is injected unchanged.
+
+If the entry has a `mac` filter it already scopes which device's responses are seen, so only that
+device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives an SSDP message.
+
+## 5. Lifecycle, caps, and teardown
+
+- **Connections:** `MAX_CONNECTIONS = 32`, drop-new at capacity (RFC 6888 posture, as SSDP). A
+  separate **connect deadline** reaps a pair stuck in `EINPROGRESS` (no I/O event ever fires for it);
+  an **idle deadline** reaps an open-but-quiet pair. Both swept by the eviction `Timer`.
+- **Listeners — two roles, different lifetimes** (the DIAL spec mandates no port stability, §2.3):
+  - *Discovery* (from an SSDP `LOCATION`): the device-description port is **dynamic** (changes across
+    reboots) and clients re-discover constantly, so a stale one is replaced fast — **short** idle reap
+    (`dial_discovery_idle`, default ~90s).
+  - *REST* (from `Application-URL` / a `201 Location`): the port is **stable** in practice (the
+    reference server fixes it; the LG TV holds it across a session) and a client may keep the
+    `Application-URL` across a pause, so it gets a **long** idle cooldown (`dial_rest_idle`, default
+    ~1h) — but **not forever**: a reboot can change the REST port, leaving the old listener dead, so a
+    multi-hour (not multi-day) grace frees it promptly while surviving any realistic pause/resume.
+  A listener's `last_active` is refreshed on **any activity on it** — each accepted connection *and*
+  each rewrite naming its endpoint — so an in-use listener never idles regardless of how often the
+  client re-fetches the description. (This matters: the client makes *several* REST calls per
+  description fetch — in the capture it issues `GET /apps/YouTube` then `POST /apps/YouTube`
+  back-to-back on the REST endpoint with no description fetch between — so the REST listener is kept
+  warm by its own connections, not by description-fetch rewrites.) Reaping happens only after use
+  stops; a reaped listener whose URL a client reuses gets a connection-refused and re-discovers.
+- **Separate caps, fd-bounded.** Each listener is one bound socket = one fd, and a router's
+  `RLIMIT_NOFILE` is often ~1024, so `MAX_REST_LISTENERS + MAX_DISCOVERY_LISTENERS + 2·MAX_CONNECTIONS
+  + the raw capture sockets` must stay well under it. Defaults **32 / 32 / 32** (≈ 128 fds, matching
+  the SSDP `MAX_SESSIONS` convention) are generous — real DIAL devices number in the single digits —
+  while clear of exhaustion. A four-figure
+  REST cap alone would approach the fd ceiling for no practical gain; raise the configurable cap only
+  if a deployment truly needs it. `MAX_REST_LISTENERS` is effectively the cap on DIAL devices served.
+- **RAII throughout:** erasing a `Connection`/`Endpoint` closes its sockets and drops its reactor
+  registrations; `~DialProxy` (before the dispatcher) clears everything. Mirrors the SSDP
+  `Session`/`Timer` teardown order verbatim.
+- **Single-threaded:** every socket is non-blocking and reactor-driven; no threads, locks, or blocking
+  calls — the invariant holds. Listener registration happens inside a dispatch callback (the SSDP
+  rewrite hook), which is already an established safe pattern (step 2 registers response captures
+  mid-dispatch).
+
+## 6. Correctness and security
+
+- **No SSRF / no open relay.** A client connecting to listener `Ln` reaches a **fixed** upstream (the
+  device endpoint bound to that listener at creation). The client cannot influence the upstream
+  destination — it is set by discovery, not by the request. The reflector never connects anywhere a
+  DIAL device didn't advertise.
+- **Listeners bind to `source_if`'s address only**, so they are reachable solely from the client
+  subnet, not the whole host. Caps (`MAX_CONNECTIONS`, the two listener caps, `dial_max_header_bytes`) bound
+  resource use; default-off means zero new surface unless asked for.
+- **Loop safety:** the proxy uses kernel TCP sockets, distinct from the raw L2 capture path — a
+  proxied connection is never re-captured as SSDP (different protocol, different sockets). The SSDP
+  `LOCATION` rewrite changes only the injected payload, not what is captured.
+- **Header-only rewrite** avoids the request-smuggling surface of body/`Content-Length` rewriting
+  entirely; chunked bodies are forwarded as opaque bytes, never re-framed.
+
+## 7. Testing
+
+**Unit (fakes / pure data):**
+- `http_message_test`: request/response start-line + header parse; `Content-Length` vs `chunked` vs
+  none framing and boundary detection; header rewrite by authority substitution (`Application-URL`,
+  `Location`/`LOCATION` case-insensitive, `Host`); non-DIAL headers untouched; oversized header block
+  refused. Assert the rewritten bytes, not log text.
+- `dial_proxy_test` (with `FakeDispatcher` + `FakeLinkSocket` + the loopback `TcpSocket`):
+  `EnsureDiscoveryListener` allocates/reuses a listener and returns the reflector authority (cap hit →
+  `nullopt`); accept → connect (driven by `FireWritable`) → forward with `Application-URL` rewrite
+  (spinning up the REST listener) and the launch `201 LOCATION` rewrite reusing it; `MAX_CONNECTIONS`
+  drop-new; connect-deadline and idle-deadline eviction via firing the fake timer; backpressure +
+  flow control (a short write arms write-interest and pauses the source at high-water; `FireWritable`
+  flushes and resumes). The SSDP `LOCATION` parse + splice is tested on the `SsdpReflector` side.
+- `event_loop_dispatcher_test`: extended for write-interest — `SetWriteInterest` arms/disarms,
+  writable fires the write callback, a completed loopback `connect` surfaces as writable, the
+  readability tests stay green.
+
+**Application (`application_test`):** an SSDP entry with `dial = true` wires a reflector that owns a
+`DialProxy`; `dial = false`/absent does not. Existing SSDP cases stay green.
+
+**e2e (`e2e/`):** a small **DIAL device emulator** container on `target_if` serving the two endpoints
+(a description endpoint with a dynamic port + `Application-URL` header; a REST endpoint answering
+`GET`/`POST`/`DELETE /apps/<App>` with `chunked` + a `201 LOCATION`), modeled on the captured LG TV.
+A client container on `source_if` runs discovery → `GET` description → `POST` launch → `DELETE` stop
+through the reflector, asserting: the `200 OK` `LOCATION` and the response `Application-URL`/`LOCATION`
+are rewritten to reflector authorities; the upstream connections arrive at the emulator from
+`target_if`'s address; the launch round-trip completes. Mirrors the step-2 round-trip harness.
+
+## 8. Empirical follow-ups (low risk, do not block the design)
+
+- The spec defines DIAL over IPv4 (§2.3: the `Application-URL` host must be/resolve to an IPv4
+  address), matching the IPv4 capture; IPv6 is out of scope (§12).
+- The `DELETE /apps/YouTube/run` stop was not isolated in the capture; it targets the rewritten run
+  URL on the REST listener, so it routes through `L2` with no new mechanism.
+- If a future device emits **absolute** body URLs (this LG TV does not), body rewriting would be
+  needed — explicitly out of scope (§11), and the parser is structured so it could be added without
+  reworking the framing.
+
+## 9. Configuration
+
+No new section — reuse the SSDP `[name]` entry. Add an opt-in boolean and optional tunables to
+`SsdpConfig` (+ `Verify` + the `std::formatter`):
+
+```toml
+[livingroom-tv]
+ssdp = true
+dial = true              # default false; opt in to the DIAL proxy
+source_if = "lan"
+target_if = "iot"
+mac = "..."              # optional; scopes discovery AND the DIAL device
+# optional tunables (sane defaults so the common case is just `dial = true`):
+# dial_max_connections         = 32     # concurrent proxied TCP pairs (drop-new at cap)
+# dial_max_rest_listeners      = 32     # ~ max DIAL devices (stable REST endpoints); fd-bounded
+# dial_max_discovery_listeners = 32     # transient device-description listeners
+# dial_rest_idle               = "1h"   # idle cooldown for a (stable) REST listener
+# dial_discovery_idle          = "90s"  # idle reap for a (dynamic) discovery listener
+# dial_connect_timeout         = "5s"   # deadline for an upstream connect() stuck in EINPROGRESS
+# dial_max_header_bytes        = 65536  # per-message header-block cap (bodies are streamed)
+```
+
+`dial` inherits the entry's `source_if` (listener bind + rewritten authority), `target_if` (upstream
+connect bind + egress pin), `address_family`, and `mac`. Listener ports are **ephemeral** (kernel-
+assigned, carried in the rewritten URLs) — nothing to configure. `Verify` rejects `dial = true`:
+- when `ssdp` is not enabled (DIAL requires SSDP discovery); and
+- when the entry has no IPv4 — i.e. `address_family = ipv6` (`!UsesIPv4()`). DIAL is IPv4-only (§2.3),
+  so an IPv6-only entry has no IPv4 address to bind a listener or upstream to; rather than silently
+  doing nothing, startup fails with a clear error. (`default`/`dual`/`ipv4` all have IPv4 and are fine.)
+
+## 10. Commit breakdown
+
+Each data-path commit runs the full gate (native unit + docker debug/release + e2e) before commit.
+
+1. `dispatcher`: read/write interest control (`Register` 3-arg overload + `SetWriteInterest` +
+   `SetReadInterest`; `FdCallbacks` map with read/write armed flags; epoll/kqueue arm-disarm) +
+   `FakeDispatcher` `FireWritable` + tests. Landed alone, like the timer commit.
+2. `tcp_socket`: non-blocking listen/accept/connect(bound+pinned)/read/write, SIGPIPE-safe, RAII +
+   loopback tests.
+3. `http_message`: incremental framing (CL/chunked/none) + case-insensitive header rewrite via the
+   shared `RewriteAuthority` helper + tests.
+4. `dial_proxy`: endpoint/listener map, connection pump + flow-control `SendBuffer`, cap +
+   connect/idle eviction `Timer`, `EnsureDiscoveryListener` + tests.
+5. `ssdp_reflector` + `config`: the `dial` flag (+ tunables, `Verify`, formatter) and the DIAL
+   `LOCATION` parse + `RewriteAuthority` splice (calling `EnsureDiscoveryListener`) in the
+   `200 OK`/`NOTIFY` paths + tests.
+6. `e2e`: the DIAL device emulator + launch round-trip.
+7. `docs`: README DIAL section.
+
+## 11. Decisions
+
+- **D1 — Terminate TCP with kernel sockets; reject raw-socket packet proxying.** The kernel RST on a
+  `SYN` to the reflector's own IP is unsolvable in-model without a real listener, and a listener is
+  termination; termination also dissolves the sequence-rewriting ALG (independent kernel sequence
+  spaces). (§2.1; rejected after a design panel steelmanned the raw-socket path.)
+- **D2 — Header-only rewrite; bodies streamed verbatim.** The capture shows every body URL is
+  relative and every absolute URL is a header on a known endpoint, so we never de-chunk, rewrite a
+  body, or recompute `Content-Length`. Lands between a strict "reject chunked" cut (disproved by the
+  capture) and a general HTTP/1.1 reverse proxy (more than one device needs).
+- **D3 — Dynamic per-endpoint listeners.** Device ports are dynamic and discovered (description from
+  `LOCATION`, REST from `Application-URL`); a listener is allocated per device endpoint and the URL is
+  rewritten to it. No fixed `dial_port`.
+- **D4 — Upstream bound to `target_if`'s address + egress-pinned.** Reproduces exactly what the
+  router NAT does today (the device accepts any its-subnet source, validated in the capture); pinning
+  (`SO_BINDTODEVICE`/`IP_BOUND_IF`) guards against a host route toward the client subnet.
+- **D5 — Reactor gains read/write interest control.** Write-interest for non-blocking
+  connect-completion + write backpressure; read-interest toggling so flow control can pause a source
+  without busy-spinning the level-triggered reactor (§4.1). The one capability the readability-only
+  reactor lacks; shipped and tested in isolation first, like the timer commit.
+- **D6 — `DialProxy` owned by `SsdpReflector`, default off.** DIAL is meaningless without SSDP
+  discovery and must hook its `LOCATION` rewrite; making it a member keeps the coupling explicit and
+  the SSDP class focused on UDP. Opt-in because it opens listeners and does L7 work.
+- **D7 — SIGPIPE-safe sockets.** `SO_NOSIGPIPE`/`MSG_NOSIGNAL` (none exists today) — a peer
+  disconnecting mid-write must not signal-kill the single-threaded daemon.
+- **D8 — Fixed upstream per listener (no SSRF).** The client cannot steer where the proxy connects;
+  the upstream is set by discovery, not the request.
+- **D9 — Two listener roles, different lifetimes and caps.** The DIAL spec mandates no port stability
+  (§2.3): the device-description port is dynamic (short reap, ~90s), the REST port stable-but-not-
+  permanent (long-but-finite cooldown, ~1h — a reboot changes it, so not multi-day). Separate caps
+  because REST listeners ≈ device count while discovery is transient; both fd-bounded (defaults 32/32,
+  matching `MAX_SESSIONS`/`MAX_CONNECTIONS` — a four-figure cap would risk fd exhaustion for no gain).
+- **D10 — Flow control bounds proxy memory.** A peer's read is paused when the other side's
+  `SendBuffer` hits a high-water mark, capping per-connection memory (≤ ~2×high-water) and keeping the
+  daemon's RSS flat regardless of a slow/stalled peer. The buffer is a simple bounded byte queue — not
+  `std::deque<std::byte>` (small fixed block → alloc/cache churn); a chunk-chain is the documented
+  upgrade behind the same interface if high-throughput streaming is ever needed. (§4.4)
+- **D11 — `DialProxy` exposes only `EnsureDiscoveryListener`; SSDP stays in `SsdpReflector`.** The
+  proxy is owned by `SsdpReflector` with no external callers, so its sole cross-boundary method is the
+  listener primitive; DIAL-classification + `LOCATION` parse/splice live in the SSDP path via the
+  shared `RewriteAuthority` helper, keeping `DialProxy` free of SSDP-message knowledge. (§4.4/§4.5)
+
+## 12. Out of scope
+
+- **Body URL rewriting / de-chunking** — unneeded for this device (relative bodies); the parser leaves
+  room to add it if a future device forces it.
+- **General multi-device / path-mux on a shared listener** — one listener per endpoint is enough for
+  the single-device case; revisit only when a second `dial` device per `source_if` exists.
+- **The post-launch media / second-screen channel** — the device streams directly from the internet,
+  not through the reflector.
+- **TLS / Google Cast (port 8009)** — DIAL here is confirmed plain HTTP; an encrypted control channel
+  can't be rewritten without MITM and is a separate problem.
+- **IPv6 DIAL** — the spec's `Application-URL` host "SHALL either resolve to an IPv4 address or be an
+  IPv4 address" (§2.3), so DIAL is **IPv4 by spec**; the rewritten authority uses the `source_if` IPv4
+  address and the proxy only stands up IPv4 listeners even on a dual entry. An `ipv6`-only entry with
+  `dial = true` is rejected at config time (§9). (An IPv6 link-local listener would also need a scoped
+  `[fe80::…%if]` authority that not all clients accept.)
