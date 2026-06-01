@@ -20,6 +20,6 @@ namespace reflector {
 // payload with the checksum field (bytes 6-7) zeroed; `src`/`dst` must share an address
 // family. A computed 0x0000 is mapped to 0xffff (RFC 768) — required for IPv6, where a zero
 // UDP checksum is illegal and receivers must drop it.
-[[nodiscard]] uint16_t UdpChecksum(IpAddress src, IpAddress dst, std::span<const std::byte> udp) noexcept;
+[[nodiscard]] uint16_t UdpChecksum(const IpAddress& src, const IpAddress& dst, std::span<const std::byte> udp) noexcept;
 
 } // namespace reflector

@@ -860,7 +860,7 @@ protected:
 
     // Drains `peer` until it captures the datagram we injected (matched by source port and
     // destination), or the budget runs out. lo and real interfaces carry unrelated traffic too.
-    static std::optional<Packet> CaptureInjected(RawSocket& peer, IpAddress dest_ip) {
+    static std::optional<Packet> CaptureInjected(RawSocket& peer, const IpAddress& dest_ip) {
         const auto deadline = std::chrono::steady_clock::now() + WAIT_BUDGET;
         while (std::chrono::steady_clock::now() < deadline) {
             auto frame = peer.Receive();

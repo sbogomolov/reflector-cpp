@@ -79,9 +79,9 @@ public:
     // SendUdpBroadcastDatagram uses the all-ones broadcast MAC (always IPv4). `ttl` sets the IPv4 TTL
     // / IPv6 hop limit. Each fails (after logging) if the interface has no source address for the
     // datagram's family; gate first with CanSend (CanSend(Family::V4) for the broadcast).
-    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override;
-    [[nodiscard]] bool SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port, uint16_t src_port,
+    [[nodiscard]] bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;
     [[nodiscard]] bool SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;
@@ -90,7 +90,7 @@ public:
     // kernel delivers that group to this interface's capture path. The fd is held for the socket's
     // lifetime to keep the membership alive; one is opened lazily per family. Idempotent — a
     // re-join of an already-joined group is swallowed (EADDRINUSE) and reported as success.
-    [[nodiscard]] bool JoinMulticastGroup(IpAddress group) noexcept override;
+    [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group) noexcept override;
 
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
@@ -128,7 +128,7 @@ private:
     // Shared body of the three public sends: builds the frame to `dst_mac` from this interface's
     // cached source MAC/IP and writes it. The callers compute `dst_mac` (explicit unicast, derived
     // multicast, or broadcast) and enforce their address-type precondition first.
-    [[nodiscard]] bool SendFrame(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+    [[nodiscard]] bool SendFrame(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept;
 
     Logger logger_;

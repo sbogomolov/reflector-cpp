@@ -42,7 +42,7 @@ protected:
         return payload;
     }
 
-    static Packet MakePacket(std::span<const std::byte> payload, IpAddress source_ip,
+    static Packet MakePacket(std::span<const std::byte> payload, const IpAddress& source_ip,
         uint16_t dest_port, uint8_t ttl = 64) {
         return Packet{
             .header = PacketHeader{

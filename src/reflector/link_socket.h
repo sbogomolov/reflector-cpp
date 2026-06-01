@@ -49,12 +49,12 @@ public:
     // Originates from this interface's own source address; `dst_ip` must be unicast. Returns false
     // (after logging) on failure; the result is unspecified when !CanSend(dst_ip.AddressFamily()),
     // so gate with CanSend first.
-    [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+    [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
     // Sends a UDP datagram to multicast `group` (must be IpAddress::IsMulticast()), deriving the L2
     // destination from the group. Same source/failure contract as SendUdpDatagram.
-    [[nodiscard]] virtual bool SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port,
+    [[nodiscard]] virtual bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
     // Sends a UDP datagram to the IPv4 limited broadcast (255.255.255.255), using the all-ones L2
@@ -66,7 +66,7 @@ public:
     // the kernel/NIC multicast filter — "gate 2"). Idempotent: re-joining a group already joined
     // on this socket succeeds without effect. `group` must be a multicast address. Returns false
     // (after logging) on failure.
-    [[nodiscard]] virtual bool JoinMulticastGroup(IpAddress group) noexcept = 0;
+    [[nodiscard]] virtual bool JoinMulticastGroup(const IpAddress& group) noexcept = 0;
 
     // --- interface bookkeeping: the daemon refreshes cached addresses on change ---
 

@@ -362,13 +362,13 @@ void RawSocket::RefreshAddresses() noexcept {
         addresses_.v6 ? addresses_.v6->ToString() : "none");
 }
 
-bool RawSocket::SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+bool RawSocket::SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept {
     assert(!dst_ip.IsMulticast() && !dst_ip.IsBroadcast());  // use the multicast/broadcast variants
     return SendFrame(dst_mac, dst_ip, dst_port, src_port, payload, ttl);
 }
 
-bool RawSocket::SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port, uint16_t src_port,
+bool RawSocket::SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     assert(group.IsMulticast());
     return SendFrame(MulticastMacFor(group), group, dst_port, src_port, payload, ttl);
@@ -379,7 +379,7 @@ bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
     return SendFrame(BroadcastMac(), IpAddress::BroadcastV4(), dst_port, src_port, payload, ttl);
 }
 
-bool RawSocket::SendFrame(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port, uint16_t src_port,
+bool RawSocket::SendFrame(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     const auto family = dst_ip.AddressFamily();
     const auto& source = family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
@@ -423,7 +423,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_por
     return true;
 }
 
-bool RawSocket::JoinMulticastGroup(IpAddress group) noexcept {
+bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
     const bool v6 = group.IsV6();
     int& join_fd = v6 ? join_fd_v6_ : join_fd_v4_;
     if (join_fd < 0) {

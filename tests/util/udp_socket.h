@@ -34,10 +34,10 @@ public:
     // Subscribes to `group` on `interface` (IP_ADD_MEMBERSHIP / IPV6_JOIN_GROUP), so datagrams
     // sent to that group and arriving on the interface are delivered to this socket. `group`'s
     // family must match the socket's.
-    [[nodiscard]] bool JoinMulticastGroup(IpAddress group, const std::string& interface);
+    [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group, const std::string& interface);
     [[nodiscard]] bool Bind(uint16_t port);
-    [[nodiscard]] bool Bind(IpAddress address, uint16_t port);
-    [[nodiscard]] bool SendTo(std::span<const std::byte> payload, IpAddress address, uint16_t port) noexcept;
+    [[nodiscard]] bool Bind(const IpAddress& address, uint16_t port);
+    [[nodiscard]] bool SendTo(std::span<const std::byte> payload, const IpAddress& address, uint16_t port) noexcept;
 
 private:
     [[nodiscard]] bool SetNonBlocking() noexcept;

@@ -43,12 +43,12 @@ struct FakeLinkSocket : LinkSocket {
         return family == IpAddress::Family::V4 ? can_send_v4 : can_send_v6;
     }
 
-    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, IpAddress dst_ip, uint16_t dst_port,
+    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override {
         return RecordSend(dst_ip, dst_mac, dst_port, src_port, payload, ttl);
     }
 
-    [[nodiscard]] bool SendUdpMulticastDatagram(IpAddress group, uint16_t dst_port, uint16_t src_port,
+    [[nodiscard]] bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override {
         return RecordSend(group, std::nullopt, dst_port, src_port, payload, ttl);
     }
@@ -58,7 +58,7 @@ struct FakeLinkSocket : LinkSocket {
         return RecordSend(IpAddress::BroadcastV4(), std::nullopt, dst_port, src_port, payload, ttl);
     }
 
-    [[nodiscard]] bool JoinMulticastGroup(IpAddress group) noexcept override {
+    [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group) noexcept override {
         if (fail_join) {
             return false;
         }
@@ -89,7 +89,7 @@ struct FakeLinkSocket : LinkSocket {
 private:
     // All three Send* overloads funnel here; dst_mac is engaged only for an explicit unicast
     // destination (multicast/broadcast pass nullopt). Honors `fail_send`.
-    [[nodiscard]] bool RecordSend(IpAddress dst_ip, std::optional<MacAddress> dst_mac, uint16_t dst_port,
+    [[nodiscard]] bool RecordSend(const IpAddress& dst_ip, std::optional<MacAddress> dst_mac, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) {
         if (fail_send) {
             return false;

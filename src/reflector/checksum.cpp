@@ -41,7 +41,7 @@ uint16_t Ipv4HeaderChecksum(std::span<const std::byte> header) noexcept {
     return Fold(Accumulate(header, 0));
 }
 
-uint16_t UdpChecksum(IpAddress src, IpAddress dst, std::span<const std::byte> udp) noexcept {
+uint16_t UdpChecksum(const IpAddress& src, const IpAddress& dst, std::span<const std::byte> udp) noexcept {
     assert(src.AddressFamily() == dst.AddressFamily());
     const auto length = static_cast<uint16_t>(udp.size());
 

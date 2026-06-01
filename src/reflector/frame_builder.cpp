@@ -53,7 +53,7 @@ size_t CheckedFrameSize(size_t l2_size, bool v4, size_t payload_size, size_t out
 // Writes the IPv4/IPv6 header and UDP datagram (headers zeroed, fields and checksums filled)
 // into `out`, which begins at the IP header. The caller writes the preceding L2 header and has
 // already bounds-checked the whole frame via UdpFrameSize.
-void WriteIpUdp(IpAddress src_ip, IpAddress dst_ip, uint16_t src_port, uint16_t dst_port,
+void WriteIpUdp(const IpAddress& src_ip, const IpAddress& dst_ip, uint16_t src_port, uint16_t dst_port,
     std::span<const std::byte> payload, uint8_t ttl, std::span<std::byte> out) noexcept {
     const bool v4 = src_ip.IsV4();
     const size_t ip_size = v4 ? IPV4_HEADER_SIZE : IPV6_HEADER_SIZE;
@@ -91,7 +91,7 @@ void WriteIpUdp(IpAddress src_ip, IpAddress dst_ip, uint16_t src_port, uint16_t 
 
 } // namespace
 
-MacAddress MulticastMacFor(IpAddress address) noexcept {
+MacAddress MulticastMacFor(const IpAddress& address) noexcept {
     const auto& bytes = address.Bytes();
     MacAddress::ByteArray mac{};
     if (address.IsV4()) {
@@ -121,8 +121,8 @@ MacAddress BroadcastMac() noexcept {
 size_t BuildUdpFrame(
     MacAddress dst_mac,
     MacAddress src_mac,
-    IpAddress src_ip,
-    IpAddress dst_ip,
+    const IpAddress& src_ip,
+    const IpAddress& dst_ip,
     uint16_t src_port,
     uint16_t dst_port,
     std::span<const std::byte> payload,
@@ -143,8 +143,8 @@ size_t BuildUdpFrame(
 
 #if defined(__APPLE__)
 size_t BuildLoopbackUdpFrame(
-    IpAddress src_ip,
-    IpAddress dst_ip,
+    const IpAddress& src_ip,
+    const IpAddress& dst_ip,
     uint16_t src_port,
     uint16_t dst_port,
     std::span<const std::byte> payload,

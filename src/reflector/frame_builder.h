@@ -12,7 +12,7 @@ namespace reflector {
 // L2 destination MAC for a multicast `address`: IPv4 multicast maps to 01:00:5e + the low 23 address
 // bits (RFC 1112), IPv6 multicast to 33:33 + the low 32 address bits (RFC 2464). The caller must pass
 // a multicast address (IpAddress::IsMulticast()); the limited broadcast uses BroadcastMac instead.
-[[nodiscard]] MacAddress MulticastMacFor(IpAddress address) noexcept;
+[[nodiscard]] MacAddress MulticastMacFor(const IpAddress& address) noexcept;
 
 // The L2 destination MAC for the IPv4 limited broadcast: ff:ff:ff:ff:ff:ff.
 [[nodiscard]] MacAddress BroadcastMac() noexcept;
@@ -25,8 +25,8 @@ namespace reflector {
 [[nodiscard]] size_t BuildUdpFrame(
     MacAddress dst_mac,
     MacAddress src_mac,
-    IpAddress src_ip,
-    IpAddress dst_ip,
+    const IpAddress& src_ip,
+    const IpAddress& dst_ip,
     uint16_t src_port,
     uint16_t dst_port,
     std::span<const std::byte> payload,
@@ -38,8 +38,8 @@ namespace reflector {
 // of the Ethernet header, and no L2 MACs), as used on the macOS loopback interface (lo0). Linux
 // frames loopback as Ethernet, so this exists only on macOS.
 [[nodiscard]] size_t BuildLoopbackUdpFrame(
-    IpAddress src_ip,
-    IpAddress dst_ip,
+    const IpAddress& src_ip,
+    const IpAddress& dst_ip,
     uint16_t src_port,
     uint16_t dst_port,
     std::span<const std::byte> payload,

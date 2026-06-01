@@ -18,7 +18,7 @@ public:
     // Opens and binds a socket to an OS-assigned ephemeral port on `source_ip` — the interface address
     // the reflector sends from and devices reply to. `scope_id` is the interface index, required to
     // bind an IPv6 link-local address (ignored for IPv4). Returns nullopt (after logging) on failure.
-    [[nodiscard]] static std::optional<PortReservation> Create(IpAddress source_ip,
+    [[nodiscard]] static std::optional<PortReservation> Create(const IpAddress& source_ip,
         unsigned scope_id = 0) noexcept;
 
     PortReservation(PortReservation&& other) noexcept;

@@ -24,7 +24,7 @@ Logger& GetLogger() noexcept {
 
 } // namespace
 
-std::optional<PortReservation> PortReservation::Create(IpAddress source_ip, unsigned scope_id) noexcept {
+std::optional<PortReservation> PortReservation::Create(const IpAddress& source_ip, unsigned scope_id) noexcept {
     const bool v6 = source_ip.IsV6();
     const int fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {

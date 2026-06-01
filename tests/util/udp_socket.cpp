@@ -214,7 +214,7 @@ bool UdpSocket::SetMulticastInterface(const std::string& interface) {
     return true;
 }
 
-bool UdpSocket::JoinMulticastGroup(IpAddress group, const std::string& interface) {
+bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& interface) {
     if (!IsValid()) {
         logger_.Error("Cannot join multicast group {}: socket is invalid", group);
         return false;
@@ -251,7 +251,7 @@ bool UdpSocket::Bind(uint16_t port) {
     return Bind(family_ == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4(), port);
 }
 
-bool UdpSocket::Bind(IpAddress address, uint16_t port) {
+bool UdpSocket::Bind(const IpAddress& address, uint16_t port) {
     if (!IsValid()) {
         logger_.Error("Cannot bind to port {}: socket is invalid", port);
         return false;
@@ -274,7 +274,7 @@ bool UdpSocket::Bind(IpAddress address, uint16_t port) {
     return true;
 }
 
-bool UdpSocket::SendTo(std::span<const std::byte> payload, IpAddress address, uint16_t port) noexcept {
+bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpAddress& address, uint16_t port) noexcept {
     if (!IsValid()) {
         logger_.Error("Cannot send to {}:{}: socket is invalid", address, port);
         return false;
