@@ -15,9 +15,11 @@ namespace reflector {
 // never drained. Move-only fd owner.
 class PortReservation {
 public:
-    // Opens and binds a socket to an OS-assigned ephemeral port of `family` on the wildcard address.
-    // Returns nullopt (after logging) if the socket/bind/getsockname fails.
-    [[nodiscard]] static std::optional<PortReservation> Create(IpAddress::Family family) noexcept;
+    // Opens and binds a socket to an OS-assigned ephemeral port on `source_ip` — the interface address
+    // the reflector sends from and devices reply to. `scope_id` is the interface index, required to
+    // bind an IPv6 link-local address (ignored for IPv4). Returns nullopt (after logging) on failure.
+    [[nodiscard]] static std::optional<PortReservation> Create(IpAddress source_ip,
+        unsigned scope_id = 0) noexcept;
 
     PortReservation(PortReservation&& other) noexcept;
     PortReservation& operator=(PortReservation&& other) noexcept;

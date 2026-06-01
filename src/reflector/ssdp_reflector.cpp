@@ -180,7 +180,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
             packet.header.source_ip, family);
         return std::nullopt;
     }
-    auto reservation = PortReservation::Create(family);
+    auto reservation = PortReservation::Create(*our_address, target_socket_.InterfaceIndex());
     if (!reservation.has_value()) {
         return std::nullopt;  // Create logged the cause
     }

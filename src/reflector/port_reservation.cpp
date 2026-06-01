@@ -24,8 +24,8 @@ Logger& GetLogger() noexcept {
 
 } // namespace
 
-std::optional<PortReservation> PortReservation::Create(IpAddress::Family family) noexcept {
-    const bool v6 = family == IpAddress::Family::V6;
+std::optional<PortReservation> PortReservation::Create(IpAddress source_ip, unsigned scope_id) noexcept {
+    const bool v6 = source_ip.IsV6();
     const int fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
         GetLogger().Error("Cannot open port reservation socket: {}", Error::FromErrno());
@@ -45,8 +45,7 @@ std::optional<PortReservation> PortReservation::Create(IpAddress::Family family)
 #endif
 
     sockaddr_storage storage{};
-    const auto any = v6 ? IpAddress::AnyV6() : IpAddress::AnyV4();
-    const socklen_t length = any.ToSockaddr(storage, /*port=*/0);
+    const socklen_t length = source_ip.ToSockaddr(storage, /*port=*/0, scope_id);
     if (bind(fd, reinterpret_cast<const sockaddr*>(&storage), length) != 0) {
         GetLogger().Error("Cannot bind port reservation socket: {}", Error::FromErrno());
         close(fd);

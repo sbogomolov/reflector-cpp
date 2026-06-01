@@ -15,21 +15,21 @@ namespace reflector {
 namespace {
 
 TEST(PortReservationTest, CreateReturnsANonZeroPort) {
-    const auto reservation = PortReservation::Create(IpAddress::Family::V4);
+    const auto reservation = PortReservation::Create(IpAddress::LoopbackV4());
     ASSERT_TRUE(reservation.has_value());
     EXPECT_NE(reservation->Port(), 0);
 }
 
 TEST(PortReservationTest, TwoReservationsGetDistinctPorts) {
-    const auto first = PortReservation::Create(IpAddress::Family::V4);
-    const auto second = PortReservation::Create(IpAddress::Family::V4);
+    const auto first = PortReservation::Create(IpAddress::LoopbackV4());
+    const auto second = PortReservation::Create(IpAddress::LoopbackV4());
     ASSERT_TRUE(first.has_value());
     ASSERT_TRUE(second.has_value());
     EXPECT_NE(first->Port(), second->Port());
 }
 
 TEST(PortReservationTest, ReservedPortIsClaimed) {
-    const auto reservation = PortReservation::Create(IpAddress::Family::V4);
+    const auto reservation = PortReservation::Create(IpAddress::LoopbackV4());
     ASSERT_TRUE(reservation.has_value());
 
     // A second plain bind to the same port must fail (EADDRINUSE) while the reservation holds it.
@@ -49,7 +49,7 @@ TEST(PortReservationTest, SuppressesIcmpPortUnreachable) {
     // port-unreachable. A connected UDP sender surfaces that ICMP as ECONNREFUSED on its next recv;
     // we assert the recv times out instead (no ICMP). The mirror "no reservation -> ECONNREFUSED"
     // case is not asserted here: an OS-assigned ephemeral port is not reliably free to re-probe.
-    const auto reservation = PortReservation::Create(IpAddress::Family::V4);
+    const auto reservation = PortReservation::Create(IpAddress::LoopbackV4());
     ASSERT_TRUE(reservation.has_value());
 
     const int sender = ::socket(AF_INET, SOCK_DGRAM, 0);
@@ -72,7 +72,7 @@ TEST(PortReservationTest, SuppressesIcmpPortUnreachable) {
 }
 
 TEST(PortReservationTest, MoveTransfersOwnershipWithoutDoubleClose) {
-    auto first = PortReservation::Create(IpAddress::Family::V4);
+    auto first = PortReservation::Create(IpAddress::LoopbackV4());
     ASSERT_TRUE(first.has_value());
     const auto port = first->Port();
 
@@ -82,7 +82,7 @@ TEST(PortReservationTest, MoveTransfersOwnershipWithoutDoubleClose) {
 }
 
 TEST(PortReservationTest, CreateWorksForIpv6) {
-    const auto reservation = PortReservation::Create(IpAddress::Family::V6);
+    const auto reservation = PortReservation::Create(IpAddress::LoopbackV6());
     ASSERT_TRUE(reservation.has_value());
     EXPECT_NE(reservation->Port(), 0);
 }
