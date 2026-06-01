@@ -204,11 +204,15 @@ bool EventLoopDispatcher::RegisterTimer(
         .next = std::chrono::steady_clock::now() + interval,
         .callback = callback,
     });
+    GetLogger().Debug("Registered timer {} (interval {}ms); {} active",
+        static_cast<uint64_t>(id), interval.count(), timers_.size());
     return true;
 }
 
 void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {
-    std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; });
+    if (std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; }) > 0) {
+        GetLogger().Debug("Unregistered timer {}; {} active", static_cast<uint64_t>(id), timers_.size());
+    }
 }
 
 void EventLoopDispatcher::FireDueTimers(std::chrono::steady_clock::time_point now) {

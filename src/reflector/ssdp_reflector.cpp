@@ -160,6 +160,8 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
 
     sessions_.push_back(std::move(*new_session));
+    logger_.Debug("Created session for searcher {}:{} on reserved port {}; {} active",
+        packet.header.source_ip, packet.header.source_port, port, sessions_.size());
     // Start the eviction sweep on the first in-flight session; EvictExpired stops it once the table
     // empties, so the reactor isn't woken every interval while there's nothing to sweep.
     if (!eviction_timer_.IsRunning()) {
@@ -261,7 +263,17 @@ void SsdpReflector::Reflect(LinkSocket& egress, const Packet& packet) noexcept {
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
-    std::erase_if(sessions_, [now](const Session& session) { return session.expiry <= now; });
+    const auto removed = std::erase_if(sessions_, [this, now](const Session& session) {
+        const bool expired = session.expiry <= now;
+        if (expired) {
+            logger_.Debug("Removing session for searcher {}:{} on reserved port {}",
+                session.searcher_ip, session.searcher_port, session.reservation.Port());
+        }
+        return expired;
+    });
+    if (removed > 0) {
+        logger_.Debug("Evicted {} session(s); {} still active", removed, sessions_.size());
+    }
     if (sessions_.empty()) {
         // Nothing left to sweep: stop. Safe self-unregister — the dispatcher's timer merge-walk
         // tolerates a callback dropping its own timer.
