@@ -217,30 +217,58 @@ This commit ships with the **fake**: `FakeDispatcher` records the write callback
 `FireWritable(fd)` (mirroring `FireReadable`) so the proxy's connect/flush logic is driven
 deterministically with no real sockets.
 
-### 4.2 `tcp_socket.{h,cpp}` — non-blocking TCP RAII (new)
+### 4.2 `ip_endpoint.h` + `tcp_socket.{h,cpp}` — value type + non-blocking TCP RAII (new)
 
-A move-only fd owner wrapping the non-blocking-TCP syscalls, so the proxy never touches raw `fd`s:
+**`IpEndpoint`** — a value type `{ IpAddress addr; uint16_t port; }` that owns the family-aware sockaddr
+conversion, so `TcpSocket` (and DIAL) never branch on address family:
+- `ToSockaddr(sockaddr_storage&, unsigned scope_id = 0) → socklen_t` — fills a `sockaddr_in` or
+  `sockaddr_in6` (with `sin6_scope_id` for a link-scoped v6 connect); returns the length.
+- `FromSockaddr(const sockaddr*) → optional<IpEndpoint>` — for `accept`/`getsockname` readback (reusing
+  the existing `IpAddress::FromSockaddr`).
 
-- `Listen(addr, iface)` — `socket`/`SO_REUSEADDR`/`bind` to `(source_if-addr, port 0)` (ephemeral) /
-  `listen`; `getsockname` reads the chosen port back. Bound to the interface address (not `0.0.0.0`)
-  so only the client subnet can reach it.
-- `Accept()` — accept the next client and set it non-blocking (`accept4(SOCK_NONBLOCK)` on Linux,
-  `accept` + `fcntl(O_NONBLOCK)` on macOS) → a connected `TcpSocket` (or `nullopt`/EAGAIN).
-- `Connect(dst, bind_addr, iface)` — non-blocking `socket`; bind to `target_if`'s address and pin
-  egress to `target_if` (`SO_BINDTODEVICE` on Linux, `IP_BOUND_IF` on macOS — so a host with a route
-  toward the client subnet still egresses the upstream out `target_if`); `connect` → `EINPROGRESS`.
-- `Read(span)` — read inbound bytes; returns bytes moved or an EAGAIN/closed/error status.
-- `Send(span)` — write what the kernel accepts now; copy any unsent tail into the socket's **bounded
-  outbound `SendBuffer`**, arm write interest, and flush on the next writable (disarming when drained).
-  Returns ok / would-overflow / error; on would-overflow the owner aborts the connection (drop-and-close,
-  §4.4). Owning the partial-write + write-interest + bounded-buffer cycle here is what keeps `DialProxy`
-  from ever touching write interest. **SIGPIPE-safe**: `SO_NOSIGPIPE` (macOS) at creation + `MSG_NOSIGNAL`
-  (Linux) per send — no SIGPIPE handling exists in `src/reflector/` today, and omitting it would crash
-  the single-threaded daemon when a peer disconnects mid-write.
+The only family-aware code lives here — which is what makes v4/v6 "almost free": `TcpSocket` just hands
+the kernel a filled `sockaddr_storage` and reads one back.
+
+**`TcpSocket`** — a **move-only** fd owner wrapping the non-blocking-TCP syscalls. It captures **nothing**
+of the dispatcher: it holds only `{ fd, SendBuffer, connecting }`. That inertness is the boundary
+decision (§11 D12): `Accept()` returns a `TcpSocket` by value and a `Connection` (§4.4) stores two by
+value, so the socket must move freely without dangling a callback — a self-registering socket would
+dangle its own write `Delegate` on move (the `RawSocket` `NoMove` hazard). So the dispatcher
+`Registration` and the one `SetWriteInterest` call live in the owning `Connection` (the stable callback
+target); `TcpSocket` owns the **buffer and the truth** (`WantsWrite()`), the owner owns the toggle.
+
+- `Listen(IpEndpoint bind) → optional<TcpSocket>` — `socket`/`SO_REUSEADDR`/`bind`/`listen` on the given
+  endpoint (port 0 = ephemeral, read back via `LocalEndpoint`); `SO_REUSEADDR` lets a reused/fixed port
+  rebind across a restart. Bound to the interface address (not `0.0.0.0`/`::`) so only the client subnet
+  can reach it. `nullopt` on any syscall failure.
+- `Accept() → optional<TcpSocket>` — accept the next client non-blocking (`accept4(SOCK_NONBLOCK)` /
+  `accept`+`fcntl`) → an established `TcpSocket` (or `nullopt`/EAGAIN).
+- `Connect(IpEndpoint dst, IpEndpoint bind, unsigned ifindex = 0) → optional<TcpSocket>` — non-blocking
+  `socket`; bind to `bind` (`target_if`'s address) and, when `ifindex != 0`, pin egress to that interface
+  (`SO_BINDTODEVICE` / `IP_BOUND_IF` — so a host with a route toward the client subnet still egresses out
+  `target_if`); `ifindex` also scopes a link-local IPv6 destination. `connect` → `EINPROGRESS` leaves the
+  socket **connecting**; `nullopt` if the connect can't be initiated.
+- `IsConnecting()` / `FinishConnect()` — on the writable edge `FinishConnect` reads `SO_ERROR` and clears
+  the connecting flag on success (logging a failed connect at `Error`); once established it is a no-op
+  `Ok`, so it is safe on any writable edge and never read-and-clears a pending `Read` error. A connect
+  *failure* also surfaces on the always-armed read as a `recv()` error, so either edge reaches teardown.
+- `Read(span) → IoResult{status, bytes}` — bytes moved (`Ok`), `WouldBlock` (EAGAIN), `Closed` (orderly
+  EOF — read-only), or `Error`. `Read` and the internal `WriteSome` share this `IoResult`.
+- `Send(span) → SendStatus` — write what the kernel takes now, copy any unsent tail into the **bounded
+  outbound `SendBuffer`** (capped at the fixed `MAX_SEND_BUFFER`, 64 KB); `Flush()` drains it on a later
+  writable. Returns `Ok` / `Overflow` / `Error`; on `Overflow` the owner aborts (drop-and-close, §4.4).
+  `Send` does **not** toggle write interest — it exposes `WantsWrite()` (`connecting || !buffer.empty()`)
+  and the owner forwards that to the dispatcher via one `Sync` helper (§4.4).
+- `LocalEndpoint()` / `PeerEndpoint()` → `optional<IpEndpoint>` — `getsockname` / `getpeername` read-back.
+- **SIGPIPE-safe**: `SO_NOSIGPIPE` (macOS) at creation + `MSG_NOSIGNAL` (Linux) per send — none exists in
+  `src/reflector/` today, and omitting it would crash the single-threaded daemon on a mid-write peer
+  disconnect.
 - Destructor closes the fd.
 
-Tested over real loopback (`127.0.0.1` listener + connect) so accept/connect/partial-write/EAGAIN run
-against the kernel, not a mock.
+Tested in isolation over real loopback, **parameterized over v4 (`127.0.0.1`) and v6 (`::1`)**, so
+accept/connect/partial-write/EAGAIN/`SO_ERROR` run against the kernel for both families — no `DialProxy`,
+just the dispatcher and a tiny test driver standing in for the owner (holding the `Registration` and
+calling `Sync`). `IpEndpoint` gets its own `ToSockaddr`/`FromSockaddr` round-trip tests.
 
 ### 4.3 `http_message.{h,cpp}` — minimal HTTP/1.1 framing + header rewrite (new)
 
@@ -261,7 +289,7 @@ boundaries and rewrite headers:
   headers change and the body is never touched, **`Content-Length` is never recomputed** (it describes
   the body) and chunked framing is never rebuilt.
 
-Bounds: a header block over `dial_max_header_bytes` (default 64 KB) is refused and the connection
+Bounds: a header block over `MAX_HEADER_BYTES` (64 KB) is refused and the connection
 closed — the only unbounded-buffer risk, since bodies are streamed, not accumulated.
 
 ### 4.4 `dial_proxy.{h,cpp}` — the orchestrator (new)
@@ -273,36 +301,43 @@ all TCP/HTTP state and drives it through the reactor it reaches via
 State:
 
 ```cpp
-struct Endpoint {              // a discovered DIAL-device ip:port and its reflector listener
+struct Endpoint : NoMove {     // discovered DIAL-device ip:port + its reflector listener; a callback target
     enum class Role { Discovery, Rest };  // Discovery = from SSDP LOCATION; Rest = from Application-URL/201
     IpEndpoint   device;       // the device's endpoint, e.g. 10.1.3.80:1461 (description) or :36866 (REST)
     Role         role;         // sets the idle lifetime (§5) and which cap it counts against
-    TcpSocket    listener;     // bound to source_if-addr:ephemeral, registered for accept
-    Dispatcher::Registration accept_reg;
+    TcpSocket    listener;     // bound to source_if-addr:ephemeral (move-only, inert)
     std::chrono::steady_clock::time_point last_active;  // refreshed on each accept + rewrite naming it
+    Dispatcher::Registration accept_reg;  // LAST: destroyed first, so Unregister precedes ~listener close()
 };
 
-struct Connection {            // one client<->device proxied TCP pair
-    TcpSocket client;          // accepted on a listener; owns its bounded outbound SendBuffer (§4.2)
-    TcpSocket upstream;        // connect() to the listener's device endpoint, bound to target_if
-    Dispatcher::Registration client_reg, upstream_reg;
+struct Connection : NoMove {   // one client<->device proxied TCP pair; the stable callback target
+    TcpSocket client;          // accepted on a listener (move-only, inert — owns its SendBuffer, §4.2)
+    TcpSocket upstream;        // connect() to the device endpoint, bound to target_if
     HttpFraming c2u, u2c;      // per-direction framing + rewrite state
     enum { Connecting, Open } phase;
+    bool closed = false;       // set by a handler that tears itself down; the sweep erases after dispatch
     std::chrono::steady_clock::time_point deadline;  // connect deadline, then idle deadline
+    Dispatcher::Registration client_reg, upstream_reg;  // LAST: destroyed first, so Unregister precedes
+                                                        // ~TcpSocket close() (no closed-but-watched fd)
 };
 ```
 
-- `std::vector<Endpoint> endpoints_` keyed by `device`, role-tagged, with **two separate caps** (the
-  roles scale differently — §5): `MAX_REST_LISTENERS` (≈ max DIAL devices) and `MAX_DISCOVERY_LISTENERS`
-  (transient). An `Endpoint` referenced as both roles (a device serving description + REST on one port,
-  like the reference server) is tagged `Rest` — the longer-lived role — and counts against the REST cap.
-- `std::vector<Connection> connections_`; `MAX_CONNECTIONS = 32` drop-new (mirrors SSDP's
-  `MAX_SESSIONS`).
+- `endpoints_` keyed by `device`, role-tagged, with **two separate caps** (the roles scale differently —
+  §5): `MAX_REST_LISTENERS` (≈ max DIAL devices) and `MAX_DISCOVERY_LISTENERS` (transient). An `Endpoint`
+  referenced as both roles (a device serving description + REST on one port, like the reference server)
+  is tagged `Rest` — the longer-lived role — and counts against the REST cap.
+- `connections_` keyed by a `ConnId`; `MAX_CONNECTIONS = 32` drop-new (mirrors SSDP's `MAX_SESSIONS`).
+- **Both `Endpoint` and `Connection` are the dispatcher's callback targets** — their handler methods are
+  bound into the `Registration`s — so both are `NoMove` and live in **node-stable, id-keyed containers**
+  (`std::unordered_map`), **never `std::vector`**: a vector reallocation relocates an element and dangles
+  every `Delegate` capturing its address (the rule `RawSocket` already documents). The id-keyed map also
+  serves the eviction sweep (erase-by-id), so the address stability is already paid for — and is why
+  binding callbacks straight to the pinned object beats routing every event through `DialProxy` by fd.
 - Eviction `Timer` (lazy-start/self-stop, like SSDP) sweeping: connections past their **connect**
   deadline (a `Connecting` pair never fires a read/write event, so it needs an explicit deadline,
   distinct from idle) or **idle** deadline; and `Endpoint`s idle (no connections referencing them and
-  `last_active` older than the role's grace). Erasing either is RAII — sockets close, registrations
-  drop.
+  `last_active` older than the role's grace). Erasing either is RAII — registrations drop, then sockets
+  close.
 
 `DialProxy` is **owned by `SsdpReflector`** and has **no external consumers**. Its only cross-boundary
 method is the listener primitive the owner needs while rewriting a discovered `LOCATION`; everything
@@ -323,28 +358,34 @@ internals that nothing outside calls:
 splice live in the SSDP path (§4.5), using the shared `RewriteAuthority` helper (§4.3) that the TCP
 header rewrites also use.
 
-Connection mechanics (all non-blocking, reactor-driven, single-threaded):
+Connection mechanics (all non-blocking, reactor-driven, single-threaded). The handlers are `Connection`
+methods bound to the pinned `Connection`; each ends by **`Sync(reg, socket)`** —
+`disp_.SetWriteInterest(socket.Fd(), socket.WantsWrite())` — the *only* place write interest is toggled.
+The `Connection` never computes a write boolean; it forwards `TcpSocket::WantsWrite()` (`connecting ||
+!buffer.empty()`) through that one funnel (the "honest Point B", §11 D12).
 
 1. **Accept** (listener readable): `Accept()` → if at `MAX_CONNECTIONS`, close immediately (drop-new);
-   else create `Connection`, `Connect()` to the listener's device endpoint (`EINPROGRESS`). Register the
-   client `{.read = forward, .write = flush}` and the upstream `{.read = forward, .write = on_connected,
-   .write_armed = true}` — read is always armed; the upstream additionally watches writability for
-   connect-completion. Set the connect deadline, phase `Connecting`.
-2. **Connect completes** (upstream writable): check `SO_ERROR`; on success disarm the upstream's write
-   interest, go `Open`, start forwarding both sides; on failure tear the `Connection` down. (Read is
-   always armed, so a connect *failure* also surfaces as readability — `recv()` returns the error — and a
-   server that spoke first would reach `Open` via the same shared transition from the read path; DIAL
-   upstreams are client-speaks-first HTTP servers, so in practice only the writable edge fires.)
-3. **Forward** (either side readable): read into a reusable scratch buffer → feed the per-direction
-   `HttpFraming` (rewrite headers, pass body) → `TcpSocket::Send` to the peer. `Send` writes what it can
-   and copies the unsent tail into the peer's bounded `SendBuffer`, arming the peer's write interest; the
-   buffer flushes on the peer's writable and disarms when drained. **Backpressure is drop-and-close, not
-   read-pausing:** read stays armed; if a peer's `SendBuffer` would exceed its cap (`dial_send_high_water`),
-   the connection is aborted — a failed attempt, cheap and retryable for DIAL's tiny request/response
-   traffic, and a hard bound on per-connection memory plus a DoS guard. Read is never paused, so the
+   else emplace a `Connection` into its final map node, move the accepted client + a fresh `Connect()`'d
+   upstream (`EINPROGRESS`) into it, **then** `Register` both fds with handlers bound to that pinned
+   `Connection`: client `{read, write, write_armed = false}` (already established), upstream `{read,
+   write, write_armed = true}` (watching connect-completion). Read is always armed. Set the connect
+   deadline, phase `Connecting`. (No edge can fire before the next `PollOnce` — single-threaded — so
+   there is no window between emplace and `Register`.)
+2. **Connect completes** (upstream writable): `upstream.FinishConnect()` reads `SO_ERROR`; on success go
+   `Open` and `Sync` (which disarms the now-idle upstream write); on error tear down. A connect *failure*
+   also folds into the always-armed read (`recv()` error → teardown), so either edge converges — DIAL
+   upstreams are client-speaks-first, so in practice only the writable edge fires.
+3. **Forward** (either side readable): `Read` into a reusable scratch buffer → feed the per-direction
+   `HttpFraming` (rewrite headers, pass body) → `peer.Send(...)` → `Sync(peer_reg, peer)` (arms peer write
+   iff a tail was buffered). On the peer's writable edge: `peer.Flush()` → `Sync`. Because `Send`
+   attempts an immediate drain, the steady state never arms `EPOLLOUT`, so the level-triggered reactor
+   never writable-spins. **Backpressure is drop-and-close, not read-pausing:** read stays armed; if a
+   `Send` tail would exceed the `MAX_SEND_BUFFER` cap, abort the connection — a cheap, retryable failed
+   attempt that hard-bounds per-connection memory and guards a stalled peer. Read is never paused, so the
    both-directions-disarmed reactor state never arises.
-4. **Close**: peer EOF / error → half-close, then tear the pair down (RAII releases both fds +
-   registrations).
+4. **Close**: peer EOF / error → tear the pair down. A teardown triggered from *inside* a handler is
+   **deferred** (set `closed`, sweep after the dispatch pass) — freeing the `Connection` whose handler is
+   on the stack would be a use-after-free. RAII then drops the registrations (first) and closes the fds.
 
 Each accept (step 1) refreshes the listener `Endpoint`'s `last_active`, and each forwarded byte
 (step 3) refreshes the `Connection`'s idle deadline — so an active flow is never reaped, independent
@@ -354,7 +395,7 @@ of how often the client re-fetches the description.
 rewrite (internal, on the TCP path) are what *create* endpoints and their listeners on first sight; the
 launch `LOCATION` reuses the REST endpoint's existing listener.
 
-**Bounded buffering.** Each `TcpSocket`'s `SendBuffer` is capped at `dial_send_high_water` and exceeding
+**Bounded buffering.** Each `TcpSocket`'s `SendBuffer` is capped at the fixed `MAX_SEND_BUFFER` (64 KB — well above any DIAL control message) and exceeding
 it aborts the connection (drop-and-close), so a connection's memory is bounded no matter how slow or
 stalled a peer is — which also keeps the long-running daemon's RSS flat (no unbounded proxy buffer).
 Given that bound and DIAL's tiny, low-rate control messages, `SendBuffer` is a **simple growable byte
@@ -364,7 +405,7 @@ buffer with a consumed-head offset**
 stream). If a future high-throughput use ever needs it, the same `SendBuffer` interface can be backed by
 a chunk-chain (a list of fixed-size buffers — append fills the tail, consume frees the head, no
 memmove); that is over-engineered for DIAL and out of scope now. (Header accumulation in `HttpFraming`
-is separately bounded by `dial_max_header_bytes`, §4.3.)
+is separately bounded by `MAX_HEADER_BYTES`, §4.3.)
 
 ### 4.5 `ssdp_reflector.{h,cpp}` integration
 
@@ -393,10 +434,10 @@ device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives 
 - **Listeners — two roles, different lifetimes** (the DIAL spec mandates no port stability, §2.3):
   - *Discovery* (from an SSDP `LOCATION`): the device-description port is **dynamic** (changes across
     reboots) and clients re-discover constantly, so a stale one is replaced fast — **short** idle reap
-    (`dial_discovery_idle`, default ~90s).
+    (`DISCOVERY_IDLE`, ~90s).
   - *REST* (from `Application-URL` / a `201 Location`): the port is **stable** in practice (the
     reference server fixes it; the LG TV holds it across a session) and a client may keep the
-    `Application-URL` across a pause, so it gets a **long** idle cooldown (`dial_rest_idle`, default
+    `Application-URL` across a pause, so it gets a **long** idle cooldown (`REST_IDLE`, default
     ~1h) — but **not forever**: a reboot can change the REST port, leaving the old listener dead, so a
     multi-hour (not multi-day) grace frees it promptly while surviving any realistic pause/resume.
   A listener's `last_active` is refreshed on **any activity on it** — each accepted connection *and*
@@ -428,7 +469,7 @@ device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives 
   destination — it is set by discovery, not by the request. The reflector never connects anywhere a
   DIAL device didn't advertise.
 - **Listeners bind to `source_if`'s address only**, so they are reachable solely from the client
-  subnet, not the whole host. Caps (`MAX_CONNECTIONS`, the two listener caps, `dial_max_header_bytes`) bound
+  subnet, not the whole host. Caps (`MAX_CONNECTIONS`, the two listener caps, `MAX_HEADER_BYTES`) bound
   resource use; default-off means zero new surface unless asked for.
 - **Loop safety:** the proxy uses kernel TCP sockets, distinct from the raw L2 capture path — a
   proxied connection is never re-captured as SSDP (different protocol, different sockets). The SSDP
@@ -449,7 +490,7 @@ device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives 
   (spinning up the REST listener) and the launch `201 LOCATION` rewrite reusing it; `MAX_CONNECTIONS`
   drop-new; connect-deadline and idle-deadline eviction via firing the fake timer; backpressure
   drop-and-close (a short write buffers + arms write-interest; `FireWritable` flushes and disarms; a
-  write past `dial_send_high_water` aborts the connection). The SSDP `LOCATION` parse + splice is tested on the `SsdpReflector` side.
+  write past the `MAX_SEND_BUFFER` cap aborts the connection). The SSDP `LOCATION` parse + splice is tested on the `SsdpReflector` side.
 - `event_loop_dispatcher_test`: extended for write-interest — `SetWriteInterest` arms/disarms,
   writable fires the write callback, a completed loopback `connect` surfaces as writable, a failed
   connect surfaces to an armed handler, the readability tests stay green.
@@ -477,8 +518,8 @@ are rewritten to reflector authorities; the upstream connections arrive at the e
 
 ## 9. Configuration
 
-No new section — reuse the SSDP `[name]` entry. Add an opt-in boolean and optional tunables to
-`SsdpConfig` (+ `Verify` + the `std::formatter`):
+No new section — reuse the SSDP `[name]` entry. Add a single opt-in boolean to `SsdpConfig`
+(+ `Verify` + the `std::formatter`):
 
 ```toml
 [livingroom-tv]
@@ -487,16 +528,13 @@ dial = true              # default false; opt in to the DIAL proxy
 source_if = "lan"
 target_if = "iot"
 mac = "..."              # optional; scopes discovery AND the DIAL device
-# optional tunables (sane defaults so the common case is just `dial = true`):
-# dial_max_connections         = 32     # concurrent proxied TCP pairs (drop-new at cap)
-# dial_max_rest_listeners      = 32     # ~ max DIAL devices (stable REST endpoints); fd-bounded
-# dial_max_discovery_listeners = 32     # transient device-description listeners
-# dial_rest_idle               = "1h"   # idle cooldown for a (stable) REST listener
-# dial_discovery_idle          = "90s"  # idle reap for a (dynamic) discovery listener
-# dial_connect_timeout         = "5s"   # deadline for an upstream connect() stuck in EINPROGRESS
-# dial_max_header_bytes        = 65536  # per-message header-block cap (bodies are streamed)
-# dial_send_high_water         = 262144 # per-socket outbound buffer cap; a write past it aborts the conn
 ```
+
+`dial = true` is the **only** DIAL config knob. The caps and timeouts — max connections, listener
+counts, idle reaps, the connect deadline, the header and send-buffer caps — are **fixed constants**
+beside the code that enforces them, matching the rest of the codebase (`SsdpReflector`'s `MAX_SESSIONS` /
+`SESSION_GRACE` / `EVICTION_INTERVAL` are constants, not config). A user has no reason to tune an
+internal stall/DoS valve; expose config later only if a concrete need appears.
 
 `dial` inherits the entry's `source_if` (listener bind + rewritten authority), `target_if` (upstream
 connect bind + egress pin), `address_family`, and `mac`. Listener ports are **ephemeral** (kernel-
@@ -513,8 +551,10 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
 1. `dispatcher`: write-interest control (`Register` FdCallbacks overload + `SetWriteInterest`; read is
    always armed; epoll/kqueue write arm-disarm) + `FakeDispatcher` `FireWritable` + tests. Landed alone,
    like the timer commit.
-2. `tcp_socket`: non-blocking listen/accept/connect(bound+pinned)/read/write, SIGPIPE-safe, RAII +
-   loopback tests.
+2. `ip_endpoint` + `tcp_socket`: `IpEndpoint` value type with family-aware sockaddr conversion;
+   move-only, dispatcher-inert `TcpSocket` (non-blocking listen/accept/connect(bound+pinned)/read/
+   `Send`+bounded`SendBuffer`/`Flush`/`WantsWrite`, SIGPIPE-safe, RAII) + loopback tests parameterized
+   over v4/v6.
 3. `http_message`: incremental framing (CL/chunked/none) + case-insensitive header rewrite via the
    shared `RewriteAuthority` helper + tests.
 4. `dial_proxy`: endpoint/listener map, connection pump + bounded `SendBuffer` (drop-and-close on
@@ -572,6 +612,17 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
   proxy is owned by `SsdpReflector` with no external callers, so its sole cross-boundary method is the
   listener primitive; DIAL-classification + `LOCATION` parse/splice live in the SSDP path via the
   shared `RewriteAuthority` helper, keeping `DialProxy` free of SSDP-message knowledge. (§4.4/§4.5)
+- **D12 — `TcpSocket` is dispatcher-inert; the `Connection`/`Endpoint` owns the `Registration` + the one
+  `SetWriteInterest` ("honest Point B").** A `TcpSocket` captures nothing of the dispatcher (just `{fd,
+  SendBuffer, connecting}`) so it moves freely — `Accept()` returns one by value, a `Connection` holds
+  two by value. The dispatcher callback target is the owning `Connection`/`Endpoint`, which is `NoMove`
+  in a node-stable, id-keyed map (it must be address-stable anyway, for eviction). Write interest is
+  toggled in exactly one place — `Sync(reg, s)` forwarding `s.WantsWrite()` — so `TcpSocket` owns the
+  buffer and the truth while the proxy owns only the toggle. Rejected the alternative (a self-registering
+  `TcpSocket` "so the proxy never touches write interest"): it would dangle its own write `Delegate` on
+  move, forcing `unique_ptr` heap-pinning per socket plus an internal state machine, and it doesn't even
+  remove the connect-completion callback coupling. (§4.2/§4.4; settled via a design panel + lifetime
+  adversary; mirrors the shipping `SsdpReflector::Session` + `RawSocket` `NoMove` patterns.)
 
 ## 12. Out of scope
 
