@@ -10,6 +10,7 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/interface_address_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ip_endpoint_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/logger_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_message_test.cpp
@@ -19,6 +20,8 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/ssdp_reflector_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/default_packet_dispatcher_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/raw_socket_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/send_buffer_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/tcp_socket_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/util/udp_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_socket_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/wol_reflector_test.cpp

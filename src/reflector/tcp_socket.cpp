@@ -1,0 +1,281 @@
+#include "tcp_socket.h"
+
+#include "error.h"
+#include "logger.h"
+
+#include <cerrno>
+#include <cstring>
+#include <utility>
+#include <fcntl.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+namespace {
+
+using namespace reflector;
+
+Logger& GetLogger() noexcept {
+    static Logger logger{"TcpSocket"};
+    return logger;
+}
+
+// Make `fd` non-blocking and SIGPIPE-safe. On Linux SIGPIPE is suppressed per-send via MSG_NOSIGNAL, so
+// only the non-blocking flag is set here; on macOS there is no MSG_NOSIGNAL, so SO_NOSIGPIPE is set once.
+[[nodiscard]] bool ConfigureFd(int fd) noexcept {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        GetLogger().Error("Cannot set socket non-blocking: {}", Error::FromErrno());
+        return false;
+    }
+#if defined(__APPLE__)
+    const int on = 1;
+    if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) != 0) {
+        GetLogger().Error("Cannot set SO_NOSIGPIPE: {}", Error::FromErrno());
+        return false;
+    }
+#endif
+    return true;
+}
+
+// Pin egress to interface `ifindex` so the connect leaves via that interface even if a host route would
+// otherwise send it elsewhere (SO_BINDTODEVICE on Linux — needs CAP_NET_RAW; IP_BOUND_IF on macOS).
+[[nodiscard]] bool PinEgress(int fd, int family, unsigned ifindex) noexcept {
+#if defined(__linux__)
+    (void)family;
+    char name[IF_NAMESIZE];
+    if (if_indextoname(ifindex, name) == nullptr) {
+        GetLogger().Error("Cannot resolve interface index {}: {}", ifindex, Error::FromErrno());
+        return false;
+    }
+    if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name, static_cast<socklen_t>(std::strlen(name))) != 0) {
+        GetLogger().Error("Cannot pin egress to interface \"{}\": {}", name, Error::FromErrno());
+        return false;
+    }
+#elif defined(__APPLE__)
+    const int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    const int optname = family == AF_INET6 ? IPV6_BOUND_IF : IP_BOUND_IF;
+    if (::setsockopt(fd, level, optname, &ifindex, sizeof(ifindex)) != 0) {
+        GetLogger().Error("Cannot pin egress to interface index {}: {}", ifindex, Error::FromErrno());
+        return false;
+    }
+#endif
+    return true;
+}
+
+} // namespace
+
+namespace reflector {
+
+TcpSocket::TcpSocket(int fd, bool connecting) noexcept : fd_{fd}, connecting_{connecting} {}
+
+TcpSocket::~TcpSocket() noexcept {
+    Close();
+}
+
+TcpSocket::TcpSocket(TcpSocket&& other) noexcept
+        : send_buffer_{std::move(other.send_buffer_)},
+          fd_{std::exchange(other.fd_, -1)},
+          connecting_{std::exchange(other.connecting_, false)} {}
+
+TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
+    if (this != &other) {
+        Close();
+        send_buffer_ = std::move(other.send_buffer_);
+        fd_ = std::exchange(other.fd_, -1);
+        connecting_ = std::exchange(other.connecting_, false);
+    }
+    return *this;
+}
+
+void TcpSocket::Close() noexcept {
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
+}
+
+std::optional<TcpSocket> TcpSocket::Listen(const IpEndpoint& bind) {
+    const int family = bind.addr.IsV6() ? AF_INET6 : AF_INET;
+    const int fd = ::socket(family, SOCK_STREAM, 0);
+    if (fd < 0) {
+        GetLogger().Error("Cannot create listening socket: {}", Error::FromErrno());
+        return std::nullopt;
+    }
+    const int on = 1;
+    if (!ConfigureFd(fd)) {  // ConfigureFd logs its own failure
+        ::close(fd);
+        return std::nullopt;
+    }
+    if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) != 0) {
+        GetLogger().Error("Cannot set SO_REUSEADDR: {}", Error::FromErrno());
+        ::close(fd);
+        return std::nullopt;
+    }
+    sockaddr_storage addr{};
+    const socklen_t len = bind.ToSockaddr(addr);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), len) != 0
+        || ::listen(fd, SOMAXCONN) != 0) {
+        GetLogger().Error("Cannot bind/listen on {}: {}", bind, Error::FromErrno());
+        ::close(fd);
+        return std::nullopt;
+    }
+    return TcpSocket{fd};
+}
+
+std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const IpEndpoint& bind, unsigned ifindex) {
+    const int family = dst.addr.IsV6() ? AF_INET6 : AF_INET;
+    const int fd = ::socket(family, SOCK_STREAM, 0);
+    if (fd < 0) {
+        GetLogger().Error("Cannot create connect socket: {}", Error::FromErrno());
+        return std::nullopt;
+    }
+    if (!ConfigureFd(fd) || (ifindex != 0 && !PinEgress(fd, family, ifindex))) {
+        ::close(fd);
+        return std::nullopt;
+    }
+    sockaddr_storage src{};
+    const socklen_t src_len = bind.ToSockaddr(src, ifindex);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&src), src_len) != 0) {
+        GetLogger().Error("Cannot bind connect source to {}: {}", bind, Error::FromErrno());
+        ::close(fd);
+        return std::nullopt;
+    }
+    sockaddr_storage dest{};
+    const socklen_t dest_len = dst.ToSockaddr(dest, ifindex);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&dest), dest_len) != 0 && errno != EINPROGRESS) {
+        GetLogger().Error("Cannot connect to {}: {}", dst, Error::FromErrno());
+        ::close(fd);
+        return std::nullopt;
+    }
+    // Start CONNECTING — even an immediate (loopback) completion resolves uniformly via the first
+    // writable edge + FinishConnect.
+    return TcpSocket{fd, /*connecting=*/true};
+}
+
+std::optional<TcpSocket> TcpSocket::Accept() noexcept {
+#if defined(__linux__)
+    const int client = ::accept4(fd_, nullptr, nullptr, SOCK_NONBLOCK);
+#else
+    const int client = ::accept(fd_, nullptr, nullptr);
+#endif
+    if (client < 0) {
+        if (!IsWouldBlockErrno(errno)) {
+            GetLogger().Error("Cannot accept connection: {}", Error::FromErrno());
+        }
+        return std::nullopt;
+    }
+#if defined(__APPLE__)
+    // accept() does not inherit non-blocking; set it (+ SO_NOSIGPIPE). accept4 already did on Linux.
+    if (!ConfigureFd(client)) {
+        ::close(client);
+        return std::nullopt;
+    }
+#endif
+    return TcpSocket{client};
+}
+
+IoStatus TcpSocket::FinishConnect() noexcept {
+    if (!connecting_) {
+        return IoStatus::Ok;  // nothing in flight; reading SO_ERROR here would clear a pending Read() error
+    }
+    int so_error = 0;
+    socklen_t len = sizeof(so_error);
+    if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
+        GetLogger().Error("Cannot read SO_ERROR for fd {}: {}", fd_, Error::FromErrno());
+        return IoStatus::Error;
+    }
+    if (so_error != 0) {
+        GetLogger().Error("Connect failed for fd {}: {}", fd_, Error::FromErrno(so_error));
+        return IoStatus::Error;
+    }
+    connecting_ = false;
+    return IoStatus::Ok;
+}
+
+IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
+    const ssize_t n = ::recv(fd_, out.data(), out.size(), 0);
+    if (n > 0) {
+        return {IoStatus::Ok, static_cast<size_t>(n)};
+    }
+    if (n == 0) {
+        return {IoStatus::Closed, 0};
+    }
+    if (IsWouldBlockErrno(errno)) {
+        return {IoStatus::WouldBlock, 0};
+    }
+    return {IoStatus::Error, 0};
+}
+
+IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
+    if (data.empty()) {
+        return {IoStatus::Ok, 0};
+    }
+#if defined(__linux__)
+    const ssize_t n = ::send(fd_, data.data(), data.size(), MSG_NOSIGNAL);
+#else
+    const ssize_t n = ::send(fd_, data.data(), data.size(), 0);  // SO_NOSIGPIPE set at creation
+#endif
+    if (n >= 0) {
+        return {IoStatus::Ok, static_cast<size_t>(n)};
+    }
+    if (IsWouldBlockErrno(errno)) {
+        return {IoStatus::WouldBlock, 0};
+    }
+    return {IoStatus::Error, 0};
+}
+
+SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
+    // Only write directly when nothing is already queued — otherwise the tail must follow the backlog in
+    // order.
+    if (send_buffer_.Empty()) {
+        const IoResult wrote = WriteSome(data);
+        if (wrote.status == IoStatus::Error) {
+            return SendStatus::Error;
+        }
+        data = data.subspan(wrote.bytes);  // bytes == 0 on WouldBlock — buffer the whole tail
+        if (data.empty()) {
+            return SendStatus::Ok;
+        }
+    }
+    if (send_buffer_.Size() + data.size() > MAX_SEND_BUFFER) {
+        return SendStatus::Overflow;  // owner aborts the connection (drop-and-close)
+    }
+    send_buffer_.Append(data);
+    return SendStatus::Ok;
+}
+
+SendStatus TcpSocket::Flush() noexcept {
+    while (!send_buffer_.Empty()) {
+        const IoResult wrote = WriteSome(send_buffer_.View());
+        if (wrote.status == IoStatus::Error) {
+            return SendStatus::Error;
+        }
+        if (wrote.bytes == 0) {
+            break;  // WouldBlock (the only zero-byte result here) — resume on the next writable edge
+        }
+        send_buffer_.Consume(wrote.bytes);
+    }
+    return SendStatus::Ok;
+}
+
+std::optional<IpEndpoint> TcpSocket::LocalEndpoint() const noexcept {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        return std::nullopt;
+    }
+    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
+}
+
+std::optional<IpEndpoint> TcpSocket::PeerEndpoint() const noexcept {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    if (::getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        return std::nullopt;
+    }
+    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
+}
+
+} // namespace reflector
