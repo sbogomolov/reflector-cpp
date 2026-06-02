@@ -20,7 +20,9 @@ public:
     EventLoopDispatcher();
     ~EventLoopDispatcher() noexcept override;
 
-    [[nodiscard]] Dispatcher::Registration Register(int fd, const OnReadableCallback& on_readable) override;
+    [[nodiscard]] Dispatcher::Registration Register(int fd, FdCallbacks callbacks) override;
+    using Dispatcher::Register;  // un-hide the base 2-arg readability-only convenience
+    [[nodiscard]] bool SetWriteInterest(int fd, bool enabled) noexcept override;
 
     // Fires (and reschedules to now + interval) every timer whose deadline is <= now. Public so the
     // timer path is driven directly in tests with an injected `now` — no clock-seam member, no friend.
@@ -51,15 +53,25 @@ private:
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return callbacks_.size(); }
 
-    [[nodiscard]] bool AddReadEvent(int fd) noexcept;
-    [[nodiscard]] bool RemoveReadEvent(int fd) noexcept;
+    // Program `fd`'s kernel interest: read is ALWAYS armed, write per `enable_write`. Shared by Register
+    // (initial state) and SetWriteInterest (write toggle). Refuses to arm write with no write handler (a
+    // ready fd with nothing to invoke would busy-spin). On kqueue the read filter is always EV_ADD'd
+    // while the write filter is EV_ADD'd only when arming — so EVFILT_WRITE never attaches to a BPF
+    // capture fd that can't support it; on epoll it rewrites the full mask (EPOLLIN always set).
+    [[nodiscard]] bool SetEvents(int fd, bool enable_write) noexcept;
+    // Removes `fd` from the event queue entirely (both directions). Self-logs on failure, so the
+    // `Register` rollback path may ignore the result — hence not [[nodiscard]].
+    bool RemoveEvents(int fd) noexcept;
     bool Unregister(int fd) noexcept override;
 
-    // fd -> callback. The kernel reports the ready fd (kqueue ident / epoll data.fd) and we
-    // look the callback up here rather than stashing a pointer in the event's user-data: a
-    // stale event for an already-unregistered fd then fails the lookup safely instead of
-    // dereferencing freed state — which a batched read could otherwise deliver.
-    std::unordered_map<int, OnReadableCallback> callbacks_;
+    // fd -> callbacks (always-armed read handler + optional write handler + its write_armed flag). The
+    // kernel reports the ready fd (kqueue ident / epoll data.fd) and we look the entry up here rather
+    // than stashing a pointer in the event's user-data: a stale event for an already-unregistered fd
+    // then fails the lookup safely instead of dereferencing freed state — which a batched read could
+    // otherwise deliver. write_armed mirrors the kernel state so SetWriteInterest can rebuild the epoll
+    // mask / pick the kqueue filter to toggle, and PollOnce can skip a write disarmed between the kernel
+    // report and the dispatch.
+    std::unordered_map<int, FdCallbacks> callbacks_;
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
     int event_fd_ = -1;

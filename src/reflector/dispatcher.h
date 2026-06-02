@@ -13,6 +13,11 @@ namespace reflector {
 // fd; subscribers (e.g. DefaultPacketDispatcher, the interface-address monitor) bind their own.
 using OnReadableCallback = Delegate<void(int)>;
 
+// Invoked with the fd that became writable. A non-blocking connect() signals completion by
+// becoming writable, and a partially-drained send buffer flushes on the next writable. Write
+// interest starts disarmed (see SetWriteInterest) so a readability-only consumer never sees it.
+using OnWritableCallback = Delegate<void(int)>;
+
 // A readiness reactor: callers register a callback per fd and are invoked whenever that fd becomes
 // readable. It knows nothing about packets — subscribers layer their own parse/filter logic on
 // top. EventLoopDispatcher is the production implementation (kqueue/epoll); tests substitute a fake.
@@ -28,12 +33,36 @@ public:
     // invalid sentinel; real ids start at 1.
     enum class TimerId : uint64_t {};
 
+    // The read/write handlers for one watched fd. Read is REQUIRED and ALWAYS armed — an error/hangup
+    // surfaces as readability (recv() reveals it), so the always-armed read handler is the uniform home
+    // for teardown, and a never-zero interest mask means an errored fd can never busy-spin with nothing
+    // armed. Write is OPTIONAL and the only flippable direction: a connecting socket sets
+    // {.write_armed = true} to learn of connect-completion; a backed-up send buffer arms it to flush.
+    struct FdCallbacks {
+        OnReadableCallback read{};   // required; {} DMI keeps a designated init that omits `write` clean
+        OnWritableCallback write{};  // under GCC's -Wmissing-field-initializers. Bool last: no padding
+        bool write_armed = false;    // wasted between the two pointer-sized delegates.
+    };
+
     virtual ~Dispatcher() noexcept = default;
 
-    // Watches `fd` for readability and invokes `on_readable(fd)` whenever it has data; one
-    // registration per fd (re-registering an already-watched fd fails). The returned registration
-    // must not outlive this dispatcher.
-    [[nodiscard]] virtual Registration Register(int fd, const OnReadableCallback& on_readable) = 0;
+    // Watches `fd` per `callbacks`: read (always armed) plus optional write per `write_armed`. Fails if
+    // `callbacks.read` is unset (read is required) or `fd` is already watched (one registration per fd).
+    // The returned registration must not outlive this dispatcher.
+    [[nodiscard]] virtual Registration Register(int fd, FdCallbacks callbacks) = 0;
+
+    // Readability-only convenience (no write handler) — the common case, unchanged for every existing
+    // consumer. Non-virtual so the one pure virtual is the FdCallbacks form.
+    [[nodiscard]] Registration Register(int fd, const OnReadableCallback& on_readable) {
+        return Register(fd, FdCallbacks{.read = on_readable});
+    }
+
+    // Toggle writability notification for an already-registered fd (epoll EPOLL_CTL_MOD +/- EPOLLOUT;
+    // kqueue EVFILT_WRITE EV_ENABLE/EV_DISABLE). Arm to learn when a non-blocking connect completes
+    // or a backed-up send buffer can flush; disarm once it drains, to avoid a writable-spin on the
+    // level-triggered reactor. Idempotent; returns false on an unknown fd.
+    [[nodiscard]] virtual bool SetWriteInterest(int fd, bool enabled) noexcept = 0;
+
 
     // Runs the readiness loop until `stop_requested` becomes non-zero, dispatching each registered
     // callback as its fd becomes readable. (The production reactor blocks in the kernel between

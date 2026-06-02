@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <ctime>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
@@ -70,23 +71,48 @@ EventLoopDispatcher::~EventLoopDispatcher() noexcept {
     }
 }
 
-Dispatcher::Registration EventLoopDispatcher::Register(int fd, const OnReadableCallback& on_readable) {
+Dispatcher::Registration EventLoopDispatcher::Register(int fd, FdCallbacks callbacks) {
     if (fd < 0) {
         GetLogger().Error("Cannot register fd callback: fd is invalid");
+        return {};
+    }
+    if (!callbacks.read.IsValid()) {
+        GetLogger().Error("Cannot register fd callback: a read handler is required for fd {}", fd);
         return {};
     }
     if (callbacks_.contains(fd)) {
         GetLogger().Error("Cannot register fd callback: a callback for fd {} is already registered", fd);
         return {};
     }
-    if (!AddReadEvent(fd)) {
-        GetLogger().Error("Cannot register fd callback: read event registration failed for fd {}", fd);
+    // Insert first so SetEvents reads the requested initial write arm state from the entry, then
+    // program the kernel interest (read always armed). Roll back (kernel + map) on failure, so a
+    // partial registration never leaks.
+    const auto it = callbacks_.emplace(fd, std::move(callbacks)).first;
+    if (!SetEvents(fd, it->second.write_armed)) {
+        RemoveEvents(fd);
+        callbacks_.erase(it);
+        GetLogger().Error("Cannot register fd callback: event registration failed for fd {}", fd);
         return {};
     }
 
-    callbacks_.emplace(fd, on_readable);
     GetLogger().Debug("Registered fd callback for fd {}", fd);
     return MakeRegistration(fd);
+}
+
+bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
+    const auto it = callbacks_.find(fd);
+    if (it == callbacks_.end()) {
+        GetLogger().Warning("Cannot set write interest for fd {}: not registered", fd);
+        return false;
+    }
+    if (it->second.write_armed == enabled) {
+        return true;  // idempotent
+    }
+    if (!SetEvents(fd, enabled)) {
+        return false;
+    }
+    it->second.write_armed = enabled;
+    return true;
 }
 
 bool EventLoopDispatcher::Unregister(int fd) noexcept {
@@ -97,8 +123,8 @@ bool EventLoopDispatcher::Unregister(int fd) noexcept {
     }
 
     callbacks_.erase(it);
-    if (!RemoveReadEvent(fd)) {
-        GetLogger().Error("Cannot remove read event for fd {} after unregistering its callback", fd);
+    if (!RemoveEvents(fd)) {
+        GetLogger().Error("Cannot remove events for fd {} after unregistering its callback", fd);
     }
 
     GetLogger().Debug("Unregistered fd callback for fd {}", fd);
@@ -164,10 +190,6 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     }
     const auto fd = event.data.fd;
     const auto events = event.events;
-    if ((events & (EPOLLERR | EPOLLHUP)) != 0 && (events & EPOLLIN) == 0) {
-        GetLogger().Error("Dispatcher read event failed for fd {} (events: {:#x})", fd, events);
-        return false;
-    }
 #endif
 
     const auto it = callbacks_.find(fd);
@@ -175,10 +197,41 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
         GetLogger().Warning("Dispatcher woke for unwatched fd {}", fd);
         return false;
     }
-    // Copy the callback before invoking: it may unregister this fd (erasing the map entry),
-    // which would otherwise dangle the reference we are calling through.
-    auto on_readable = it->second;
-    on_readable(fd);
+
+#if defined(__APPLE__)
+    const bool readable = event.filter == EVFILT_READ;
+    const bool writable = event.filter == EVFILT_WRITE;
+#elif defined(__linux__)
+    // EPOLLERR/EPOLLHUP can arrive without EPOLLIN/EPOLLOUT (a failed connect surfaces as EPOLLERR,
+    // often with no EPOLLOUT; a peer hangup as EPOLLHUP). Fold the error into READABLE only: read is
+    // always armed, so the read handler is woken to recv() the EOF/error and tear down — the uniform
+    // error sink. Writability needs no fold; any error already reaches the read handler, and the write
+    // handler fires only on genuine EPOLLOUT.
+    const bool err = (events & (EPOLLERR | EPOLLHUP)) != 0;
+    const bool readable = (events & EPOLLIN) != 0 || err;
+    const bool writable = (events & EPOLLOUT) != 0;
+#endif
+
+    // Read is always armed and always has a valid handler (Register requires one), so readability
+    // dispatches unconditionally; write dispatches only when armed (SetEvents refuses to arm write
+    // with no callback). Copy each delegate before invoking (the handler may unregister the fd,
+    // destroying the stored delegate).
+    if (readable) {
+        const auto read = it->second.read;
+        read(fd);
+    }
+    if (writable) {
+        // The read handler, which runs only when readable, may have invalidated `it` — most often by tearing
+        // this fd down (recv EOF/error -> close -> Unregister erases the entry), or by registering a new
+        // fd elsewhere (e.g. an accept handler), whose insert can rehash callbacks_ and invalidate every
+        // iterator. Re-resolve before the write (end() => this fd is gone). A write-only wakeup ran no
+        // handler, so `it` is untouched and reused without a lookup.
+        const auto live = readable ? callbacks_.find(fd) : it;
+        if (live != callbacks_.end() && live->second.write_armed) {
+            const auto write = live->second.write;
+            write(fd);
+        }
+    }
     return true;
 }
 
@@ -249,58 +302,88 @@ std::chrono::milliseconds EventLoopDispatcher::NextTimeout(std::chrono::steady_c
     return std::max(timeout, std::chrono::milliseconds{0});
 }
 
-bool EventLoopDispatcher::AddReadEvent(int fd) noexcept {
+bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     if (event_fd_ < 0) {
-        GetLogger().Error("Cannot add read event for fd {}: event queue is invalid", fd);
+        GetLogger().Error("Cannot set events for fd {}: event queue is invalid", fd);
+        return false;
+    }
+    const auto it = callbacks_.find(fd);
+    if (it == callbacks_.end()) {
+        return false;
+    }
+    // Refuse to arm write with no write handler: a writable fd with nothing to invoke would busy-spin
+    // the level-triggered loop. (Read is always armed; Register guarantees a read handler.)
+    if (enable_write && !it->second.write.IsValid()) {
+        GetLogger().Error("Cannot arm write interest for fd {}: no write callback registered", fd);
         return false;
     }
 
 #if defined(__APPLE__)
+    // Read is always armed; re-EV_ADD'ing an already-present filter is idempotent. The write filter is
+    // EV_ADD'd only when arming — so EVFILT_WRITE is never EV_ADD'd on a BPF capture device (which
+    // rejects it with EINVAL); disarming uses bare EV_DISABLE, tolerating ENOENT when it was never added.
     struct kevent change{};
     EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
-        GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
+        GetLogger().Error("Cannot arm read interest for fd {}: {}", fd, Error::FromErrno());
+        return false;
+    }
+    const auto write_flags = static_cast<uint16_t>(enable_write ? (EV_ADD | EV_ENABLE) : EV_DISABLE);
+    EV_SET(&change, fd, EVFILT_WRITE, write_flags, 0, 0, nullptr);
+    if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0 && (enable_write || errno != ENOENT)) {
+        GetLogger().Error("Cannot set write interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #elif defined(__linux__)
+    // epoll has no per-direction toggle — rewrite the whole mask (read always on). MOD an already-
+    // watched fd; on its first call (from Register) it is not in the set yet, so MOD returns ENOENT and
+    // we ADD.
     epoll_event event{};
-    event.events = EPOLLIN;
+    event.events = EPOLLIN | (enable_write ? EPOLLOUT : 0u);
     event.data.fd = fd;
-    if (epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0) {
-        if (errno == EEXIST) {
-            GetLogger().Debug("Read event already registered for fd {}", fd);
-            return true;
-        }
-        GetLogger().Error("Cannot add read event for fd {}: {}", fd, Error::FromErrno());
+    if (epoll_ctl(event_fd_, EPOLL_CTL_MOD, fd, &event) != 0
+        && (errno != ENOENT || epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0)) {
+        GetLogger().Error("Cannot set events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
 
-    GetLogger().Debug("Registered read event for fd {}", fd);
+    GetLogger().Debug("Set events for fd {}: write {}", fd, enable_write);
     return true;
 }
 
-bool EventLoopDispatcher::RemoveReadEvent(int fd) noexcept {
+bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     if (event_fd_ < 0) {
-        GetLogger().Error("Cannot remove read event for fd {}: event queue is invalid", fd);
+        GetLogger().Error("Cannot remove events for fd {}: event queue is invalid", fd);
         return false;
     }
 
 #if defined(__APPLE__)
-    struct kevent change{};
-    EV_SET(&change, fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-    if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
-        GetLogger().Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
+    // Delete both filters. A filter can be absent — the write filter if write was never armed, or
+    // either one if the fd was already closed (kqueue auto-removes a closed fd's filters) — so an
+    // EV_DELETE returning ENOENT is benign; any other failure is a real error.
+    bool ok = true;
+    for (const auto filter : {EVFILT_READ, EVFILT_WRITE}) {
+        struct kevent change{};
+        EV_SET(&change, fd, static_cast<int16_t>(filter), EV_DELETE, 0, 0, nullptr);
+        if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0 && errno != ENOENT) {
+            GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
+            ok = false;
+        }
+    }
+    if (!ok) {
         return false;
     }
 #elif defined(__linux__)
-    if (epoll_ctl(event_fd_, EPOLL_CTL_DEL, fd, nullptr) != 0) {
-        GetLogger().Error("Cannot remove read event for fd {}: {}", fd, Error::FromErrno());
+    // ENOENT is benign: the kernel auto-removes a closed fd, so a DEL issued after the owner already
+    // closed it hits ENOENT (matching the macOS branch above). Any other failure is a real error.
+    if (epoll_ctl(event_fd_, EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
+        GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
 
-    GetLogger().Debug("Removed read event for fd {}", fd);
+    GetLogger().Debug("Removed events for fd {}", fd);
     return true;
 }
 

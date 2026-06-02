@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace reflector {
@@ -16,12 +17,29 @@ namespace reflector {
 // production contract (one callback per fd; re-registering a watched or invalid fd fails).
 class FakeDispatcher : public Dispatcher {
 public:
-    [[nodiscard]] Dispatcher::Registration Register(int fd, const OnReadableCallback& on_readable) override {
-        if (fd < 0 || callbacks_.contains(fd)) {
+    [[nodiscard]] Dispatcher::Registration Register(int fd, FdCallbacks callbacks) override {
+        if (fd < 0 || !callbacks.read.IsValid() || callbacks_.contains(fd)) {
             return {};
         }
-        callbacks_.emplace(fd, on_readable);
+        callbacks_.emplace(fd, std::move(callbacks));
         return MakeRegistration(fd);
+    }
+    using Dispatcher::Register;  // un-hide the base 2-arg readability-only convenience
+
+    // Write interest starts disarmed — mirroring production (read is always armed). Toggling updates
+    // the armed flag; false on an unwatched fd.
+    [[nodiscard]] bool SetWriteInterest(int fd, bool enabled) noexcept override {
+        const auto it = callbacks_.find(fd);
+        if (it == callbacks_.end()) {
+            return false;
+        }
+        it->second.write_armed = enabled;
+        return true;
+    }
+
+    [[nodiscard]] bool IsWriteArmed(int fd) const noexcept {
+        const auto it = callbacks_.find(fd);
+        return it != callbacks_.end() && it->second.write_armed;
     }
 
     // Production blocks here; the fake records the call and returns. Tests drive readiness via
@@ -30,11 +48,31 @@ public:
 
     size_t run_calls = 0;
 
-    // Invokes the callback registered for `fd`, as the reactor would when `fd` becomes readable.
+    // Invokes the read callback for `fd`, as the reactor would when `fd` becomes readable. Read is
+    // always armed and always present (Register requires it), so this is a no-op only on an unwatched
+    // fd. Copies the callback before invoking (it may unregister the fd or toggle interest), matching
+    // production discipline.
     void FireReadable(int fd) {
         const auto it = callbacks_.find(fd);
-        if (it != callbacks_.end()) {
-            it->second(fd);
+        if (it == callbacks_.end()) {
+            return;
+        }
+        const auto read = it->second.read;
+        read(fd);
+    }
+
+    // Invokes the write callback for `fd`, as the reactor would when `fd` becomes writable. Unlike
+    // FireReadable, write delivery is not gated on write_armed: a test fires this to model a
+    // connect completing or a send buffer draining; whether write interest was armed is the proxy's
+    // concern, asserted separately via IsWriteArmed.
+    void FireWritable(int fd) {
+        const auto it = callbacks_.find(fd);
+        if (it == callbacks_.end()) {
+            return;
+        }
+        const auto write = it->second.write;
+        if (write.IsValid()) {
+            write(fd);
         }
     }
 
@@ -82,7 +120,7 @@ private:
         OnTimerCallback callback;
     };
 
-    std::unordered_map<int, OnReadableCallback> callbacks_;
+    std::unordered_map<int, FdCallbacks> callbacks_;  // FdCallbacks: read/write cbs + write_armed
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
 };
