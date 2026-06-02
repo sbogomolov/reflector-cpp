@@ -150,52 +150,72 @@ the small DIAL control HTTP.
 
 ## 4. Components
 
-### 4.1 Reactor: read/write interest control (`dispatcher.h`, `event_loop_dispatcher.{h,cpp}`) — new capability
+### 4.1 Reactor: write-interest control + always-armed read (`dispatcher.h`, `event_loop_dispatcher.{h,cpp}`) — new capability
 
 The reactor is readability-only today (`Register(fd, on_readable)`), with read interest permanently on.
-TCP needs two new controls:
+TCP adds **one** new control:
 - **Writability** — a non-blocking `connect()` signals completion by becoming writable, and a
-  partially-drained send buffer is flushed on the next writable.
-- **Pausing reads** — flow control (§4.4) stops draining a source when the sink is backed up. On a
-  *level-triggered* reactor (epoll/kqueue), a readable fd we stop reading would re-fire its callback
-  forever (busy-spin) unless we disable its read interest — so read interest must be toggleable too.
+  partially-drained send buffer is flushed on the next writable. Write interest is *flippable*: armed
+  when there is something to write (connect-in-progress, or a backed-up send buffer), disarmed when
+  idle — on a *level-triggered* reactor an armed-but-idle writable socket re-fires forever (busy-spin).
+
+**Read interest is NOT toggleable — read is always armed.** We considered a `SetReadInterest` pause for
+backpressure, then removed it: DIAL is request/response with tiny payloads, so we use *drop-and-close*
+backpressure (§4.4 — a bounded send buffer that aborts the connection on overflow) rather than lossless
+read-pausing. Always-armed read buys two simplifications:
+- An error/hangup surfaces as readability (`recv()` reveals it; the write path reads `SO_ERROR`), so the
+  **always-armed read handler is the uniform home for teardown** — no error routing that depends on
+  which direction happens to be armed.
+- A registration's interest mask always includes read, so it can never collapse to "nothing armed": an
+  errored fd can never busy-spin with no handler to consume the unmaskable `EPOLLERR`/`EPOLLHUP`. (An
+  earlier `SetReadInterest`-based design needed an explicit guard to drop a both-directions-disarmed fd
+  from the epoll set; always-armed read makes that guard unnecessary.)
 
 This is the one genuinely new reactor capability — landed and tested **in isolation, exactly like the
 step-2 timer commit**, before any DIAL code.
 
-`Dispatcher` gains a write callback and dynamic arm/disarm of **both** directions:
+`Dispatcher` gains a write callback and dynamic arm/disarm of the **write** direction only:
 
 ```cpp
 using OnWritableCallback = Delegate<void(int)>;  // fd became writable
 
-// Register fd for readability now (read interest starts ARMED, as today); the write callback is stored
-// but write interest starts DISARMED. (The existing 2-arg Register stays valid via a default-empty
-// on_writable.)
-[[nodiscard]] virtual Registration Register(
-    int fd, const OnReadableCallback& on_readable, const OnWritableCallback& on_writable) = 0;
+// Read (required, ALWAYS armed) + optional write handler + write's initial arm state. A connecting
+// socket sets {.write_armed = true} to learn of connect-completion; a backed-up send buffer arms it.
+struct FdCallbacks {
+    OnReadableCallback read{};   // required; {} DMI keeps a designated init that omits `write` clean
+    OnWritableCallback write{};  // under GCC's -Wmissing-field-initializers. Bool last: no padding.
+    bool write_armed = false;
+};
+// Register fd per `callbacks`; fails if `read` is unset (read is required). A non-virtual 2-arg
+// convenience Register(fd, on_readable) forwards FdCallbacks{.read = on_readable}, so every existing
+// readability-only consumer is unchanged.
+[[nodiscard]] virtual Registration Register(int fd, FdCallbacks callbacks) = 0;
 
 // Toggle writability notification for an already-registered fd (epoll EPOLL_CTL_MOD +/- EPOLLOUT;
 // kqueue EVFILT_WRITE EV_ENABLE/EV_DISABLE). Disarm once the send buffer drains to avoid a
 // writable-spin. Idempotent; false on an unknown fd.
 virtual bool SetWriteInterest(int fd, bool enabled) noexcept = 0;
-
-// Toggle readability notification for an already-registered fd (epoll EPOLL_CTL_MOD +/- EPOLLIN;
-// kqueue EVFILT_READ EV_ENABLE/EV_DISABLE). Read interest defaults ARMED at Register, so existing
-// consumers are unaffected; DIAL disarms it to apply backpressure (flow control, §4.4) without
-// busy-spinning a level-triggered reactor. Idempotent; false on an unknown fd.
-virtual bool SetReadInterest(int fd, bool enabled) noexcept = 0;
 ```
 
 `EventLoopDispatcher::callbacks_` changes from `unordered_map<int, OnReadableCallback>` to
-`unordered_map<int, FdCallbacks>` with `FdCallbacks = { OnReadableCallback read; bool read_armed = true;
-OnWritableCallback write; bool write_armed = false; }`. The poll loop dispatches by filter: a read-ready
-event invokes `read`, a write-ready event invokes `write`. Everything else (the fd key, RAII
-`Registration`, the copy-callback-before-invoke discipline) is unchanged. The `~EventLoopDispatcher`
-non-empty-`callbacks_` warning already covers leftover TCP fds.
+`unordered_map<int, Dispatcher::FdCallbacks>`. The poll loop folds `EPOLLERR`/`EPOLLHUP` into both
+directions and dispatches: a readable event always invokes `read` (read is always armed and always
+present); a writable event invokes `write` only when `write_armed`. The kqueue `EVFILT_WRITE` filter is
+added only when write is armed, so a BPF capture fd (which rejects `EVFILT_WRITE` with `EINVAL`) is never
+broken. Everything else (the fd key, RAII `Registration`, the copy-callback-before-invoke discipline) is
+unchanged.
 
-This commit ships with the **fake**: `FakeDispatcher` records the write callback + armed state and
-gains `FireWritable(fd)` (mirroring `FireReadable`) so the proxy's connect/backpressure logic is
-driven deterministically with no real sockets.
+**Edge- vs level-triggered.** We keep the reactor level-triggered. Edge-triggered (`EPOLLET` / kqueue
+`EV_CLEAR`) was evaluated as a way to leave write always armed without spinning, and rejected: it would
+impose a drain-to-`EAGAIN` contract on *every* consumer — breaking the UDP-multicast/capture path's
+bounded `MAX_PACKETS_PER_READ_EVENT` yield and the `maxevents=1` round-robin fairness — and replace LT's
+self-healing re-fire with a silent-permanent-stall failure mode, the worst outcome for a months-uptime
+embedded daemon. Flip condition: if this reactor ever sheds its UDP consumers and goes TCP-only,
+edge-triggered becomes the better choice.
+
+This commit ships with the **fake**: `FakeDispatcher` records the write callback + arm state and gains
+`FireWritable(fd)` (mirroring `FireReadable`) so the proxy's connect/flush logic is driven
+deterministically with no real sockets.
 
 ### 4.2 `tcp_socket.{h,cpp}` — non-blocking TCP RAII (new)
 
@@ -209,10 +229,14 @@ A move-only fd owner wrapping the non-blocking-TCP syscalls, so the proxy never 
 - `Connect(dst, bind_addr, iface)` — non-blocking `socket`; bind to `target_if`'s address and pin
   egress to `target_if` (`SO_BINDTODEVICE` on Linux, `IP_BOUND_IF` on macOS — so a host with a route
   toward the client subnet still egresses the upstream out `target_if`); `connect` → `EINPROGRESS`.
-- `Read`/`Write(span)` — return bytes moved or an EAGAIN/closed/error status. **SIGPIPE-safe**:
-  `SO_NOSIGPIPE` (macOS) at creation + `MSG_NOSIGNAL` (Linux) per send. No SIGPIPE handling exists in
-  `src/reflector/` today; omitting it would crash the single-threaded daemon when a peer disconnects
-  mid-write.
+- `Read(span)` — read inbound bytes; returns bytes moved or an EAGAIN/closed/error status.
+- `Send(span)` — write what the kernel accepts now; copy any unsent tail into the socket's **bounded
+  outbound `SendBuffer`**, arm write interest, and flush on the next writable (disarming when drained).
+  Returns ok / would-overflow / error; on would-overflow the owner aborts the connection (drop-and-close,
+  §4.4). Owning the partial-write + write-interest + bounded-buffer cycle here is what keeps `DialProxy`
+  from ever touching write interest. **SIGPIPE-safe**: `SO_NOSIGPIPE` (macOS) at creation + `MSG_NOSIGNAL`
+  (Linux) per send — no SIGPIPE handling exists in `src/reflector/` today, and omitting it would crash
+  the single-threaded daemon when a peer disconnects mid-write.
 - Destructor closes the fd.
 
 Tested over real loopback (`127.0.0.1` listener + connect) so accept/connect/partial-write/EAGAIN run
@@ -259,11 +283,10 @@ struct Endpoint {              // a discovered DIAL-device ip:port and its refle
 };
 
 struct Connection {            // one client<->device proxied TCP pair
-    TcpSocket client;          // accepted on a listener
+    TcpSocket client;          // accepted on a listener; owns its bounded outbound SendBuffer (§4.2)
     TcpSocket upstream;        // connect() to the listener's device endpoint, bound to target_if
     Dispatcher::Registration client_reg, upstream_reg;
     HttpFraming c2u, u2c;      // per-direction framing + rewrite state
-    SendBuffer pending_to_client, pending_to_upstream;  // bounded FIFO of unflushed bytes (flow control)
     enum { Connecting, Open } phase;
     std::chrono::steady_clock::time_point deadline;  // connect deadline, then idle deadline
 };
@@ -303,18 +326,23 @@ header rewrites also use.
 Connection mechanics (all non-blocking, reactor-driven, single-threaded):
 
 1. **Accept** (listener readable): `Accept()` → if at `MAX_CONNECTIONS`, close immediately (drop-new);
-   else create `Connection`, `Connect()` to the listener's device endpoint (`EINPROGRESS`), register both
-   fds (`Register(fd, on_readable, on_writable)`), `SetWriteInterest(upstream, true)`, set the connect
-   deadline, phase `Connecting`.
-2. **Connect completes** (upstream writable): check `SO_ERROR`; on success disarm write interest, go
-   `Open`, start reading both sides; on failure tear the `Connection` down.
+   else create `Connection`, `Connect()` to the listener's device endpoint (`EINPROGRESS`). Register the
+   client `{.read = forward, .write = flush}` and the upstream `{.read = forward, .write = on_connected,
+   .write_armed = true}` — read is always armed; the upstream additionally watches writability for
+   connect-completion. Set the connect deadline, phase `Connecting`.
+2. **Connect completes** (upstream writable): check `SO_ERROR`; on success disarm the upstream's write
+   interest, go `Open`, start forwarding both sides; on failure tear the `Connection` down. (Read is
+   always armed, so a connect *failure* also surfaces as readability — `recv()` returns the error — and a
+   server that spoke first would reach `Open` via the same shared transition from the read path; DIAL
+   upstreams are client-speaks-first HTTP servers, so in practice only the writable edge fires.)
 3. **Forward** (either side readable): read into a reusable scratch buffer → feed the per-direction
-   `HttpFraming` (rewrite headers, pass body) → write to the peer. On a short/EAGAIN write, append the
-   unwritten remainder to that peer's `SendBuffer` and `SetWriteInterest(peer, true)`; flush on the
-   peer's writable, disarming when drained. **Flow control:** when a peer's `SendBuffer` reaches the
-   high-water mark, stop reading the *source* — `SetReadInterest(source, false)` (§4.1) so the backlog
-   can't grow unboundedly and a level-triggered reactor doesn't busy-spin; resume with
-   `SetReadInterest(source, true)` once it drains below the low-water mark.
+   `HttpFraming` (rewrite headers, pass body) → `TcpSocket::Send` to the peer. `Send` writes what it can
+   and copies the unsent tail into the peer's bounded `SendBuffer`, arming the peer's write interest; the
+   buffer flushes on the peer's writable and disarms when drained. **Backpressure is drop-and-close, not
+   read-pausing:** read stays armed; if a peer's `SendBuffer` would exceed its cap (`dial_send_high_water`),
+   the connection is aborted — a failed attempt, cheap and retryable for DIAL's tiny request/response
+   traffic, and a hard bound on per-connection memory plus a DoS guard. Read is never paused, so the
+   both-directions-disarmed reactor state never arises.
 4. **Close**: peer EOF / error → half-close, then tear the pair down (RAII releases both fds +
    registrations).
 
@@ -326,10 +354,11 @@ of how often the client re-fetches the description.
 rewrite (internal, on the TCP path) are what *create* endpoints and their listeners on first sight; the
 launch `LOCATION` reuses the REST endpoint's existing listener.
 
-**Bounded buffering.** Flow control caps each direction's `SendBuffer` at the high-water mark, so a
-connection's memory is bounded (≤ ~2×high-water) no matter how slow or stalled a peer is — which also
-keeps the long-running daemon's RSS flat (no unbounded proxy buffer). Given that bound and DIAL's tiny,
-low-rate control messages, `SendBuffer` is a **simple growable byte buffer with a consumed-head offset**
+**Bounded buffering.** Each `TcpSocket`'s `SendBuffer` is capped at `dial_send_high_water` and exceeding
+it aborts the connection (drop-and-close), so a connection's memory is bounded no matter how slow or
+stalled a peer is — which also keeps the long-running daemon's RSS flat (no unbounded proxy buffer).
+Given that bound and DIAL's tiny, low-rate control messages, `SendBuffer` is a **simple growable byte
+buffer with a consumed-head offset**
 (compacted on drain — a ≤64 KB memmove is negligible and rare). We deliberately avoid
 `std::deque<std::byte>` (its small fixed per-node block churns allocations and cache lines for a byte
 stream). If a future high-throughput use ever needs it, the same `SendBuffer` interface can be backed by
@@ -418,12 +447,12 @@ device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives 
   `EnsureDiscoveryListener` allocates/reuses a listener and returns the reflector authority (cap hit →
   `nullopt`); accept → connect (driven by `FireWritable`) → forward with `Application-URL` rewrite
   (spinning up the REST listener) and the launch `201 LOCATION` rewrite reusing it; `MAX_CONNECTIONS`
-  drop-new; connect-deadline and idle-deadline eviction via firing the fake timer; backpressure +
-  flow control (a short write arms write-interest and pauses the source at high-water; `FireWritable`
-  flushes and resumes). The SSDP `LOCATION` parse + splice is tested on the `SsdpReflector` side.
+  drop-new; connect-deadline and idle-deadline eviction via firing the fake timer; backpressure
+  drop-and-close (a short write buffers + arms write-interest; `FireWritable` flushes and disarms; a
+  write past `dial_send_high_water` aborts the connection). The SSDP `LOCATION` parse + splice is tested on the `SsdpReflector` side.
 - `event_loop_dispatcher_test`: extended for write-interest — `SetWriteInterest` arms/disarms,
-  writable fires the write callback, a completed loopback `connect` surfaces as writable, the
-  readability tests stay green.
+  writable fires the write callback, a completed loopback `connect` surfaces as writable, a failed
+  connect surfaces to an armed handler, the readability tests stay green.
 
 **Application (`application_test`):** an SSDP entry with `dial = true` wires a reflector that owns a
 `DialProxy`; `dial = false`/absent does not. Existing SSDP cases stay green.
@@ -466,6 +495,7 @@ mac = "..."              # optional; scopes discovery AND the DIAL device
 # dial_discovery_idle          = "90s"  # idle reap for a (dynamic) discovery listener
 # dial_connect_timeout         = "5s"   # deadline for an upstream connect() stuck in EINPROGRESS
 # dial_max_header_bytes        = 65536  # per-message header-block cap (bodies are streamed)
+# dial_send_high_water         = 262144 # per-socket outbound buffer cap; a write past it aborts the conn
 ```
 
 `dial` inherits the entry's `source_if` (listener bind + rewritten authority), `target_if` (upstream
@@ -480,15 +510,15 @@ assigned, carried in the rewritten URLs) — nothing to configure. `Verify` reje
 
 Each data-path commit runs the full gate (native unit + docker debug/release + e2e) before commit.
 
-1. `dispatcher`: read/write interest control (`Register` 3-arg overload + `SetWriteInterest` +
-   `SetReadInterest`; `FdCallbacks` map with read/write armed flags; epoll/kqueue arm-disarm) +
-   `FakeDispatcher` `FireWritable` + tests. Landed alone, like the timer commit.
+1. `dispatcher`: write-interest control (`Register` FdCallbacks overload + `SetWriteInterest`; read is
+   always armed; epoll/kqueue write arm-disarm) + `FakeDispatcher` `FireWritable` + tests. Landed alone,
+   like the timer commit.
 2. `tcp_socket`: non-blocking listen/accept/connect(bound+pinned)/read/write, SIGPIPE-safe, RAII +
    loopback tests.
 3. `http_message`: incremental framing (CL/chunked/none) + case-insensitive header rewrite via the
    shared `RewriteAuthority` helper + tests.
-4. `dial_proxy`: endpoint/listener map, connection pump + flow-control `SendBuffer`, cap +
-   connect/idle eviction `Timer`, `EnsureDiscoveryListener` + tests.
+4. `dial_proxy`: endpoint/listener map, connection pump + bounded `SendBuffer` (drop-and-close on
+   overflow), cap + connect/idle eviction `Timer`, `EnsureDiscoveryListener` + tests.
 5. `ssdp_reflector` + `config`: the `dial` flag (+ tunables, `Verify`, formatter) and the DIAL
    `LOCATION` parse + `RewriteAuthority` splice (calling `EnsureDiscoveryListener`) in the
    `200 OK`/`NOTIFY` paths + tests.
@@ -511,10 +541,13 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
 - **D4 — Upstream bound to `target_if`'s address + egress-pinned.** Reproduces exactly what the
   router NAT does today (the device accepts any its-subnet source, validated in the capture); pinning
   (`SO_BINDTODEVICE`/`IP_BOUND_IF`) guards against a host route toward the client subnet.
-- **D5 — Reactor gains read/write interest control.** Write-interest for non-blocking
-  connect-completion + write backpressure; read-interest toggling so flow control can pause a source
-  without busy-spinning the level-triggered reactor (§4.1). The one capability the readability-only
-  reactor lacks; shipped and tested in isolation first, like the timer commit.
+- **D5 — Reactor gains write-interest control; read stays always armed.** Write-interest for
+  non-blocking connect-completion + send-buffer flush. Read is *not* toggleable: DIAL uses drop-and-close
+  backpressure (§4.4), not read-pausing, so read stays armed — which makes the always-armed read handler
+  the uniform home for error teardown and keeps the interest mask from ever collapsing to nothing-armed
+  (no busy-spin guard needed). Level-triggered is kept; edge-triggered was evaluated and rejected (§4.1).
+  The one capability the readability-only reactor lacks; shipped and tested in isolation first, like the
+  timer commit.
 - **D6 — `DialProxy` owned by `SsdpReflector`, default off.** DIAL is meaningless without SSDP
   discovery and must hook its `LOCATION` rewrite; making it a member keeps the coupling explicit and
   the SSDP class focused on UDP. Opt-in because it opens listeners and does L7 work.
@@ -527,11 +560,14 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
   permanent (long-but-finite cooldown, ~1h — a reboot changes it, so not multi-day). Separate caps
   because REST listeners ≈ device count while discovery is transient; both fd-bounded (defaults 32/32,
   matching `MAX_SESSIONS`/`MAX_CONNECTIONS` — a four-figure cap would risk fd exhaustion for no gain).
-- **D10 — Flow control bounds proxy memory.** A peer's read is paused when the other side's
-  `SendBuffer` hits a high-water mark, capping per-connection memory (≤ ~2×high-water) and keeping the
-  daemon's RSS flat regardless of a slow/stalled peer. The buffer is a simple bounded byte queue — not
-  `std::deque<std::byte>` (small fixed block → alloc/cache churn); a chunk-chain is the documented
-  upgrade behind the same interface if high-throughput streaming is ever needed. (§4.4)
+- **D10 — Drop-and-close backpressure bounds proxy memory (no read-pausing).** DIAL is request/response
+  with tiny payloads, so instead of lossless flow control (pause the source at a high-water mark) we cap
+  each `TcpSocket`'s `SendBuffer` and **abort the connection if it would overflow** — a failed attempt,
+  cheap and retryable, that hard-bounds per-connection memory, keeps the daemon's RSS flat, and doubles
+  as a DoS guard. Read is never paused (so the reactor never sees a both-disarmed fd). The buffer is a
+  simple bounded byte queue — not `std::deque<std::byte>` (small fixed block → alloc/cache churn); a
+  chunk-chain is the documented upgrade behind the same interface if high-throughput streaming is ever
+  needed. (§4.4)
 - **D11 — `DialProxy` exposes only `EnsureDiscoveryListener`; SSDP stays in `SsdpReflector`.** The
   proxy is owned by `SsdpReflector` with no external callers, so its sole cross-boundary method is the
   listener primitive; DIAL-classification + `LOCATION` parse/splice live in the SSDP path via the
