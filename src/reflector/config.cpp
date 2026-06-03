@@ -1,15 +1,14 @@
 #include "config.h"
 #include "mac_address.h"
+#include "util/ascii.h"
 
 #include <toml++/toml.hpp>
 
 #include <algorithm>
-#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <ios>
-#include <iterator>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -33,18 +32,8 @@ std::expected<std::string_view, Error> ReadStringField(const toml::node& field_n
     return *field_value;
 }
 
-std::string ToLower(std::string_view s) {
-    std::string lower;
-    lower.reserve(s.size());
-    std::ranges::transform(s, std::back_inserter(lower), [](unsigned char c) {
-        // std::tolower requires EOF or a value representable as unsigned char.
-        return static_cast<char>(std::tolower(c));
-    });
-    return lower;
-}
-
 std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
-    const auto lower = ToLower(s);
+    const auto lower = AsciiToLower(s);
     if (lower == "debug") return LogLevel::Debug;
     if (lower == "info") return LogLevel::Info;
     if (lower == "warning") return LogLevel::Warning;
@@ -53,7 +42,7 @@ std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
 }
 
 std::expected<AddressFamily, Error> AddressFamilyFromString(std::string_view section, std::string_view s) {
-    const auto lower = ToLower(s);
+    const auto lower = AsciiToLower(s);
     if (lower == "default") return AddressFamily::Default;
     if (lower == "dual") return AddressFamily::Dual;
     if (lower == "ipv4") return AddressFamily::IPv4;

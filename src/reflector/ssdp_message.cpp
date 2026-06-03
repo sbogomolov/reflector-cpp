@@ -1,7 +1,8 @@
 #include "ssdp_message.h"
 
+#include "util/ascii.h"
+
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <cstddef>
 #include <cstring>
@@ -28,19 +29,6 @@ constexpr std::string_view ADVERTISEMENT_TOKEN = "NOTIFY ";
 constexpr uint8_t MX_MIN = 1;
 constexpr uint8_t MX_MAX = 5;
 
-// Case-insensitive prefix match of an ASCII header name.
-bool HeaderNameMatches(std::string_view line, std::string_view name) noexcept {
-    if (line.size() < name.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < name.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(line[i])) != std::tolower(static_cast<unsigned char>(name[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
 } // namespace
 
 std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> payload) noexcept {
@@ -59,7 +47,7 @@ std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexce
     while (pos < text.size()) {
         const auto end = text.find("\r\n", pos);
         const auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
-        if (HeaderNameMatches(line, "MX:")) {
+        if (StartsWithNoCase(line, "MX:")) {
             auto value = line.substr(3);
             const auto first = value.find_first_not_of(" \t");
             if (first != std::string_view::npos) {
