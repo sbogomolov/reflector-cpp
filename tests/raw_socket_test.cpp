@@ -211,10 +211,10 @@ TEST_F(RawSocketTest, ParsesEthernetIpv4Udp) {
 
     const auto packet = Parse(f.bytes);
     ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 12345);
-    EXPECT_EQ(packet->header.dest_port, 9);
+    EXPECT_EQ(packet->header.source.addr, src_ip);
+    EXPECT_EQ(packet->header.dest.addr, dst_ip);
+    EXPECT_EQ(packet->header.source.port, 12345);
+    EXPECT_EQ(packet->header.dest.port, 9);
     EXPECT_EQ(packet->header.ttl, 200);
     EXPECT_EQ(packet->header.source_mac, src_mac);
     EXPECT_EQ(packet->header.dest_mac, dst_mac);
@@ -237,10 +237,10 @@ TEST_F(RawSocketTest, ParsesEthernetIpv6Udp) {
 
     const auto packet = Parse(f.bytes);
     ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 5353);
-    EXPECT_EQ(packet->header.dest_port, 5353);
+    EXPECT_EQ(packet->header.source.addr, src_ip);
+    EXPECT_EQ(packet->header.dest.addr, dst_ip);
+    EXPECT_EQ(packet->header.source.port, 5353);
+    EXPECT_EQ(packet->header.dest.port, 5353);
     EXPECT_EQ(packet->header.ttl, 100);
     EXPECT_EQ(packet->header.source_mac, src_mac);
     EXPECT_EQ(packet->header.dest_mac, dst_mac);
@@ -450,7 +450,7 @@ TEST_F(RawSocketTest, Ipv4SourceEnablesIpv4AndRefusesIpv6Send) {
     const std::array payload{std::byte{0xde}, std::byte{0xad}};
     CaptureStdout([&] {  // swallow the expected "no source" error; the bool is the contract
         EXPECT_FALSE(socket.SendUdpMulticastDatagram(
-            IpAddress::AllNodesLinkLocalV6(), 9, 9, payload, /*ttl=*/64));
+            {IpAddress::AllNodesLinkLocalV6(), 9}, 9, payload, /*ttl=*/64));
     });
 }
 
@@ -509,10 +509,10 @@ TEST_F(RawSocketTest, ParsesLoopbackIpv4UdpWithZeroMacs) {
 
     const auto packet = Parse(f.bytes);
     ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 40000);
-    EXPECT_EQ(packet->header.dest_port, 9);
+    EXPECT_EQ(packet->header.source.addr, src_ip);
+    EXPECT_EQ(packet->header.dest.addr, dst_ip);
+    EXPECT_EQ(packet->header.source.port, 40000);
+    EXPECT_EQ(packet->header.dest.port, 9);
     // DLT_NULL frames carry no L2 — both MACs report as all-zeros.
     EXPECT_EQ(packet->header.source_mac, MacAddress{});
     EXPECT_EQ(packet->header.dest_mac, MacAddress{});
@@ -533,10 +533,10 @@ TEST_F(RawSocketTest, ParsesLoopbackIpv6Udp) {
 
     const auto packet = Parse(f.bytes);
     ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, src_ip);
-    EXPECT_EQ(packet->header.dest_ip, dst_ip);
-    EXPECT_EQ(packet->header.source_port, 1234);
-    EXPECT_EQ(packet->header.dest_port, 5678);
+    EXPECT_EQ(packet->header.source.addr, src_ip);
+    EXPECT_EQ(packet->header.dest.addr, dst_ip);
+    EXPECT_EQ(packet->header.source.port, 1234);
+    EXPECT_EQ(packet->header.dest.port, 5678);
 }
 
 TEST_F(RawSocketTest, RejectsFrameShorterThanLoopbackHeader) {
@@ -635,7 +635,7 @@ TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
 
     const auto first = capture.socket.Receive();
     ASSERT_TRUE(first.has_value());
-    EXPECT_EQ(first->header.source_port, 11111);
+    EXPECT_EQ(first->header.source.port, 11111);
 
     CaptureStdout([&] {
         EXPECT_FALSE(capture.socket.Receive().has_value());
@@ -643,7 +643,7 @@ TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
 
     const auto last = capture.socket.Receive();
     ASSERT_TRUE(last.has_value());
-    EXPECT_EQ(last->header.source_port, 22222);
+    EXPECT_EQ(last->header.source.port, 22222);
 }
 
 // A frame BPF truncated to fit the buffer (bh_datalen > bh_caplen) is dropped with a warning,
@@ -707,8 +707,8 @@ protected:
         while (std::chrono::steady_clock::now() < deadline) {
             auto packet = socket->Receive();
             if (packet) {
-                if (packet->header.dest_port == listener_port
-                        && packet->header.dest_ip == IpAddress::LoopbackV4()) {
+                if (packet->header.dest.port == listener_port
+                        && packet->header.dest.addr == IpAddress::LoopbackV4()) {
                     return packet;
                 }
                 continue;
@@ -726,10 +726,10 @@ TEST_F(RawSocketRequiresRootTest, ReceivesLoopbackUdpDatagram) {
 
     const auto packet = ReceiveOurDatagram();
     ASSERT_TRUE(packet.has_value());
-    EXPECT_EQ(packet->header.source_ip, IpAddress::LoopbackV4());
-    EXPECT_EQ(packet->header.dest_ip, IpAddress::LoopbackV4());
-    EXPECT_EQ(packet->header.dest_port, listener_port);
-    EXPECT_NE(packet->header.source_port, 0);
+    EXPECT_EQ(packet->header.source.addr, IpAddress::LoopbackV4());
+    EXPECT_EQ(packet->header.dest.addr, IpAddress::LoopbackV4());
+    EXPECT_EQ(packet->header.dest.port, listener_port);
+    EXPECT_NE(packet->header.source.port, 0);
     EXPECT_EQ(std::vector<std::byte>(packet->payload.begin(), packet->payload.end()),
         std::vector<std::byte>(payload.begin(), payload.end()));
 }
@@ -807,8 +807,8 @@ TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
     std::optional<Packet> captured;
     while (!captured && std::chrono::steady_clock::now() < deadline) {
         auto packet = socket->Receive();
-        if (packet && packet->header.source_port == INJECT_SRC_PORT
-                && packet->header.dest_ip == IpAddress::BroadcastV4()) {
+        if (packet && packet->header.source.port == INJECT_SRC_PORT
+                && packet->header.dest.addr == IpAddress::BroadcastV4()) {
             captured = std::move(packet);
             break;
         }
@@ -819,9 +819,9 @@ TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
     }
 
     ASSERT_TRUE(captured.has_value()) << "did not capture the injected frame";
-    EXPECT_EQ(captured->header.source_ip, IpAddress::LoopbackV4());  // lo's cached v4 source
-    EXPECT_EQ(captured->header.dest_ip, IpAddress::BroadcastV4());
-    EXPECT_EQ(captured->header.dest_port, INJECT_DST_PORT);
+    EXPECT_EQ(captured->header.source.addr, IpAddress::LoopbackV4());  // lo's cached v4 source
+    EXPECT_EQ(captured->header.dest.addr, IpAddress::BroadcastV4());
+    EXPECT_EQ(captured->header.dest.port, INJECT_DST_PORT);
     EXPECT_EQ(std::vector<std::byte>(captured->payload.begin(), captured->payload.end()),
         std::vector<std::byte>(payload.begin(), payload.end()));
 }
@@ -864,8 +864,8 @@ protected:
         const auto deadline = std::chrono::steady_clock::now() + WAIT_BUDGET;
         while (std::chrono::steady_clock::now() < deadline) {
             auto frame = peer.Receive();
-            if (frame && frame->header.source_port == INJECT_SRC_PORT
-                    && frame->header.dest_ip == dest_ip) {
+            if (frame && frame->header.source.port == INJECT_SRC_PORT
+                    && frame->header.dest.addr == dest_ip) {
                 return frame;
             }
             if (!frame) {
@@ -910,7 +910,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPee
 
     const auto captured = CaptureInjected(peer, IpAddress::BroadcastV4());
     ASSERT_TRUE(captured.has_value()) << "peer did not capture the injected broadcast";
-    EXPECT_EQ(captured->header.dest_port, INJECT_DST_PORT);
+    EXPECT_EQ(captured->header.dest.port, INJECT_DST_PORT);
     EXPECT_EQ(std::vector<std::byte>(captured->payload.begin(), captured->payload.end()),
         std::vector<std::byte>(payload.begin(), payload.end()));
 }
@@ -931,7 +931,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
         pair.ReceiveInterface()));
 
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
-    ASSERT_TRUE(injector.SendUdpMulticastDatagram(IpAddress::AllNodesLinkLocalV6(), BoundPort(receiver),
+    ASSERT_TRUE(injector.SendUdpMulticastDatagram({IpAddress::AllNodesLinkLocalV6(), BoundPort(receiver)},
         INJECT_SRC_PORT, payload, /*ttl=*/64));
 
     ExpectReceived(receiver, payload);

@@ -67,10 +67,8 @@ protected:
         const auto family = group.IsV4() ? IpAddress::Family::V4 : IpAddress::Family::V6;
         return Packet{
             .header = PacketHeader{
-                .source_ip = LoopbackFor(family),
-                .dest_ip = group,
-                .source_port = SSDP_PORT,
-                .dest_port = SSDP_PORT,
+                .source = {LoopbackFor(family), SSDP_PORT},
+                .dest = {group, SSDP_PORT},
                 .ttl = 1,
                 .source_mac = source_mac,
             },
@@ -449,10 +447,8 @@ TEST_F(SsdpReflectorTest, ReflectsUnicastResponseBackToSearcher) {
     const auto response = Bytes("HTTP/1.1 200 OK\r\nST: ssdp:all\r\nLOCATION: http://x/d.xml\r\n\r\n");
     Packet reply{
         .header = PacketHeader{
-            .source_ip = IpAddress::FromV4Bytes(10, 0, 0, 5),         // the responding device
-            .dest_ip = *target.SourceAddress(IpAddress::Family::V4),  // our target_if address
-            .source_port = SSDP_PORT,
-            .dest_port = reserved_port,
+            .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},  // the responding device
+            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},  // our target_if address
             .ttl = 4,
             .source_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:01"),
         },
@@ -483,10 +479,8 @@ TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingResponseFails) {
     const auto response = Bytes("HTTP/1.1 200 OK\r\n\r\n");
     Packet reply{
         .header = PacketHeader{
-            .source_ip = IpAddress::FromV4Bytes(10, 0, 0, 5),
-            .dest_ip = *target.SourceAddress(IpAddress::Family::V4),
-            .source_port = SSDP_PORT,
-            .dest_port = reserved_port,
+            .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
+            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},
             .ttl = 4,
         },
         .payload = response,
@@ -509,10 +503,8 @@ TEST_F(SsdpReflectorTest, IgnoresUnicastResponseWithNoMatchingSession) {
     const auto response = Bytes("HTTP/1.1 200 OK\r\n\r\n");
     Packet reply{
         .header = PacketHeader{
-            .source_ip = IpAddress::FromV4Bytes(10, 0, 0, 5),
-            .dest_ip = *target.SourceAddress(IpAddress::Family::V4),
-            .source_port = SSDP_PORT,
-            .dest_port = 55555,
+            .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
+            .dest = {*target.SourceAddress(IpAddress::Family::V4), 55555},
             .ttl = 4,
         },
         .payload = response,
@@ -571,7 +563,7 @@ TEST_F(SsdpReflectorTest, CapDropsSessionsBeyondTheLimit) {
     const auto search_payload = MakeSearch();
     for (uint16_t i = 0; i < 33; ++i) {
         Packet search = MakePacket(search_payload, IpAddress::SsdpGroupV4());
-        search.header.source_port = static_cast<uint16_t>(20000 + i);
+        search.header.source.port = static_cast<uint16_t>(20000 + i);
         packet_dispatcher.Deliver(source, search);
     }
     EXPECT_EQ(target.sent.size(), 32u);  // 33rd search not reflected
@@ -605,9 +597,9 @@ TEST_F(SsdpReflectorTest, DistinctClientsEachGetTheirOwnSession) {
     // Two searchers (distinct source ports) get independent sessions, each with its own reserved port.
     const auto search = MakeSearch();
     Packet first = MakePacket(search, IpAddress::SsdpGroupV4());
-    first.header.source_port = 40000;
+    first.header.source.port = 40000;
     Packet second = MakePacket(search, IpAddress::SsdpGroupV4());
-    second.header.source_port = 40001;
+    second.header.source.port = 40001;
     packet_dispatcher.Deliver(source, first);
     packet_dispatcher.Deliver(source, second);
 

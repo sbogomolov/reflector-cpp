@@ -43,14 +43,14 @@ struct FakeLinkSocket : LinkSocket {
         return family == IpAddress::Family::V4 ? can_send_v4 : can_send_v6;
     }
 
-    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
+    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override {
-        return RecordSend(dst_ip, dst_mac, dst_port, src_port, payload, ttl);
+        return RecordSend(dst.addr, dst_mac, dst.port, src_port, payload, ttl);
     }
 
-    [[nodiscard]] bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port, uint16_t src_port,
+    [[nodiscard]] bool SendUdpMulticastDatagram(const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override {
-        return RecordSend(group, std::nullopt, dst_port, src_port, payload, ttl);
+        return RecordSend(dst.addr, std::nullopt, dst.port, src_port, payload, ttl);
     }
 
     [[nodiscard]] bool SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,

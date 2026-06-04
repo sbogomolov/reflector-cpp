@@ -46,10 +46,8 @@ protected:
         uint16_t dest_port, uint8_t ttl = 64) {
         return Packet{
             .header = PacketHeader{
-                .source_ip = source_ip,
-                .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
-                .source_port = 12345,
-                .dest_port = dest_port,
+                .source = {source_ip, 12345},
+                .dest = {source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(), dest_port},
                 .ttl = ttl,
             },
             .payload = payload,

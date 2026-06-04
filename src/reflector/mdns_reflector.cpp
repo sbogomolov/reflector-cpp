@@ -126,7 +126,7 @@ bool MdnsReflector::ShouldRelay(const Packet& packet, MdnsMessageKind kind) noex
         // is anomalous and worth surfacing — the dedicated group means this won't spam a healthy
         // network. A message of the other kind, by contrast, is normal and dropped silently.
         logger_.Info("Ignoring non-mDNS packet on {} from {}: {}-byte payload too short for a DNS header",
-            packet.header.dest_ip, packet.header.source_ip, packet.payload.size());
+            packet.header.dest, packet.header.source, packet.payload.size());
         return false;
     }
     return *message_kind == kind;
@@ -135,12 +135,11 @@ bool MdnsReflector::ShouldRelay(const Packet& packet, MdnsMessageKind kind) noex
 void MdnsReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
     // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the mDNS port, with the conventional 255 hop limit.
-    const auto& group = packet.header.dest_ip;
-    if (!egress.SendUdpMulticastDatagram(group, MDNS_PORT, MDNS_PORT, packet.payload, MDNS_TTL)) {
-        logger_.Error("Cannot reflect mdns packet from {} to {}", packet.header.source_ip, group);
+    if (!egress.SendUdpMulticastDatagram(packet.header.dest, MDNS_PORT, packet.payload, MDNS_TTL)) {
+        logger_.Error("Cannot reflect mdns packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    logger_.Debug("Reflected mdns packet from {} to {}", packet.header.source_ip, group);
+    logger_.Debug("Reflected mdns packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 } // namespace reflector

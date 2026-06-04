@@ -79,9 +79,9 @@ public:
     // SendUdpBroadcastDatagram uses the all-ones broadcast MAC (always IPv4). `ttl` sets the IPv4 TTL
     // / IPv6 hop limit. Each fails (after logging) if the interface has no source address for the
     // datagram's family; gate first with CanSend (CanSend(Family::V4) for the broadcast).
-    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
+    [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override;
-    [[nodiscard]] bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port, uint16_t src_port,
+    [[nodiscard]] bool SendUdpMulticastDatagram(const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;
     [[nodiscard]] bool SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept override;

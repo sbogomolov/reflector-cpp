@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "ip_address.h"
+#include "ip_endpoint.h"
 #include "link_socket.h"
 #include "mac_address.h"
 #include "packet.h"
@@ -38,11 +39,10 @@ private:
     static constexpr std::chrono::seconds EVICTION_INTERVAL{1};
 
     // One in-flight client discovery awaiting unicast 200 OK replies; a client's retransmits reuse it.
-    // The client is (searcher_ip, searcher_port) and the reserved port is reservation.Port(), so no
-    // separate key is stored — sessions live in a small vector, found by linear scan. Move-only.
+    // The client is `searcher` (ip:port) and the reserved port is reservation.Port(), so no separate
+    // key is stored — sessions live in a small vector, found by linear scan. Move-only.
     struct Session {
-        IpAddress searcher_ip;
-        uint16_t searcher_port;
+        IpEndpoint searcher;
         MacAddress searcher_mac;
         std::chrono::steady_clock::time_point expiry;
         PortReservation reservation;

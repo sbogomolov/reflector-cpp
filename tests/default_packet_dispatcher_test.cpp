@@ -208,7 +208,7 @@ TEST_F(DefaultPacketDispatcherTest, CombinedFilterRequiresAllFields) {
 
     EXPECT_EQ(counter.count, 1);
 
-    packet.header.dest_port = 7;
+    packet.header.dest.port = 7;
     Dispatch(capture.socket, packet);
 
     EXPECT_EQ(counter.count, 1);

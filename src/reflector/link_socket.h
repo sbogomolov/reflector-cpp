@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_address.h"
+#include "ip_endpoint.h"
 #include "mac_address.h"
 #include "packet.h"
 
@@ -46,15 +47,15 @@ public:
 
     // Sends a UDP datagram to an explicit unicast L2 destination `dst_mac` — the egress path does no
     // ARP/ND, so the caller supplies the peer's MAC (e.g. an SSDP searcher whose frame we captured).
-    // Originates from this interface's own source address; `dst_ip` must be unicast. Returns false
-    // (after logging) on failure; the result is unspecified when !CanSend(dst_ip.AddressFamily()),
+    // Originates from this interface's own source address; `dst.addr` must be unicast. Returns false
+    // (after logging) on failure; the result is unspecified when !CanSend(dst.addr.AddressFamily()),
     // so gate with CanSend first.
-    [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
+    [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
-    // Sends a UDP datagram to multicast `group` (must be IpAddress::IsMulticast()), deriving the L2
-    // destination from the group. Same source/failure contract as SendUdpDatagram.
-    [[nodiscard]] virtual bool SendUdpMulticastDatagram(const IpAddress& group, uint16_t dst_port,
+    // Sends a UDP datagram to multicast destination `dst` (dst.addr must be IpAddress::IsMulticast()),
+    // deriving the L2 destination from the group. Same source/failure contract as SendUdpDatagram.
+    [[nodiscard]] virtual bool SendUdpMulticastDatagram(const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
     // Sends a UDP datagram to the IPv4 limited broadcast (255.255.255.255), using the all-ones L2

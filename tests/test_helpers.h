@@ -94,7 +94,7 @@ struct PacketRecorder {
     void OnPacket(const Packet& packet) {
         ++count;
         payload.assign(packet.payload.begin(), packet.payload.end());
-        source_ip = packet.header.source_ip;
+        source_ip = packet.header.source.addr;
     }
 
     int count = 0;
@@ -123,10 +123,8 @@ inline Packet MakePacket(IpAddress source_ip = IpAddress::FromV4Bytes(192, 0, 2,
     uint16_t source_port = 12345, uint16_t dest_port = 9, uint8_t ttl = 64) {
     return Packet{
         .header = PacketHeader{
-            .source_ip = source_ip,
-            .dest_ip = source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(),
-            .source_port = source_port,
-            .dest_port = dest_port,
+            .source = {source_ip, source_port},
+            .dest = {source_ip.IsV4() ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6(), dest_port},
             .ttl = ttl,
         },
         .payload = {},
@@ -411,8 +409,8 @@ struct LoopbackReceiver {
         const auto source_ip = IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&source));
         Packet packet{
             .header = PacketHeader{
-                .source_ip = source_ip.value_or(LoopbackFor(socket.AddressFamily())),
-                .dest_ip = LoopbackFor(socket.AddressFamily()),
+                .source = {source_ip.value_or(LoopbackFor(socket.AddressFamily()))},
+                .dest = {LoopbackFor(socket.AddressFamily())},
             },
             .payload = std::span<const std::byte>{buffer.data(), static_cast<size_t>(bytes)},
         };

@@ -140,14 +140,14 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
         return;
     }
 
-    const auto family = packet.header.source_ip.AddressFamily();
+    const auto family = packet.header.source.addr.AddressFamily();
     if (!ReflectsFamily(family)) {
-        logger_.Debug("Ignoring wol packet from {}:{}: {} not handled",
-            packet.header.source_ip, packet.header.source_port, family);
+        logger_.Debug("Ignoring wol packet from {}: {} not handled",
+            packet.header.source, family);
         return;
     }
 
-    const auto port = packet.header.dest_port;
+    const auto port = packet.header.dest.port;
     // Fan the magic packet out to "everyone on the target link": the IPv4 limited broadcast, or the
     // IPv6 link-local all-nodes multicast group. Re-emit with the captured TTL / hop limit so the
     // reflected datagram preserves the sender's reach instead of resetting it.
@@ -155,20 +155,20 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
     const auto destination = v4 ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6();
     const bool sent = v4
         ? target_socket_.SendUdpBroadcastDatagram(
-              port, packet.header.source_port, packet.payload, packet.header.ttl)
+              port, packet.header.source.port, packet.payload, packet.header.ttl)
         : target_socket_.SendUdpMulticastDatagram(
-              destination, port, packet.header.source_port, packet.payload, packet.header.ttl);
+              {destination, port}, packet.header.source.port, packet.payload, packet.header.ttl);
     if (!sent) {
-        logger_.Error("Cannot reflect wol packet from {}:{} to {}:{}",
-            packet.header.source_ip, packet.header.source_port, destination, port);
+        logger_.Error("Cannot reflect wol packet from {} to {}:{}",
+            packet.header.source, destination, port);
         return;
     }
 
     // The MAC comes from the payload, not the frame's L2 header: it names the device that
     // will wake, and IsMagicPacket has already validated the payload is long enough.
     const auto target = MacAddress::FromBytes(packet.payload.subspan<PREFIX_SIZE, MAC_SIZE>());
-    logger_.Info("Reflected WoL packet for {} from {}:{} to {}:{}",
-        target, packet.header.source_ip, packet.header.source_port, destination, port);
+    logger_.Info("Reflected WoL packet for {} from {} to {}:{}",
+        target, packet.header.source, destination, port);
 }
 
 } // namespace reflector

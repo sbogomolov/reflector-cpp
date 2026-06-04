@@ -119,13 +119,13 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
         return;
     }
 
-    const auto family = packet.header.dest_ip.AddressFamily();
+    const auto family = packet.header.dest.addr.AddressFamily();
     const auto parsed_mx = ParseMSearchMx(packet.payload);
     const uint8_t mx = parsed_mx.value_or(MSEARCH_MX_DEFAULT);
     if (!parsed_mx.has_value()) {
         // A multicast M-SEARCH must carry MX (UDA 2.0); surface the non-conformant searcher at INFO.
-        logger_.Info("M-SEARCH from {}:{} has no/invalid MX; using the default {}s window",
-            packet.header.source_ip, packet.header.source_port, static_cast<unsigned>(mx));
+        logger_.Info("M-SEARCH from {} has no/invalid MX; using the default {}s window",
+            packet.header.source, static_cast<unsigned>(mx));
     }
     const auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds{mx} + SESSION_GRACE;
 
@@ -133,8 +133,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     // fresh one (reserved port + response capture), built locally so a failed reflect rolls it back via
     // RAII. Either way the search is reflected once, from the session's reserved port.
     const auto existing_session = std::ranges::find_if(sessions_, [&](const Session& session) {
-        return session.searcher_ip == packet.header.source_ip
-            && session.searcher_port == packet.header.source_port;
+        return session.searcher == packet.header.source;
     });
     std::optional<Session> new_session;
     if (existing_session == sessions_.end()) {
@@ -146,13 +145,13 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 
     const uint16_t port = new_session.has_value() ? new_session->reservation.Port()
                                                   : existing_session->reservation.Port();
-    if (!target_socket_.SendUdpMulticastDatagram(packet.header.dest_ip, SSDP_PORT, port,
+    if (!target_socket_.SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect M-SEARCH from {} to {}", packet.header.source_ip, packet.header.dest_ip);
+        logger_.Error("Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
         return;  // a new session's reservation + capture RAII-drop here
     }
-    logger_.Debug("Reflected M-SEARCH from {}:{} on reserved port {} (MX {}s)",
-        packet.header.source_ip, packet.header.source_port, port, static_cast<unsigned>(mx));
+    logger_.Debug("Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
+        packet.header.source, port, static_cast<unsigned>(mx));
 
     if (!new_session.has_value()) {
         existing_session->expiry = expiry;  // a retransmit: just refresh the client's window
@@ -160,8 +159,8 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
 
     sessions_.push_back(std::move(*new_session));
-    logger_.Debug("Created session for searcher {}:{} on reserved port {}; {} active",
-        packet.header.source_ip, packet.header.source_port, port, sessions_.size());
+    logger_.Debug("Created session for searcher {} on reserved port {}; {} active",
+        packet.header.source, port, sessions_.size());
     // Start the eviction sweep on the first in-flight session; EvictExpired stops it once the table
     // empties, so the reactor isn't woken every interval while there's nothing to sweep.
     if (!eviction_timer_.IsRunning()) {
@@ -173,13 +172,13 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
     IpAddress::Family family, std::chrono::steady_clock::time_point expiry) {
     if (sessions_.size() >= MAX_SESSIONS) {
         logger_.Warning("Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
-            packet.header.source_ip, sessions_.size());
+            packet.header.source, sessions_.size());
         return std::nullopt;
     }
     const auto our_address = target_socket_.SourceAddress(family);
     if (!our_address.has_value()) {
         logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
-            packet.header.source_ip, family);
+            packet.header.source, family);
         return std::nullopt;
     }
     auto reservation = PortReservation::Create(*our_address, target_socket_.InterfaceIndex());
@@ -192,12 +191,11 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         CreateDelegate<&SsdpReflector::OnUnicastResponse>(this));
     if (!capture.IsValid()) {
         logger_.Error("Cannot reflect M-SEARCH from {}: response-capture registration failed",
-            packet.header.source_ip);
+            packet.header.source);
         return std::nullopt;  // reservation RAII-drops here, freeing the port
     }
     return Session{
-        .searcher_ip = packet.header.source_ip,
-        .searcher_port = packet.header.source_port,
+        .searcher = packet.header.source,
         .searcher_mac = packet.header.source_mac,
         .expiry = expiry,
         .reservation = std::move(*reservation),
@@ -215,10 +213,10 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
 void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
     // Find the session by the reserved port the 200 OK is addressed to (a v4 and a v6 reservation
     // could hold the same port number, so match the family too).
-    const auto family = packet.header.dest_ip.AddressFamily();
+    const auto family = packet.header.dest.addr.AddressFamily();
     const auto it = std::ranges::find_if(sessions_, [&](const Session& session) {
-        return session.reservation.Port() == packet.header.dest_port
-            && session.searcher_ip.AddressFamily() == family;
+        return session.reservation.Port() == packet.header.dest.port
+            && session.searcher.addr.AddressFamily() == family;
     });
     if (it == sessions_.end()) {
         // Defensive: the capture is released with its session, so a 200 OK normally only reaches us
@@ -229,13 +227,13 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
     const Session& session = *it;
     // Inject the 200 OK to the original searcher from our own source address (no spoofing), addressed
     // to the searcher's captured frame MAC — the split's plain SendUdpDatagram takes that dst MAC.
-    if (!source_socket_.SendUdpDatagram(session.searcher_mac, session.searcher_ip, session.searcher_port,
-            packet.header.source_port, packet.payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect SSDP response to searcher {}", session.searcher_ip);
+    if (!source_socket_.SendUdpDatagram(session.searcher_mac, session.searcher,
+            packet.header.source.port, packet.payload, SSDP_TTL)) {
+        logger_.Error("Cannot reflect SSDP response to searcher {}", session.searcher);
         return;
     }
-    logger_.Debug("Reflected SSDP response from {} to searcher {}", packet.header.source_ip,
-        session.searcher_ip);
+    logger_.Debug("Reflected SSDP response from {} to searcher {}", packet.header.source,
+        session.searcher);
 }
 
 bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) noexcept {
@@ -245,7 +243,7 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
         // M-SEARCH nor a NOTIFY (e.g. a stray unicast 200 OK, or junk) is anomalous and worth
         // surfacing. A message of the other kind, by contrast, is normal and dropped silently.
         logger_.Info("Ignoring non-SSDP packet on {} from {}: not an M-SEARCH or NOTIFY",
-            packet.header.dest_ip, packet.header.source_ip);
+            packet.header.dest, packet.header.source);
         return false;
     }
     return *message_kind == kind;
@@ -254,20 +252,19 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
 void SsdpReflector::Reflect(LinkSocket& egress, const Packet& packet) noexcept {
     // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
-    const auto& group = packet.header.dest_ip;
-    if (!egress.SendUdpMulticastDatagram(group, SSDP_PORT, SSDP_PORT, packet.payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source_ip, group);
+    if (!egress.SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, packet.payload, SSDP_TTL)) {
+        logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    logger_.Debug("Reflected ssdp packet from {} to {}", packet.header.source_ip, group);
+    logger_.Debug("Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
     const auto removed = std::erase_if(sessions_, [this, now](const Session& session) {
         const bool expired = session.expiry <= now;
         if (expired) {
-            logger_.Debug("Removing session for searcher {}:{} on reserved port {}",
-                session.searcher_ip, session.searcher_port, session.reservation.Port());
+            logger_.Debug("Removing session for searcher {} on reserved port {}",
+                session.searcher, session.reservation.Port());
         }
         return expired;
     });

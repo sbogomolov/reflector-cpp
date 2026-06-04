@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_address.h"
+#include "ip_endpoint.h"
 #include "mac_address.h"
 #include "util/delegate.h"
 
@@ -12,10 +13,8 @@
 namespace reflector {
 
 struct PacketHeader {
-    IpAddress source_ip;
-    IpAddress dest_ip;
-    uint16_t source_port = 0;
-    uint16_t dest_port = 0;
+    IpEndpoint source;
+    IpEndpoint dest;
     uint8_t ttl = 0;  // IPv4 TTL / IPv6 hop limit, as captured
     MacAddress source_mac{};
     MacAddress dest_mac{};
@@ -38,16 +37,16 @@ struct PacketFilter {
 
     // True if `packet` satisfies every set field; an unset (nullopt) field matches anything.
     [[nodiscard]] bool Matches(const Packet& packet) const noexcept {
-        if (source_ip && *source_ip != packet.header.source_ip) {
+        if (source_ip && *source_ip != packet.header.source.addr) {
             return false;
         }
-        if (dest_ip && *dest_ip != packet.header.dest_ip) {
+        if (dest_ip && *dest_ip != packet.header.dest.addr) {
             return false;
         }
-        if (source_port && *source_port != packet.header.source_port) {
+        if (source_port && *source_port != packet.header.source.port) {
             return false;
         }
-        if (dest_port && *dest_port != packet.header.dest_port) {
+        if (dest_port && *dest_port != packet.header.dest.port) {
             return false;
         }
         if (source_mac && *source_mac != packet.header.source_mac) {

@@ -52,10 +52,8 @@ protected:
         MacAddress source_mac = {}) {
         return Packet{
             .header = PacketHeader{
-                .source_ip = LoopbackFor(family),
-                .dest_ip = IpAddress::MdnsGroupFor(family),
-                .source_port = MDNS_PORT,
-                .dest_port = MDNS_PORT,
+                .source = {LoopbackFor(family), MDNS_PORT},
+                .dest = {IpAddress::MdnsGroupFor(family), MDNS_PORT},
                 .ttl = 1,  // re-emit must override this with the mDNS TTL (255)
                 .source_mac = source_mac,
             },
