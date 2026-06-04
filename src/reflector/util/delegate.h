@@ -34,8 +34,11 @@ namespace detail {
     template <auto method>
     using DelegateForMethod = MethodHelper<decltype(method)>::DelegateT;
 
+    // Satisfied when `method` can be invoked on a `T*`: T is the method's class, or derives from it. The
+    // derived case lets &Base::m bind on a Derived instance — taking &Derived::m of an inherited m yields a
+    // Base member pointer, so ClassT is Base while T is Derived. MethodStub's static_cast<T*> does the upcast.
     template <auto method, typename T>
-    concept IsMethodOfClass = std::is_same_v<T, typename MethodHelper<decltype(method)>::ClassT>;
+    concept IsMethodOfClass = std::is_base_of_v<typename MethodHelper<decltype(method)>::ClassT, T>;
 
     template <typename R, typename... Args>
     struct FunctionHelperBase {

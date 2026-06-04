@@ -55,6 +55,12 @@ struct DelegateForwardingTestSink {
     }
 };
 
+struct DelegateInheritanceTestBase {
+    int BaseMethod(int x) { return x + 100; }
+};
+
+struct DelegateInheritanceTestDerived : DelegateInheritanceTestBase {};
+
 TEST(DelegateTest, InstanceMethods) {
     DelegateTestClass test;
 
@@ -178,4 +184,14 @@ TEST(DelegateTest, AssignedAfterDefaultConstructionIsCallable) {
 
     EXPECT_TRUE(delegate.IsValid());
     EXPECT_EQ(delegate(1, 2.3f), 1);
+}
+
+TEST(DelegateTest, BindsInheritedMethodOnDerivedInstance) {
+    // &Derived::BaseMethod on an inherited method is a Base member pointer; binding it on a Derived* must
+    // still work — FromMethod accepts an instance whose type derives from the method's class.
+    DelegateInheritanceTestDerived derived;
+
+    auto delegate = CreateDelegate<&DelegateInheritanceTestDerived::BaseMethod>(&derived);
+
+    EXPECT_EQ(delegate(5), 105);
 }
