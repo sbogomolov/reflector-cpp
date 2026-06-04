@@ -83,7 +83,7 @@ TEST_P(UdpSocketPerFamilyTest, BindToEphemeralPortSucceeds) {
 TEST_P(UdpSocketPerFamilyTest, BindToLoopbackSucceeds) {
     UdpSocket sock{GetParam()};
     ASSERT_TRUE(sock.IsValid());
-    EXPECT_TRUE(sock.Bind(LoopbackFor(GetParam()), 0));
+    EXPECT_TRUE(sock.Bind({LoopbackFor(GetParam()), 0}));
 }
 
 TEST_P(UdpSocketPerFamilyTest, SetInterfaceWithUnknownNameFails) {
@@ -95,7 +95,7 @@ TEST_P(UdpSocketPerFamilyTest, SetInterfaceWithUnknownNameFails) {
 TEST_P(UdpSocketPerFamilyTest, BindRejectsAddressFromOtherFamily) {
     UdpSocket sock{GetParam()};
     ASSERT_TRUE(sock.IsValid());
-    EXPECT_FALSE(sock.Bind(OtherLoopbackFor(GetParam()), 0));
+    EXPECT_FALSE(sock.Bind({OtherLoopbackFor(GetParam()), 0}));
 }
 
 TEST_P(UdpSocketPerFamilyTest, SendToRejectsAddressFromOtherFamily) {
@@ -103,7 +103,7 @@ TEST_P(UdpSocketPerFamilyTest, SendToRejectsAddressFromOtherFamily) {
     ASSERT_TRUE(sock.IsValid());
 
     const std::array payload{std::byte{0x01}};
-    EXPECT_FALSE(sock.SendTo(payload, OtherLoopbackFor(GetParam()), 9));
+    EXPECT_FALSE(sock.SendTo(payload, {OtherLoopbackFor(GetParam()), 9}));
 }
 
 TEST_P(UdpSocketPerFamilyTest, MoveConstructTransfersOwnershipFamilyAndBinding) {
@@ -181,7 +181,7 @@ TEST(UdpSocketTest, SendToOnMovedFromSocketFails) {
     UdpSocket dst{std::move(src)};
 
     const std::array payload{std::byte{0x01}};
-    EXPECT_FALSE(src.SendTo(payload, IpAddress::LoopbackV4(), 9)); // NOLINT(bugprone-use-after-move)
+    EXPECT_FALSE(src.SendTo(payload, {IpAddress::LoopbackV4(), 9})); // NOLINT(bugprone-use-after-move)
 }
 
 TEST(UdpSocketTest, CloseInvalidatesSocket) {

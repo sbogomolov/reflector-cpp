@@ -722,7 +722,7 @@ protected:
 
 TEST_F(RawSocketRequiresRootTest, ReceivesLoopbackUdpDatagram) {
     const std::array payload{std::byte{0xde}, std::byte{0xad}, std::byte{0xbe}, std::byte{0xef}};
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
 
     const auto packet = ReceiveOurDatagram();
     ASSERT_TRUE(packet.has_value());
@@ -743,7 +743,7 @@ TEST_F(RawSocketRequiresRootTest, DrainsBatchedFramesFromOneRead) {
     constexpr int packet_count = 8;
     const std::array payload{std::byte{0xab}, std::byte{0xcd}};
     for (int i = 0; i < packet_count; ++i) {
-        ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+        ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
     }
 
 #if defined(__APPLE__)

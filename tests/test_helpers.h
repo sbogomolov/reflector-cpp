@@ -152,7 +152,7 @@ inline uint16_t BoundPort(const UdpSocket& socket) {
 
 inline uint16_t BindLoopback(UdpSocket& socket, uint16_t port = 0) {
     EXPECT_TRUE(socket.SetReuseAddr(true));
-    EXPECT_TRUE(socket.Bind(LoopbackFor(socket.AddressFamily()), port));
+    EXPECT_TRUE(socket.Bind({LoopbackFor(socket.AddressFamily()), port}));
     const auto bound_port = BoundPort(socket);
     EXPECT_NE(bound_port, 0);
     return bound_port;

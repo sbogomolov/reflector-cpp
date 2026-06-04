@@ -248,44 +248,44 @@ bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& in
 }
 
 bool UdpSocket::Bind(uint16_t port) {
-    return Bind(family_ == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4(), port);
+    return Bind(IpEndpoint{family_ == IpAddress::Family::V6 ? IpAddress::AnyV6() : IpAddress::AnyV4(), port});
 }
 
-bool UdpSocket::Bind(const IpAddress& address, uint16_t port) {
+bool UdpSocket::Bind(const IpEndpoint& endpoint) {
     if (!IsValid()) {
-        logger_.Error("Cannot bind to port {}: socket is invalid", port);
+        logger_.Error("Cannot bind to {}: socket is invalid", endpoint);
         return false;
     }
-    if (address.AddressFamily() != family_) {
-        logger_.Error("Cannot bind to {}:{}: address family does not match the socket's", address, port);
+    if (endpoint.addr.AddressFamily() != family_) {
+        logger_.Error("Cannot bind to {}: address family does not match the socket's", endpoint);
         return false;
     }
 
-    logger_.Info("Binding socket to {}:{}", address, port);
+    logger_.Info("Binding socket to {}", endpoint);
 
     sockaddr_storage storage{};
-    const socklen_t length = address.ToSockaddr(storage, port);
+    const socklen_t length = endpoint.ToSockaddr(storage);
     if (bind(fd_, reinterpret_cast<sockaddr*>(&storage), length) != 0) {
         logger_.Error("Cannot bind UDP socket: {}", Error::FromErrno());
         return false;
     }
 
-    logger_.Debug("Bound UDP socket to {}:{}", address, port);
+    logger_.Debug("Bound UDP socket to {}", endpoint);
     return true;
 }
 
-bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpAddress& address, uint16_t port) noexcept {
+bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpEndpoint& endpoint) noexcept {
     if (!IsValid()) {
-        logger_.Error("Cannot send to {}:{}: socket is invalid", address, port);
+        logger_.Error("Cannot send to {}: socket is invalid", endpoint);
         return false;
     }
-    if (address.AddressFamily() != family_) {
-        logger_.Error("Cannot send to {}:{}: address family does not match the socket's", address, port);
+    if (endpoint.addr.AddressFamily() != family_) {
+        logger_.Error("Cannot send to {}: address family does not match the socket's", endpoint);
         return false;
     }
 
     sockaddr_storage storage{};
-    const socklen_t length = address.ToSockaddr(storage, port, interface_index_);
+    const socklen_t length = endpoint.ToSockaddr(storage, interface_index_);
 
     ssize_t bytes_sent;
     do {
@@ -297,11 +297,11 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpAddress& addr
             length);
     } while (bytes_sent < 0 && errno == EINTR);
     if (bytes_sent < 0) {
-        logger_.Error("Cannot send UDP packet to {}:{}: {}", address, port, Error::FromErrno());
+        logger_.Error("Cannot send UDP packet to {}: {}", endpoint, Error::FromErrno());
         return false;
     }
 
-    logger_.Debug("Sent {} bytes to {}:{}", bytes_sent, address, port);
+    logger_.Debug("Sent {} bytes to {}", bytes_sent, endpoint);
     return true;
 }
 

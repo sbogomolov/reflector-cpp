@@ -1,6 +1,7 @@
 #pragma once
 
 #include "reflector/ip_address.h"
+#include "reflector/ip_endpoint.h"
 #include "reflector/logger.h"
 #include "reflector/util/no_copy.h"
 
@@ -36,8 +37,8 @@ public:
     // family must match the socket's.
     [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group, const std::string& interface);
     [[nodiscard]] bool Bind(uint16_t port);
-    [[nodiscard]] bool Bind(const IpAddress& address, uint16_t port);
-    [[nodiscard]] bool SendTo(std::span<const std::byte> payload, const IpAddress& address, uint16_t port) noexcept;
+    [[nodiscard]] bool Bind(const IpEndpoint& endpoint);
+    [[nodiscard]] bool SendTo(std::span<const std::byte> payload, const IpEndpoint& endpoint) noexcept;
 
 private:
     [[nodiscard]] bool SetNonBlocking() noexcept;

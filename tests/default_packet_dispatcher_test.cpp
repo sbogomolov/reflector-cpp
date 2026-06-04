@@ -427,7 +427,7 @@ TEST_F(DefaultPacketDispatcherRequiresRootTest, PollOnceDispatchesLoopbackPacket
     ASSERT_TRUE(registration.IsValid());
 
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
 
     ASSERT_TRUE(WaitForCount(recorder.count, 1));
     EXPECT_EQ(recorder.count, 1);
@@ -444,7 +444,7 @@ TEST_F(DefaultPacketDispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBu
     constexpr int packet_count = 3;
     const std::array payload{std::byte{0x01}, std::byte{0x02}, std::byte{0x03}};
     for (int i = 0; i < packet_count; ++i) {
-        ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+        ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
     }
 
     ASSERT_TRUE(WaitForCount(counter.count, packet_count));
@@ -459,8 +459,8 @@ TEST_F(DefaultPacketDispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLast
     counter.registration_to_reset = &registration;
 
     const std::array payload{std::byte{0x01}};
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
-    ASSERT_TRUE(sender_socket.SendTo(payload, IpAddress::LoopbackV4(), listener_port));
+    ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
+    ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
 
     ASSERT_TRUE(WaitForCount(counter.count, 1));
     EXPECT_EQ(counter.count, 1);
