@@ -91,9 +91,11 @@ private:
     // WouldBlock (0 bytes) when the kernel buffer is full, or Error on a fatal failure.
     [[nodiscard]] IoResult WriteSome(std::span<const std::byte> data) noexcept;
 
-    // Outbound-buffer cap: a Send whose tail would exceed this aborts the connection (drop-and-close). DIAL
-    // carries only small control messages (a device-description XML is a few KB), so a few messages' worth is
-    // ample — falling this far behind means the peer has stalled, and giving up beats buffering ever more.
+    // Outbound-buffer cap: a Send whose unsent tail would exceed this aborts the connection (drop-and-close).
+    // DIAL carries only small control messages that the kernel accepts immediately, so in normal operation
+    // this buffer stays empty — StreamBuffer is lazily allocated, so an undrained-tail of 0 costs no bytes —
+    // and the cap only ever bites a genuinely stalled peer. Independent of the receive cap (a single message
+    // never fills it), so it is not part of the receive-buffer cap hierarchy.
     static constexpr size_t MAX_SEND_BUFFER = 8 * 1024;
 
     // Members largest-first so the struct's only padding is at the end.

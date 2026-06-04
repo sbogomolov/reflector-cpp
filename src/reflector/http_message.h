@@ -43,6 +43,15 @@ public:
         size_t consumed = 0;
     };
 
+    // A header block reaching this length without its terminating blank line is refused (Feed -> nullopt,
+    // the owner closes), so a peer that never ends its headers can't grow the buffer unbounded. It also
+    // FLOORS the DIAL proxy's per-connection receive buffer, which must EXCEED this so the over-cap refusal
+    // fires before the buffer fills — otherwise the always-armed reader livelocks (static_assert in dial_proxy.h).
+    static constexpr size_t MAX_HEADER_BYTES = 2 * 1024;
+
+    // The same unterminated-line guard for a chunk-size line (a hex length + optional chunk extensions).
+    static constexpr size_t MAX_CHUNK_LINE_BYTES = 256;
+
     explicit HttpFraming(EndpointRewrite rewrite);
 
     // Feed a contiguous view of the owner's buffered bytes. nullopt = a malformed or over-cap message (the

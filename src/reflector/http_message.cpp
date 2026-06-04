@@ -17,16 +17,6 @@ using namespace reflector;
 constexpr std::string_view CRLF = "\r\n";
 constexpr std::string_view HEADER_TERMINATOR = "\r\n\r\n";
 
-// A header block that reaches this length without its terminating blank line is refused: a peer that never
-// closes its headers cannot grow the buffer without bound. Far above any real DIAL header (a few hundred
-// bytes).
-constexpr size_t MAX_HEADER_BYTES = 2 * 1024;
-
-// The same guard for a chunk-size line (a hex length + optional extensions) that never reaches its CRLF. A
-// real one is a handful of bytes; this refuses an unterminated one early (the owner's receive buffer caps it
-// too).
-constexpr size_t MAX_CHUNK_LINE_BYTES = 256;
-
 Logger& GetLogger() noexcept {
     static Logger logger{"HttpFraming"};
     return logger;
