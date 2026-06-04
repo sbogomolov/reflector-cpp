@@ -230,7 +230,7 @@ The only family-aware code lives here — which is what makes v4/v6 "almost free
 the kernel a filled `sockaddr_storage` and reads one back.
 
 **`TcpSocket`** — a **move-only** fd owner wrapping the non-blocking-TCP syscalls. It captures **nothing**
-of the dispatcher: it holds only `{ fd, SendBuffer, connecting }`. That inertness is the boundary
+of the dispatcher: it holds only `{ fd, StreamBuffer, connecting }`. That inertness is the boundary
 decision (§11 D12): `Accept()` returns a `TcpSocket` by value and a `Connection` (§4.4) stores two by
 value, so the socket must move freely without dangling a callback — a self-registering socket would
 dangle its own write `Delegate` on move (the `RawSocket` `NoMove` hazard). So the dispatcher
@@ -255,7 +255,7 @@ target); `TcpSocket` owns the **buffer and the truth** (`WantsWrite()`), the own
 - `Read(span) → IoResult{status, bytes}` — bytes moved (`Ok`), `WouldBlock` (EAGAIN), `Closed` (orderly
   EOF — read-only), or `Error`. `Read` and the internal `WriteSome` share this `IoResult`.
 - `Send(span) → SendStatus` — write what the kernel takes now, copy any unsent tail into the **bounded
-  outbound `SendBuffer`** (capped at the fixed `MAX_SEND_BUFFER`, 64 KB); `Flush()` drains it on a later
+  outbound `StreamBuffer`** (capped at the fixed `MAX_SEND_BUFFER`, 8 KB); `Flush()` drains it on a later
   writable. Returns `Ok` / `Overflow` / `Error`; on `Overflow` the owner aborts (drop-and-close, §4.4).
   `Send` does **not** toggle write interest — it exposes `WantsWrite()` (`connecting || !buffer.empty()`)
   and the owner forwards that to the dispatcher via one `Sync` helper (§4.4).
@@ -270,27 +270,38 @@ accept/connect/partial-write/EAGAIN/`SO_ERROR` run against the kernel for both f
 just the dispatcher and a tiny test driver standing in for the owner (holding the `Registration` and
 calling `Sync`). `IpEndpoint` gets its own `ToSockaddr`/`FromSockaddr` round-trip tests.
 
-### 4.3 `http_message.{h,cpp}` — minimal HTTP/1.1 framing + header rewrite (new)
+### 4.3 `http_message.{h,cpp}` — incremental HTTP/1.1 framing + header rewrite (new)
 
-A small incremental parser. It is **not** a general HTTP engine — it does the minimum to find
-boundaries and rewrite headers:
+A small incremental parser — not a general HTTP engine. The owner reads into its receive `StreamBuffer`
+(§4.2) and feeds `HttpFraming` a contiguous view of the buffered bytes; `HttpFraming` reports what to
+forward and how much of the input it consumed:
 
-- Parse the start line (request: method/target; response: status) and the header block up to the
-  blank line, into a header list preserving order and original bytes.
-- Determine body framing: `Content-Length: N`, `Transfer-Encoding: chunked`, or none (e.g. a bodyless
-  `GET` / `204`). For chunked, parse only the chunk-size lines to find the terminating `0`-chunk —
-  the chunk *data* is opaque and forwarded verbatim.
-- **Rewrite** a fixed, case-insensitive header set by authority substitution `device:port →
-  reflector:authority`, via a small shared `RewriteAuthority(text, device_endpoint, reflector_authority)`
-  primitive (also used by the SSDP `LOCATION` path, §4.5): on requests, `Host`; on responses,
-  `Application-URL` and `Location`. A header value is rewritten only if its authority matches a known
-  DIAL endpoint — so non-DIAL headers pass through untouched.
-- Re-emit: the (possibly modified) header block, then the body streamed verbatim. Because only
-  headers change and the body is never touched, **`Content-Length` is never recomputed** (it describes
-  the body) and chunked framing is never rebuilt.
+`std::optional<Output> Feed(std::string_view input)`, with `Output { string_view header; string_view body;
+size_t consumed; }`. `header` is the **rewritten** header block — a view into HttpFraming's own scratch,
+because rewriting changes it — and is empty while a body streams across feeds. `body` is a **zero-copy
+slice of `input`** (the receive buffer), possibly empty. The owner forwards `header` then `body` together
+(one `writev`) and drops `consumed` bytes from its buffer. `nullopt` = a malformed or over-cap message →
+the owner closes; `consumed == 0` = nothing forwardable yet (an incomplete header) → read more and feed
+again. Each `Feed` yields at most one message's worth — a complete header plus the body bytes that have
+arrived — so the owner loops `Feed` over its buffer until `consumed == 0`. **Only the header is copied**
+(to rewrite it); the body, and any incomplete header or chunk-size line, stay in the owner's buffer — the
+framer keeps no carry buffer of its own.
 
-Bounds: a header block over `MAX_HEADER_BYTES` (64 KB) is refused and the connection
-closed — the only unbounded-buffer risk, since bodies are streamed, not accumulated.
+In one pass over a completed header it determines body framing (`Content-Length` / `Transfer-Encoding:
+chunked` / bodyless) and rewrites a fixed, case-insensitive header set by authority substitution — on
+requests `Host`, on responses `Application-URL` and `Location` — splicing the replacement directly at the
+parsed authority's offset (no second search). A header is rewritten only if its authority matches a known
+DIAL endpoint; everything else, including all body bytes and the chunked chunk-data, passes through
+verbatim (for chunked, only the chunk-size lines are parsed, to find the terminating `0`-chunk, whose
+close must be a bare CRLF — chunked trailers are unsupported, so a trailer-bearing close is refused). Because
+only header authorities change, **`Content-Length` is never recomputed** and chunked framing is never
+rebuilt. The shared `RewriteAuthority(text, from, to)` primitive (a one-shot authority substitution over a
+string) backs the SSDP `LOCATION` path (§4.5); `HttpFraming` splices inline rather than calling it.
+
+Bounds: the header scratch is the only thing the framer holds, capped at the fixed `MAX_HEADER_BYTES`
+(2 KB); a header reaching that cap — or a chunk-size line reaching the separate `MAX_CHUNK_LINE_BYTES`
+(256 B) cap — without its terminator is refused and the connection closed. The body is never buffered by the framer, so a large body is bounded only by the
+owner's receive `StreamBuffer`, not here.
 
 ### 4.4 `dial_proxy.{h,cpp}` — the orchestrator (new)
 
@@ -311,9 +322,12 @@ struct Endpoint : NoMove {     // discovered DIAL-device ip:port + its reflector
 };
 
 struct Connection : NoMove {   // one client<->device proxied TCP pair; the stable callback target
-    TcpSocket client;          // accepted on a listener (move-only, inert — owns its SendBuffer, §4.2)
+    TcpSocket client;          // accepted on a listener (move-only, inert — owns its send StreamBuffer, §4.2)
     TcpSocket upstream;        // connect() to the device endpoint, bound to target_if
     HttpFraming c2u, u2c;      // per-direction framing + rewrite state
+    StreamBuffer c2u_rx, u2c_rx;  // per-direction receive buffers: read into the tail, feed HttpFraming,
+                                  // retain the unconsumed carry (partial header / mid-body) — the framer
+                                  // holds no buffer of its own
     enum { Connecting, Open } phase;
     bool closed = false;       // set by a handler that tears itself down; the sweep erases after dispatch
     std::chrono::steady_clock::time_point deadline;  // connect deadline, then idle deadline
@@ -375,9 +389,11 @@ The `Connection` never computes a write boolean; it forwards `TcpSocket::WantsWr
    `Open` and `Sync` (which disarms the now-idle upstream write); on error tear down. A connect *failure*
    also folds into the always-armed read (`recv()` error → teardown), so either edge converges — DIAL
    upstreams are client-speaks-first, so in practice only the writable edge fires.
-3. **Forward** (either side readable): `Read` into a reusable scratch buffer → feed the per-direction
-   `HttpFraming` (rewrite headers, pass body) → `peer.Send(...)` → `Sync(peer_reg, peer)` (arms peer write
-   iff a tail was buffered). On the peer's writable edge: `peer.Flush()` → `Sync`. Because `Send`
+3. **Forward** (either side readable): `Read` straight into that side's receive `StreamBuffer` (its
+   writable tail) → loop `HttpFraming.Feed` over the buffered bytes, forwarding each `{header, body}` to
+   `peer` (the rewritten header then the zero-copy body) and dropping the consumed bytes →
+   `Sync(peer_reg, peer)` (arms peer write iff a tail was buffered). On the peer's writable edge:
+   `peer.Flush()` → `Sync`. Because `Send`
    attempts an immediate drain, the steady state never arms `EPOLLOUT`, so the level-triggered reactor
    never writable-spins. **Backpressure is drop-and-close, not read-pausing:** read stays armed; if a
    `Send` tail would exceed the `MAX_SEND_BUFFER` cap, abort the connection — a cheap, retryable failed
@@ -395,17 +411,17 @@ of how often the client re-fetches the description.
 rewrite (internal, on the TCP path) are what *create* endpoints and their listeners on first sight; the
 launch `LOCATION` reuses the REST endpoint's existing listener.
 
-**Bounded buffering.** Each `TcpSocket`'s `SendBuffer` is capped at the fixed `MAX_SEND_BUFFER` (64 KB — well above any DIAL control message) and exceeding
-it aborts the connection (drop-and-close), so a connection's memory is bounded no matter how slow or
-stalled a peer is — which also keeps the long-running daemon's RSS flat (no unbounded proxy buffer).
-Given that bound and DIAL's tiny, low-rate control messages, `SendBuffer` is a **simple growable byte
-buffer with a consumed-head offset**
-(compacted on drain — a ≤64 KB memmove is negligible and rare). We deliberately avoid
-`std::deque<std::byte>` (its small fixed per-node block churns allocations and cache lines for a byte
-stream). If a future high-throughput use ever needs it, the same `SendBuffer` interface can be backed by
-a chunk-chain (a list of fixed-size buffers — append fills the tail, consume frees the head, no
-memmove); that is over-engineered for DIAL and out of scope now. (Header accumulation in `HttpFraming`
-is separately bounded by `MAX_HEADER_BYTES`, §4.3.)
+**Bounded buffering.** Each `TcpSocket`'s send `StreamBuffer` is capped at the fixed `MAX_SEND_BUFFER`
+(8 KB — a few DIAL control messages) and exceeding it aborts the connection (drop-and-close), so a
+connection's memory is bounded no matter how slow or stalled a peer is — which also keeps the long-running
+daemon's RSS flat (no unbounded proxy buffer). `StreamBuffer` is a fixed-capacity FIFO byte buffer over a
+lazily allocated, never-zeroed block (`make_unique_for_overwrite`): an **unused buffer holds no
+allocation** — most connections never backpressure, so their send buffer stays zero bytes — and the
+consumed prefix is reclaimed by a compacting memmove on the next write (negligible and rare at these
+sizes). The same type backs the **receive** side: the owner reads straight into the writable tail
+(`ReserveTail`/`Commit`) and `HttpFraming` (§4.3) feeds from `View`, so ingress is copy-free apart from
+the header rewrite. Header accumulation in `HttpFraming` is separately bounded by `MAX_HEADER_BYTES`
+(§4.3).
 
 ### 4.5 `ssdp_reflector.{h,cpp}` integration
 
@@ -553,11 +569,11 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
    like the timer commit.
 2. `ip_endpoint` + `tcp_socket`: `IpEndpoint` value type with family-aware sockaddr conversion;
    move-only, dispatcher-inert `TcpSocket` (non-blocking listen/accept/connect(bound+pinned)/read/
-   `Send`+bounded`SendBuffer`/`Flush`/`WantsWrite`, SIGPIPE-safe, RAII) + loopback tests parameterized
+   `Send`+bounded`StreamBuffer`/`Flush`/`WantsWrite`, SIGPIPE-safe, RAII) + loopback tests parameterized
    over v4/v6.
 3. `http_message`: incremental framing (CL/chunked/none) + case-insensitive header rewrite via the
    shared `RewriteAuthority` helper + tests.
-4. `dial_proxy`: endpoint/listener map, connection pump + bounded `SendBuffer` (drop-and-close on
+4. `dial_proxy`: endpoint/listener map, connection pump + bounded `StreamBuffer` (drop-and-close on
    overflow), cap + connect/idle eviction `Timer`, `EnsureDiscoveryListener` + tests.
 5. `ssdp_reflector` + `config`: the `dial` flag (+ tunables, `Verify`, formatter) and the DIAL
    `LOCATION` parse + `RewriteAuthority` splice (calling `EnsureDiscoveryListener`) in the
@@ -602,7 +618,7 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
   matching `MAX_SESSIONS`/`MAX_CONNECTIONS` — a four-figure cap would risk fd exhaustion for no gain).
 - **D10 — Drop-and-close backpressure bounds proxy memory (no read-pausing).** DIAL is request/response
   with tiny payloads, so instead of lossless flow control (pause the source at a high-water mark) we cap
-  each `TcpSocket`'s `SendBuffer` and **abort the connection if it would overflow** — a failed attempt,
+  each `TcpSocket`'s `StreamBuffer` and **abort the connection if it would overflow** — a failed attempt,
   cheap and retryable, that hard-bounds per-connection memory, keeps the daemon's RSS flat, and doubles
   as a DoS guard. Read is never paused (so the reactor never sees a both-disarmed fd). The buffer is a
   simple bounded byte queue — not `std::deque<std::byte>` (small fixed block → alloc/cache churn); a
@@ -614,7 +630,7 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
   shared `RewriteAuthority` helper, keeping `DialProxy` free of SSDP-message knowledge. (§4.4/§4.5)
 - **D12 — `TcpSocket` is dispatcher-inert; the `Connection`/`Endpoint` owns the `Registration` + the one
   `SetWriteInterest` ("honest Point B").** A `TcpSocket` captures nothing of the dispatcher (just `{fd,
-  SendBuffer, connecting}`) so it moves freely — `Accept()` returns one by value, a `Connection` holds
+  StreamBuffer, connecting}`) so it moves freely — `Accept()` returns one by value, a `Connection` holds
   two by value. The dispatcher callback target is the owning `Connection`/`Endpoint`, which is `NoMove`
   in a node-stable, id-keyed map (it must be address-stable anyway, for eviction). Write interest is
   toggled in exactly one place — `Sync(reg, s)` forwarding `s.WantsWrite()` — so `TcpSocket` owns the

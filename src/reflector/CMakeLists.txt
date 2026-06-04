@@ -6,6 +6,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/event_loop_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/http_message.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/interface_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address.cpp

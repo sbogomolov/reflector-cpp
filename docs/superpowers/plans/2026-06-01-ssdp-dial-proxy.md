@@ -27,10 +27,10 @@ The **full test gate** (native `ctest -L unit` + `./docker_test.sh` + `./docker_
 
 **New source files**
 - `src/reflector/ip_endpoint.h` — `IpEndpoint { IpAddress addr; uint16_t port; }` value type (+ `operator==`, `std::formatter`, and the family-aware `ToSockaddr`/`FromSockaddr` conversion so `TcpSocket` stays family-agnostic). *(Commit 2)*
-- `src/reflector/util/send_buffer.h` — `SendBuffer`, a lazily-allocated bounded FIFO byte buffer (flat vector + consumed-head offset); the caller bounds `Size()` and drops on overflow. Header-only, tested standalone. *(Commit 2)*
-- `src/reflector/tcp_socket.{h,cpp}` — move-only, **dispatcher-inert** non-blocking TCP RAII (`Listen`/`Accept`/`Connect`(bound+pinned)/`Read`/`Send`+bounded`SendBuffer`/`Flush`/`WantsWrite`/`IsConnecting`/`FinishConnect`), SIGPIPE-safe; v4/v6. Holds no `Registration` — the owner does (B2, §11 D12). *(Commit 2)*
+- `src/reflector/util/stream_buffer.h` — `StreamBuffer`, a fixed-capacity FIFO byte buffer over a lazily allocated, never-zeroed block; backs both the send side (`Append`, capped) and the receive side (`ReserveTail`/`Commit` — read into the writable tail). Header-only, tested standalone. *(Commit 2; generalized 9a917f2)*
+- `src/reflector/tcp_socket.{h,cpp}` — move-only, **dispatcher-inert** non-blocking TCP RAII (`Listen`/`Accept`/`Connect`(bound+pinned)/`Read`/`Send`+bounded`StreamBuffer`/`Flush`/`WantsWrite`/`IsConnecting`/`FinishConnect`), SIGPIPE-safe; v4/v6. Holds no `Registration` — the owner does (B2, §11 D12). *(Commit 2)*
 - `src/reflector/http_message.{h,cpp}` — `RewriteAuthority` + `HttpFraming` (incremental HTTP/1.1 framing + header rewrite). *(Commit 3)*
-- `src/reflector/dial_proxy.{h,cpp}` — `DialProxy`, `Endpoint`/`Connection`, the connection pump, drop-and-close backpressure, eviction `Timer` (the bounded `SendBuffer` lives in `TcpSocket`, C2). *(Commit 4)*
+- `src/reflector/dial_proxy.{h,cpp}` — `DialProxy`, `Endpoint`/`Connection`, the connection pump, drop-and-close backpressure, eviction `Timer` (the bounded send `StreamBuffer` lives in `TcpSocket`, C2; per-direction receive `StreamBuffer`s in each `Connection`). *(Commit 4)*
 
 **Modified source files**
 - `src/reflector/dispatcher.h`, `src/reflector/event_loop_dispatcher.{h,cpp}` — `OnWritableCallback`, `FdCallbacks` `Register`, `SetWriteInterest` (read always armed; no `SetReadInterest`). *(Commit 1)*
@@ -67,11 +67,14 @@ struct FdCallbacks { OnReadableCallback read; bool read_armed = true; OnWritable
 // undrained readable fd would busy-spin. FakeDispatcher mirrors this: FireWritable; SetReadInterest/
 // SetWriteInterest toggles; IsReadArmed/IsWriteArmed; FireReadable is a no-op while read-disarmed.
 
-// ---- Commit 2: ip_endpoint.h + util/send_buffer.h + tcp_socket.{h,cpp}  (as built: d08290c) ----
+// ---- Commit 2: ip_endpoint.h + util/stream_buffer.h + tcp_socket.{h,cpp}  (as built: d08290c; StreamBuffer generalized 9a917f2) ----
 struct IpEndpoint { IpAddress addr; uint16_t port = 0; auto operator<=>(const IpEndpoint&) const noexcept = default; };  // + std::hash + std::formatter ("127.0.0.1:80" / "[::1]:80")
 //   socklen_t ToSockaddr(sockaddr_storage&, unsigned scope_id = 0) const; static optional<IpEndpoint> FromSockaddr(const sockaddr*);  // family-aware, delegates to IpAddress
-class SendBuffer {  // util/send_buffer.h — lazy bounded FIFO byte buffer; move-only, self-safe move
-  size_t Size() const; bool Empty() const; void Append(std::span<const std::byte>); std::span<const std::byte> View() const; void Consume(size_t);
+class StreamBuffer {  // util/stream_buffer.h — fixed-capacity FIFO byte buffer, lazy non-zeroed alloc; both directions, move-safe
+  explicit StreamBuffer(size_t capacity);  size_t Size() const; bool Empty() const; size_t Capacity() const;
+  bool Append(std::span<const std::byte>);                          // send side; false (writes nothing) if it would pass the cap
+  std::span<std::byte> ReserveTail(); void Commit(size_t);          // receive side: read into the writable tail, commit the count
+  std::span<const std::byte> View() const; void Consume(size_t);    // drain (both directions)
 };
 enum class IoStatus   : uint8_t { Ok, WouldBlock, Closed, Error };  // Closed is read-only
 struct IoResult { IoStatus status = IoStatus::Error; size_t bytes = 0; };  // shared by Read and the private WriteSome
@@ -82,38 +85,40 @@ class TcpSocket {  // move-only (NoCopy), dispatcher-INERT: holds no Registratio
   static std::optional<TcpSocket> Connect(const IpEndpoint& dst, const IpEndpoint& bind, unsigned ifindex = 0);  // egress-pinned; EINPROGRESS = success (starts CONNECTING)
   bool IsConnecting() const noexcept; IoStatus FinishConnect() noexcept;                           // no-op Ok once established; Error on a failed connect
   IoResult   Read(std::span<std::byte>) noexcept;                                                  // {Ok,n}/{WouldBlock,0}/{Closed,0}/{Error,0}
-  SendStatus Send(std::span<const std::byte>) noexcept;                                            // writes what it can + buffers the tail; Overflow past MAX_SEND_BUFFER (64 KB)
+  SendStatus Send(std::span<const std::byte>) noexcept;                                            // writes what it can + buffers the tail; Overflow past MAX_SEND_BUFFER (8 KB)
   SendStatus Flush() noexcept;                                                                     // drains the buffer on a writable edge
   bool WantsWrite() const noexcept;                                                                // connecting || !buffer.empty(); owner forwards to SetWriteInterest
   int Fd() const noexcept; bool IsValid() const noexcept;
   std::optional<IpEndpoint> LocalEndpoint() const noexcept; std::optional<IpEndpoint> PeerEndpoint() const noexcept;  // getsockname/getpeername
 };
 
-// ---- Commit 3: http_message.{h,cpp} ----
-[[nodiscard]] std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to);
-class HttpFraming {
-  enum class Side : uint8_t { Request, Response };
-  enum class Status : uint8_t { NeedMore, Error };
-  using HeaderRewrite = std::function<std::optional<IpEndpoint>(Side side, const IpEndpoint& found)>;
-  HttpFraming(Side side, size_t max_header_bytes, HeaderRewrite rewrite);
-  [[nodiscard]] Status Feed(std::span<const std::byte> in, std::vector<std::byte>& out);   // headers rewritten, body verbatim; Error on oversized header block
+// ---- Commit 3: http_message.{h,cpp}  (as built) ----
+[[nodiscard]] std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to);  // shared with the SSDP LOCATION path
+class HttpFraming {  // incremental HTTP/1.1 framing + header rewrite; only the header is copied (to rewrite it)
+  using EndpointRewrite = Delegate<std::optional<IpEndpoint>(const IpEndpoint& found)>;  // bound per direction by the owner
+  struct Output { std::string_view header; std::string_view body; size_t consumed; };  // header -> rewritten scratch; body -> zero-copy slice of input
+  explicit HttpFraming(EndpointRewrite rewrite);   // side-agnostic: inspects Host (req) + Application-URL/Location (resp); MAX_HEADER_BYTES = fixed 2 KB constant
+  // Owner reads into its receive StreamBuffer, feeds a View, forwards {header, body} (one writev), drops `consumed`.
+  // nullopt = malformed / over-cap -> owner closes; consumed == 0 = nothing forwardable yet (incomplete header). One message per Feed.
+  [[nodiscard]] std::optional<Output> Feed(std::string_view input);
 };
 
 // ---- Commit 4: dial_proxy.{h,cpp} ----
-// SendBuffer: bounded FIFO byte buffer (std::vector<std::byte> + consumed-head offset; Append/View/Consume/Size; compact on drain).
+// Connection holds two per-direction receive StreamBuffers (read into the tail, feed HttpFraming, retain the unconsumed carry); the send StreamBuffers live inside each TcpSocket.
 class DialProxy {  // NoMove; owned by SsdpReflector; reaches the reactor via PacketDispatcher::UnderlyingDispatcher()
  public:
   [[nodiscard]] std::optional<IpEndpoint> EnsureDiscoveryListener(IpEndpoint device);   // the ONLY public method
  private:
-  std::optional<IpEndpoint> EnsureRestListener(IpEndpoint device);      // used by the response-side HeaderRewrite
+  std::optional<IpEndpoint> EnsureRestListener(IpEndpoint device);      // used by the response-side EndpointRewrite
   std::optional<IpEndpoint> EnsureListener(IpEndpoint device, /*Role*/ int role);
-  // HIGH_WATER = 64 KB, LOW_WATER = 16 KB. Caps (defaults): MAX_REST_LISTENERS=32, MAX_DISCOVERY_LISTENERS=32, MAX_CONNECTIONS=32 (drop-new).
-  // Flow control: at HIGH_WATER -> SetReadInterest(source_fd, false); when the peer drains < LOW_WATER -> SetReadInterest(source_fd, true).
+  // Caps (fixed constants): MAX_REST_LISTENERS, MAX_DISCOVERY_LISTENERS, MAX_CONNECTIONS (drop-new).
+  // Backpressure: drop-and-close — a Send past TcpSocket's MAX_SEND_BUFFER aborts the connection; read
+  //   stays always-armed (no read-pausing / flow control).
 };
 
 // ---- Commit 5: config + ssdp_reflector ----
-// SsdpConfig: bool dial=false; size_t dial_max_connections=32, dial_max_rest_listeners=32, dial_max_discovery_listeners=32;
-//   std::chrono::seconds dial_rest_idle{3600}, dial_discovery_idle{90}, dial_connect_timeout{5}; size_t dial_max_header_bytes=65536.
+// SsdpConfig: adds `bool dial = false` only — the sole DIAL config. Every cap/timeout (the listener caps,
+//   MAX_CONNECTIONS, idle/connect timeouts, and HttpFraming's MAX_HEADER_BYTES) is a fixed constant, not config.
 // SsdpConfig::Verify() rejects: dial && !ssdp-enabled; and dial && !UsesIPv4() (address_family == ipv6) — DIAL is IPv4-only.
 // SsdpReflector: std::optional<DialProxy> dial_proxy_ (Initialize success when config.dial; destroyed before the dispatcher).
 //   OnUnicastResponse + OnTargetPacket: if dial && DIAL-service message with a LOCATION -> parse device endpoint,
@@ -1095,768 +1100,21 @@ Full gate green: native (ASan/UBSan), docker debug + release 533/533, e2e 25/25.
 
 ## Commit 3: http_message — incremental HTTP/1.1 framing and authority rewrite
 
-This commit adds `src/reflector/http_message.{h,cpp}`: the pure (no-socket) HTTP layer the DIAL proxy needs. Two pieces, both data-only and unit-tested against the captured LG-TV messages:
+> **As built.** Implemented test-first; the original per-task TDD steps are dropped now that the code is the source of truth (they remain in this file's history at `1f99d74`). The final shape — refined during review — is the **interface-contract block above** plus the committed code.
 
-1. `RewriteAuthority(text, from, to)` — substitutes one authority (`addr:port`, formatted via the `std::formatter<IpEndpoint>` from Commit 2) for another inside a header value or LOCATION line, leaving non-matching text untouched.
-2. `HttpFraming` — a `Feed`-driven incremental parser that accumulates the header block (bounded by `max_header_bytes`), rewrites a fixed case-insensitive header set via a `HeaderRewrite` callback (Request: `Host`; Response: `Application-URL`, `Location`), determines body framing (`Content-Length` / `Transfer-Encoding: chunked` / bodyless), forwards the body verbatim, and loops for keep-alive.
+`src/reflector/http_message.{h,cpp}` is the pure (no-socket, no-reactor) HTTP layer, depending only on `reflector::IpEndpoint` (Commit 2) and `util/ascii.h`. Two pieces:
 
-It depends only on `reflector::IpEndpoint` (Commit 2, `src/reflector/ip_endpoint.h`) and standard headers — no sockets, no reactor. It is the third commit; Commit 1 (write-interest) and Commit 2 (`tcp_socket` + `ip_endpoint`) precede it, so `src/reflector/ip_endpoint.h` already exists when this commit builds.
+1. **`RewriteAuthority(text, from, to)`** — a one-shot authority substitution (`addr:port`, formatted via `std::formatter<IpEndpoint>`) over a string, leaving non-matching text untouched. Public because the SSDP `LOCATION` path (Commit 5) shares it; `HttpFraming` splices inline instead.
+2. **`HttpFraming`** — incremental HTTP/1.1 framing + authority-header rewrite, copying **only the header**:
+   - `std::optional<Output> Feed(std::string_view input)` (`Output { string_view header; string_view body; size_t consumed; }`) reports what to forward and how much input it consumed. `header` is the rewritten header block (a view into HttpFraming's own scratch), empty while a body streams; `body` is a **zero-copy slice of `input`**. The owner reads into its receive `StreamBuffer`, feeds a `View`, forwards `header` then `body` (one `writev`), and drops `consumed` bytes. `nullopt` = malformed / over-cap -> the owner closes; `consumed == 0` = nothing forwardable yet (an incomplete header). One message per feed — the owner loops `Feed` until `consumed == 0`.
+   - One pass over a completed header detects framing (`Content-Length` / chunked / bodyless) **and** rewrites the target headers (Request: `Host`; Response: `Application-URL`, `Location`), splicing the replacement directly at the parsed authority offset (no second search) in the scratch copy.
+   - The header scratch is the only buffer the framer holds, capped at the fixed `MAX_HEADER_BYTES` (2 KB constant); a header — or a chunk-size line at the separate `MAX_CHUNK_LINE_BYTES` (256 B) cap — reaching its cap unterminated is refused. The body, and any incomplete header/chunk-size line, stay in the owner's buffer — the framer keeps no carry buffer of its own. Bodies (including chunked chunk-data) stream verbatim; the chunked close must be a bare CRLF, so chunked trailers are refused.
 
-### Task 3.1: RewriteAuthority — header/body-agnostic authority substitution
+**Files:** `src/reflector/http_message.{h,cpp}`, `tests/http_message_test.cpp`, `src/reflector/CMakeLists.txt` (+`http_message.cpp`), `tests/CMakeLists.txt` (+test). The `EndpointRewrite` callback is a `Delegate` (codebase convention).
 
-The smallest primitive: given `text` (one header value or a LOCATION line), replace every occurrence of the formatted authority of `from` (e.g. `10.1.3.80:1461`) with the formatted authority of `to` (e.g. `192.168.1.2:54321`) and return the rewritten copy. Host matching is literal (the authority is compared byte-for-byte against the formatted `from`); a `text` that does not contain `from`'s authority is returned unchanged. Used by both the SSDP LOCATION path (Commit 5) and `HttpFraming` (this commit).
+**Tests** (`tests/http_message_test.cpp`): `RewriteAuthority` (swap / every-occurrence / non-matching); `HttpFraming` over the captured LG-TV messages — Content-Length response with `Application-URL` rewrite (+ case-insensitive name, split-feed reassembly, a continuing body feed that carries no header), chunked response with `LOCATION` rewrite (+ split chunk boundaries), bodyless `Host`-rewrite request, over-cap header refusal, a body larger than the header cap forwarding intact, two pipelined keep-alive messages, a message followed by a carried partial next header, an incomplete header consuming nothing, and the **two-view contract** itself (`header` is the rewritten copy while `body` points straight into the fed input). Also: chunked precedence over `Content-Length`; case-insensitive `chunked` in a coding list; chunk-extension drop (forwarded verbatim); multi-chunk and multi-rewrite messages each followed by a next message; non-target authorities left untouched (hostname, no explicit port, non-`http`, rewrite-declines); and refusals (malformed `Content-Length`, malformed or over-cap chunk-size line, chunked trailers).
 
-**Files**
-- Create: `src/reflector/http_message.h`
-- Create: `src/reflector/http_message.cpp`
-- Modify: `src/reflector/CMakeLists.txt` (add `http_message.cpp` to the `reflector` library source list, after `frame_builder.cpp` to keep the list sorted)
-- Create: `tests/http_message_test.cpp`
-- Modify: `tests/CMakeLists.txt` (add `http_message_test.cpp` to the `reflector_test` source list, after `frame_builder_test.cpp`)
-
-- [ ] **Step 1: Write the failing RewriteAuthority test.** Create `tests/http_message_test.cpp` with the header include, a `Bytes`/`Text` helper, and the first cases. (Later tasks append `TEST`s to this same file.)
-
-```cpp
-#include "reflector/http_message.h"
-
-#include <gtest/gtest.h>
-
-#include <cstddef>
-#include <span>
-#include <string>
-#include <string_view>
-#include <vector>
-
-#include "reflector/ip_address.h"
-#include "reflector/ip_endpoint.h"
-
-using namespace reflector;
-
-namespace {
-
-// A device endpoint as captured: the LG TV on the IoT segment.
-IpEndpoint Device(uint16_t port) {
-    return IpEndpoint{IpAddress::FromV4Bytes(10, 1, 3, 80), port};
-}
-
-// The reflector authority advertised to the client (a source_if address + an ephemeral listener port).
-IpEndpoint Reflector(uint16_t port) {
-    return IpEndpoint{IpAddress::FromV4Bytes(192, 168, 1, 2), port};
-}
-
-std::span<const std::byte> AsBytes(std::string_view text) {
-    return {reinterpret_cast<const std::byte*>(text.data()), text.size()};
-}
-
-// Decodes a byte buffer back to a string for byte-exact comparison of forwarded output.
-std::string Decode(const std::vector<std::byte>& bytes) {
-    std::string out;
-    out.reserve(bytes.size());
-    for (const std::byte b : bytes) {
-        out.push_back(static_cast<char>(b));
-    }
-    return out;
-}
-
-} // namespace
-
-TEST(RewriteAuthorityTest, SwapsMatchingAuthority) {
-    // A captured Application-URL value: the absolute REST URL on the TV's stable REST port.
-    const std::string before = "http://10.1.3.80:36866/apps";
-    const std::string after = RewriteAuthority(before, Device(36866), Reflector(54321));
-    EXPECT_EQ(after, "http://192.168.1.2:54321/apps");
-}
-
-TEST(RewriteAuthorityTest, RewritesEveryOccurrence) {
-    // Defensive: if an authority appears twice in one value, both are swapped.
-    const std::string before = "http://10.1.3.80:1461/ http://10.1.3.80:1461/desc.xml";
-    const std::string after = RewriteAuthority(before, Device(1461), Reflector(40000));
-    EXPECT_EQ(after, "http://192.168.1.2:40000/ http://192.168.1.2:40000/desc.xml");
-}
-
-TEST(RewriteAuthorityTest, LeavesNonMatchingTextAlone) {
-    // A different port (REST vs description) must not be touched by a description rewrite.
-    const std::string before = "http://10.1.3.80:36866/apps";
-    EXPECT_EQ(RewriteAuthority(before, Device(1461), Reflector(40000)), before);
-    // A bare host with no port never matches the formatted authority.
-    const std::string host_only = "http://10.1.3.80/apps";
-    EXPECT_EQ(RewriteAuthority(host_only, Device(36866), Reflector(54321)), host_only);
-}
-```
-
-- [ ] **Step 2: Build the test and watch it fail to compile.** Run `./cmake_gen.sh` (only if `build/` is absent or stale), then add the new files to CMake (Step 3) before building — the test cannot compile until `http_message.h` exists. Expected fail: `fatal error: 'reflector/http_message.h' file not found`. (Confirm `grep REFLECTOR_SANITIZE build/CMakeCache.txt` shows `ON`.)
-
-- [ ] **Step 3: Register the source and test files in CMake.** In `src/reflector/CMakeLists.txt` add, immediately after the `frame_builder.cpp` line:
-
-```cmake
-    ${CMAKE_CURRENT_SOURCE_DIR}/http_message.cpp
-```
-
-In `tests/CMakeLists.txt` add, immediately after the `frame_builder_test.cpp` line:
-
-```cmake
-    ${CMAKE_CURRENT_SOURCE_DIR}/http_message_test.cpp
-```
-
-- [ ] **Step 4: Write the header with RewriteAuthority and the HttpFraming declaration.** Create `src/reflector/http_message.h`. (HttpFraming members are declared now so the whole class lands in one header; its body framing is implemented across the later tasks.)
-
-```cpp
-#pragma once
-
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <optional>
-#include <span>
-#include <string>
-#include <string_view>
-#include <vector>
-
-#include "reflector/ip_endpoint.h"
-
-namespace reflector {
-
-// Replaces the authority `from` (its formatted "addr:port", compared literally) with `to` wherever it
-// appears in `text` — one header value or an SSDP LOCATION line. Returns the rewritten copy; `text`
-// without `from`'s authority is returned unchanged. Host matching is byte-for-byte against the
-// formatted authority, so a host-only or different-port URL is left intact.
-[[nodiscard]] std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to);
-
-// Per-direction incremental HTTP/1.1 framing + header rewrite. Feed bytes; it appends forwardable
-// bytes (headers rewritten, body verbatim) to `out`. Header-block accumulation is bounded by
-// max_header_bytes (an oversized header block -> Error -> caller closes the connection). Handles
-// Content-Length, Transfer-Encoding: chunked (chunk DATA is opaque/forwarded verbatim — only the
-// chunk-size lines are parsed to find the terminating 0-chunk), and bodyless messages; loops for
-// keep-alive across messages on the same connection.
-class HttpFraming {
-public:
-    enum class Side : uint8_t { Request, Response };
-    enum class Status : uint8_t { NeedMore, Error };
-
-    // Called once per rewritable header (Request: Host; Response: Application-URL, Location — header
-    // name matched case-insensitively). `found` is the authority parsed from that header's value.
-    // Return the replacement authority, or nullopt to leave the header unchanged. Supplied by DialProxy.
-    using HeaderRewrite = std::function<std::optional<IpEndpoint>(Side side, const IpEndpoint& found)>;
-
-    HttpFraming(Side side, size_t max_header_bytes, HeaderRewrite rewrite);
-
-    // Consumes `in`, appending forwardable bytes to `out`. NeedMore = consumed cleanly, awaiting more
-    // bytes (the normal return); Error = a malformed message or an oversized header block — the caller
-    // closes the connection.
-    [[nodiscard]] Status Feed(std::span<const std::byte> in, std::vector<std::byte>& out);
-
-private:
-    // Two phases: accumulating the start line + header block, or streaming a body of a known shape.
-    enum class Phase : uint8_t { Header, BodyContentLength, BodyChunked, BodyChunkedDone };
-
-    // Drains `header_` once the blank-line terminator is seen: parses framing, runs the rewrites, and
-    // appends the rewritten header block to `out`. Returns false on a malformed/over-cap header block.
-    [[nodiscard]] bool FinishHeaderBlock(std::vector<std::byte>& out);
-    // Rewrites the matched headers in `block` (a mutable copy of the raw header text) in place.
-    void RewriteHeaders(std::string& block);
-
-    Side side_;
-    size_t max_header_bytes_;
-    HeaderRewrite rewrite_;
-
-    Phase phase_ = Phase::Header;
-    std::string header_;            // accumulated start line + header bytes for the in-flight message
-    size_t body_remaining_ = 0;     // Content-Length bytes still to forward
-    size_t chunk_remaining_ = 0;    // bytes of the current chunk's DATA (+CRLF) still to forward
-    std::string chunk_size_line_;   // partial chunk-size line being accumulated in the chunked body
-};
-
-} // namespace reflector
-```
-
-- [ ] **Step 5: Implement RewriteAuthority in the cpp.** Create `src/reflector/http_message.cpp` with just enough to pass Task 3.1 (HttpFraming follows in later tasks):
-
-```cpp
-#include "reflector/http_message.h"
-
-#include <algorithm>
-#include <cctype>
-#include <charconv>
-#include <cstring>
-#include <format>
-#include <utility>
-
-namespace reflector {
-
-std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to) {
-    const std::string from_authority = std::format("{}", from);
-    const std::string to_authority = std::format("{}", to);
-    std::string out;
-    out.reserve(text.size());
-    size_t pos = 0;
-    while (true) {
-        const size_t hit = text.find(from_authority, pos);
-        if (hit == std::string_view::npos) {
-            out.append(text.substr(pos));
-            return out;
-        }
-        out.append(text.substr(pos, hit - pos));
-        out.append(to_authority);
-        pos = hit + from_authority.size();
-    }
-}
-
-} // namespace reflector
-```
-
-- [ ] **Step 6: Build and run the RewriteAuthority cases.** `cmake --build build`, then `ctest --test-dir build -R 'RewriteAuthorityTest' --output-on-failure`. Expected PASS: all three `RewriteAuthorityTest` cases green.
-
-- [ ] **Step 7: Commit.**
-
-```sh
-git add src/reflector/http_message.h src/reflector/http_message.cpp src/reflector/CMakeLists.txt \
-        tests/http_message_test.cpp tests/CMakeLists.txt
-git commit -m "http_message: add RewriteAuthority authority substitution"
-```
-
-### Task 3.2: HttpFraming — Content-Length response with Application-URL rewrite
-
-The description-fetch response leg: a `Content-Length`-framed `200 OK` whose `Application-URL` header must be rewritten to the reflector authority while the body is forwarded byte-for-byte. This task lands the header-block accumulation, the `Content-Length` body shape, and the response-side rewrite (`Application-URL`, case-insensitive name).
-
-**Files**
-- Modify: `tests/http_message_test.cpp` (append `HttpFramingContentLengthTest` cases)
-- Modify: `src/reflector/http_message.cpp` (implement `HttpFraming` ctor, `Feed`, `FinishHeaderBlock`, `RewriteHeaders` for the header + `Content-Length` cases)
-
-- [ ] **Step 1: Write the failing Content-Length test.** Append to `tests/http_message_test.cpp`:
-
-```cpp
-namespace {
-
-// A rewrite that swaps the captured TV REST endpoint (10.1.3.80:36866) for a reflector authority, and
-// records what authorities it was offered — to assert which headers the framer surfaced.
-struct RecordingRewrite {
-    std::vector<IpEndpoint> seen;
-    std::optional<IpEndpoint> operator()(HttpFraming::Side, const IpEndpoint& found) {
-        seen.push_back(found);
-        if (found == IpEndpoint{IpAddress::FromV4Bytes(10, 1, 3, 80), 36866}) {
-            return IpEndpoint{IpAddress::FromV4Bytes(192, 168, 1, 2), 54321};
-        }
-        return std::nullopt;
-    }
-};
-
-} // namespace
-
-TEST(HttpFramingContentLengthTest, RewritesApplicationUrlAndForwardsBodyVerbatim) {
-    // The captured device-description response: Content-Length framing, an Application-URL header on the
-    // REST endpoint, and a relative-only XML body (so the body is forwarded untouched).
-    const std::string body =
-        "<?xml version=\"1.0\"?>"
-        "<root><device><friendlyName>LG TV</friendlyName>"
-        "<X_DIALEX_AppsListURL>/WebOS_Dial/apps</X_DIALEX_AppsListURL></device></root>";
-    const std::string message =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/xml\r\n"
-        "Application-URL: http://10.1.3.80:36866/apps\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
-        "\r\n" + body;
-
-    auto rewrite = std::make_shared<RecordingRewrite>();
-    HttpFraming framing(HttpFraming::Side::Response, 65536,
-                        [rewrite](HttpFraming::Side s, const IpEndpoint& f) { return (*rewrite)(s, f); });
-
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(message), out), HttpFraming::Status::NeedMore);
-
-    const std::string expected =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/xml\r\n"
-        "Application-URL: http://192.168.1.2:54321/apps\r\n"
-        "Content-Length: " + std::to_string(body.size()) + "\r\n"
-        "\r\n" + body;
-    EXPECT_EQ(Decode(out), expected);
-    // The framer offered exactly the one rewritable authority it found (Application-URL).
-    ASSERT_EQ(rewrite->seen.size(), 1u);
-    EXPECT_EQ(rewrite->seen[0], (IpEndpoint{IpAddress::FromV4Bytes(10, 1, 3, 80), 36866}));
-}
-
-TEST(HttpFramingContentLengthTest, MatchesApplicationUrlHeaderNameCaseInsensitively) {
-    const std::string message =
-        "HTTP/1.1 200 OK\r\n"
-        "application-url: http://10.1.3.80:36866/apps\r\n"
-        "Content-Length: 0\r\n"
-        "\r\n";
-    RecordingRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Response, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(message), out), HttpFraming::Status::NeedMore);
-    EXPECT_NE(Decode(out).find("application-url: http://192.168.1.2:54321/apps\r\n"), std::string::npos);
-}
-
-TEST(HttpFramingContentLengthTest, ReassemblesBodySplitAcrossFeeds) {
-    // A response delivered in two reads: the framer must hold framing state and forward the body as the
-    // bytes arrive, not require the whole message at once.
-    const std::string head =
-        "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab";
-    const std::string tail = "cde";
-    RecordingRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Response, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(head), out), HttpFraming::Status::NeedMore);
-    EXPECT_EQ(framing.Feed(AsBytes(tail), out), HttpFraming::Status::NeedMore);
-    EXPECT_EQ(Decode(out), "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nabcde");
-}
-```
-
-- [ ] **Step 2: Build and watch the link fail.** `cmake --build build`. Expected fail: link error — `undefined reference to reflector::HttpFraming::HttpFraming(...)` / `::Feed(...)` (the methods are declared but not yet defined).
-
-- [ ] **Step 3: Implement the ctor and the framing helpers.** Append to `src/reflector/http_message.cpp` (inside `namespace reflector`). This implements the header phase, `Content-Length` body, and the response-side rewrite; chunked/bodyless/request paths land in later tasks but the code is structured to grow into them without rework.
-
-```cpp
-namespace {
-
-constexpr std::string_view CRLF = "\r\n";
-constexpr std::string_view HEADER_TERMINATOR = "\r\n\r\n";
-
-// Lowercases an ASCII byte; used for case-insensitive header-name comparison.
-char Lower(char c) noexcept { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-
-// True if `line` begins with the header name `name` (case-insensitive on the name, which includes its
-// trailing ':'), so "application-url:" matches "Application-URL:".
-bool HeaderNameIs(std::string_view line, std::string_view name) noexcept {
-    if (line.size() < name.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < name.size(); ++i) {
-        if (Lower(line[i]) != Lower(name[i])) {
-            return false;
-        }
-    }
-    return true;
-}
-
-// Splits an "addr:port" authority out of a header value's first whitespace-trimmed token containing a
-// scheme. Returns the authority substring (host:port) of the first "http://host:port..." in `value`,
-// or nullopt when there is no scheme/authority. Only host:port forms with an explicit numeric port are
-// parsed — a bare-host or schemeless value yields nullopt and the header is left unchanged.
-std::optional<IpEndpoint> ParseAuthority(std::string_view value) {
-    constexpr std::string_view SCHEME = "http://";
-    const size_t scheme_at = value.find(SCHEME);
-    if (scheme_at == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const size_t host_at = scheme_at + SCHEME.size();
-    const size_t auth_end = value.find_first_of("/ \t\r", host_at);
-    const std::string_view authority =
-        value.substr(host_at, auth_end == std::string_view::npos ? std::string_view::npos : auth_end - host_at);
-    const size_t colon = authority.rfind(':');
-    if (colon == std::string_view::npos) {
-        return std::nullopt;  // no explicit port -> nothing this proxy advertises
-    }
-    const std::string host{authority.substr(0, colon)};
-    const auto addr = IpAddress::FromString(host);
-    if (!addr) {
-        return std::nullopt;
-    }
-    const std::string_view port_text = authority.substr(colon + 1);
-    unsigned port = 0;
-    const auto* begin = port_text.data();
-    const auto* end = port_text.data() + port_text.size();
-    if (std::from_chars(begin, end, port).ec != std::errc{} || port == 0 || port > 0xffff) {
-        return std::nullopt;
-    }
-    return IpEndpoint{*addr, static_cast<uint16_t>(port)};
-}
-
-// Trims leading optional whitespace (after the ':') from a header value.
-std::string_view TrimLeadingSpace(std::string_view value) noexcept {
-    const size_t first = value.find_first_not_of(" \t");
-    return first == std::string_view::npos ? std::string_view{} : value.substr(first);
-}
-
-} // namespace
-
-HttpFraming::HttpFraming(Side side, size_t max_header_bytes, HeaderRewrite rewrite)
-    : side_{side}, max_header_bytes_{max_header_bytes}, rewrite_{std::move(rewrite)} {}
-
-void HttpFraming::RewriteHeaders(std::string& block) {
-    // Rewrites the one or two authority headers this side cares about, in place, line by line. The
-    // start line and every other header are copied verbatim.
-    std::string rebuilt;
-    rebuilt.reserve(block.size());
-    size_t pos = 0;
-    while (pos < block.size()) {
-        size_t eol = block.find(CRLF, pos);
-        const bool last = eol == std::string::npos;
-        const std::string_view line =
-            std::string_view{block}.substr(pos, last ? std::string::npos : eol - pos);
-
-        const bool is_host = side_ == Side::Request && HeaderNameIs(line, "Host:");
-        const bool is_app_url = side_ == Side::Response && HeaderNameIs(line, "Application-URL:");
-        const bool is_location = side_ == Side::Response && HeaderNameIs(line, "Location:");
-
-        if (is_host || is_app_url || is_location) {
-            const size_t colon = line.find(':');
-            const std::string_view name = line.substr(0, colon + 1);
-            const std::string_view raw_value = line.substr(colon + 1);
-            const std::string_view value = TrimLeadingSpace(raw_value);
-            // Host: carries a bare "host:port" with no scheme; the URL headers carry an absoluteURI.
-            std::optional<IpEndpoint> found =
-                is_host ? ParseAuthority(std::string{"http://"} + std::string{value}) : ParseAuthority(value);
-            std::optional<IpEndpoint> replacement = found ? rewrite_(side_, *found) : std::nullopt;
-            if (found && replacement) {
-                rebuilt.append(name);
-                rebuilt.push_back(' ');
-                rebuilt.append(RewriteAuthority(value, *found, *replacement));
-            } else {
-                rebuilt.append(line);
-            }
-        } else {
-            rebuilt.append(line);
-        }
-        if (last) {
-            break;
-        }
-        rebuilt.append(CRLF);
-        pos = eol + CRLF.size();
-    }
-    block = std::move(rebuilt);
-}
-
-bool HttpFraming::FinishHeaderBlock(std::vector<std::byte>& out) {
-    // header_ holds the start line + headers + the terminating blank line. Determine body framing from
-    // the (pre-rewrite) header text, then emit the rewritten header block.
-    const std::string_view headers{header_};
-    size_t content_length = 0;
-    bool has_content_length = false;
-    bool chunked = false;
-    size_t pos = headers.find(CRLF);  // skip the start line
-    pos = pos == std::string_view::npos ? headers.size() : pos + CRLF.size();
-    while (pos < headers.size()) {
-        const size_t eol = headers.find(CRLF, pos);
-        const std::string_view line =
-            headers.substr(pos, eol == std::string_view::npos ? std::string_view::npos : eol - pos);
-        if (line.empty()) {
-            break;  // the blank line terminating the block
-        }
-        if (HeaderNameIs(line, "Content-Length:")) {
-            const std::string_view value = TrimLeadingSpace(line.substr(line.find(':') + 1));
-            unsigned parsed = 0;
-            const auto* begin = value.data();
-            const auto* end = value.data() + value.size();
-            if (std::from_chars(begin, end, parsed).ec != std::errc{}) {
-                return false;
-            }
-            content_length = parsed;
-            has_content_length = true;
-        } else if (HeaderNameIs(line, "Transfer-Encoding:")) {
-            const std::string_view value = line.substr(line.find(':') + 1);
-            chunked = value.find("chunked") != std::string_view::npos
-                   || value.find("Chunked") != std::string_view::npos;
-        }
-        if (eol == std::string_view::npos) {
-            break;
-        }
-        pos = eol + CRLF.size();
-    }
-
-    std::string block = std::move(header_);
-    header_.clear();
-    RewriteHeaders(block);
-    const auto* block_bytes = reinterpret_cast<const std::byte*>(block.data());
-    out.insert(out.end(), block_bytes, block_bytes + block.size());
-
-    if (chunked) {
-        phase_ = Phase::BodyChunked;
-        chunk_remaining_ = 0;
-        chunk_size_line_.clear();
-    } else if (has_content_length && content_length > 0) {
-        phase_ = Phase::BodyContentLength;
-        body_remaining_ = content_length;
-    } else {
-        phase_ = Phase::Header;  // bodyless: ready for the next pipelined message
-    }
-    return true;
-}
-
-HttpFraming::Status HttpFraming::Feed(std::span<const std::byte> in, std::vector<std::byte>& out) {
-    std::string_view input{reinterpret_cast<const char*>(in.data()), in.size()};
-    while (!input.empty()) {
-        switch (phase_) {
-            case Phase::Header: {
-                // Accumulate until the blank-line terminator, bounded by max_header_bytes_.
-                const size_t want = input.size();
-                if (header_.size() + want > max_header_bytes_) {
-                    // Only over-cap if the terminator isn't already within the budget.
-                    header_.append(input.substr(0, max_header_bytes_ - header_.size() + HEADER_TERMINATOR.size()));
-                    if (header_.find(HEADER_TERMINATOR) == std::string::npos) {
-                        return Status::Error;
-                    }
-                } else {
-                    header_.append(input);
-                }
-                const size_t term = header_.find(HEADER_TERMINATOR);
-                if (term == std::string::npos) {
-                    if (header_.size() > max_header_bytes_) {
-                        return Status::Error;
-                    }
-                    return Status::NeedMore;  // need more header bytes
-                }
-                // Everything past the terminator is body/next-message; rewind `input` to it.
-                const size_t header_len = term + HEADER_TERMINATOR.size();
-                const size_t consumed_from_input = header_len - (header_.size() - want);
-                header_.resize(header_len);
-                input = input.substr(consumed_from_input);
-                if (!FinishHeaderBlock(out)) {
-                    return Status::Error;
-                }
-                break;
-            }
-            case Phase::BodyContentLength: {
-                const size_t take = std::min(body_remaining_, input.size());
-                const auto* p = reinterpret_cast<const std::byte*>(input.data());
-                out.insert(out.end(), p, p + take);
-                input = input.substr(take);
-                body_remaining_ -= take;
-                if (body_remaining_ == 0) {
-                    phase_ = Phase::Header;  // keep-alive: ready for the next message
-                }
-                break;
-            }
-            case Phase::BodyChunked:
-            case Phase::BodyChunkedDone:
-                // Implemented in Task 3.3.
-                return Status::Error;
-        }
-    }
-    return Status::NeedMore;
-}
-```
-
-- [ ] **Step 4: Build and run the Content-Length cases.** `cmake --build build`, then `ctest --test-dir build -R 'HttpFramingContentLengthTest' --output-on-failure`. Expected PASS: all three `HttpFramingContentLengthTest` cases green (Application-URL rewritten authority-only, case-insensitive name match, split-feed reassembly with the body byte-exact).
-
-- [ ] **Step 5: Commit.**
-
-```sh
-git add src/reflector/http_message.cpp tests/http_message_test.cpp
-git commit -m "http_message: frame Content-Length responses and rewrite Application-URL"
-```
-
-### Task 3.3: HttpFraming — chunked response with a Location rewrite
-
-The launch leg: a `Transfer-Encoding: chunked` `201 Created` whose `LOCATION` header (upper-case in the capture) must be rewritten while the chunk DATA is forwarded verbatim and only the chunk-size lines are parsed to find the terminating `0`-chunk.
-
-**Files**
-- Modify: `tests/http_message_test.cpp` (append `HttpFramingChunkedTest` cases)
-- Modify: `src/reflector/http_message.cpp` (implement the `Phase::BodyChunked` / `BodyChunkedDone` arms of `Feed`)
-
-- [ ] **Step 1: Write the failing chunked test.** Append to `tests/http_message_test.cpp`:
-
-```cpp
-TEST(HttpFramingChunkedTest, RewritesUppercaseLocationAndForwardsChunksVerbatim) {
-    // The captured launch response: 201 with an upper-case LOCATION on the REST endpoint and a chunked
-    // body. Chunk-size lines and DATA are forwarded byte-for-byte; only LOCATION's authority changes.
-    const std::string message =
-        "HTTP/1.1 201 Created\r\n"
-        "LOCATION: http://10.1.3.80:36866/apps/YouTube/run\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "\r\n"
-        "1a\r\n<service><ok>true</ok></s>\r\n"
-        "0\r\n\r\n";
-    RecordingRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Response, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(message), out), HttpFraming::Status::NeedMore);
-
-    const std::string expected =
-        "HTTP/1.1 201 Created\r\n"
-        "LOCATION: http://192.168.1.2:54321/apps/YouTube/run\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "\r\n"
-        "1a\r\n<service><ok>true</ok></s>\r\n"
-        "0\r\n\r\n";
-    EXPECT_EQ(Decode(out), expected);
-}
-
-TEST(HttpFramingChunkedTest, ReassemblesChunkBoundariesSplitAcrossFeeds) {
-    // Chunk framing must survive a feed boundary landing mid-size-line and mid-data.
-    RecordingRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Response, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab"), out),
-        HttpFraming::Status::NeedMore);
-    EXPECT_EQ(framing.Feed(AsBytes("cde\r\n0\r\n\r\n"), out), HttpFraming::Status::NeedMore);
-    EXPECT_EQ(Decode(out),
-        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n0\r\n\r\n");
-}
-```
-
-- [ ] **Step 2: Build and watch the chunked cases fail.** `cmake --build build`, then `ctest --test-dir build -R 'HttpFramingChunkedTest' --output-on-failure`. Expected fail: the chunked arm currently returns `Status::Error`, so `Feed` returns `Error` (≠ `NeedMore`) and the cases fail.
-
-- [ ] **Step 3: Add chunk-size-line accumulation state.** In `src/reflector/http_message.h`, the `chunk_size_line_` and `chunk_remaining_` members already exist (Step 4 of Task 3.1) — no header change needed. Replace the placeholder chunked arm in `Feed` (the `case Phase::BodyChunked: case Phase::BodyChunkedDone:` block from Task 3.2) with the implementation:
-
-```cpp
-            case Phase::BodyChunked: {
-                if (chunk_remaining_ > 0) {
-                    // Streaming the current chunk's DATA + its trailing CRLF, opaque.
-                    const size_t take = std::min(chunk_remaining_, input.size());
-                    const auto* p = reinterpret_cast<const std::byte*>(input.data());
-                    out.insert(out.end(), p, p + take);
-                    input = input.substr(take);
-                    chunk_remaining_ -= take;
-                    break;
-                }
-                // Accumulate a chunk-size line (up to its CRLF), forwarding it verbatim once complete.
-                const size_t eol = input.find(CRLF);
-                if (eol == std::string_view::npos) {
-                    chunk_size_line_.append(input);
-                    input = {};
-                    return Status::NeedMore;  // size line spans feeds
-                }
-                chunk_size_line_.append(input.substr(0, eol));
-                const std::string size_line = chunk_size_line_ + std::string{CRLF};
-                chunk_size_line_.clear();
-                input = input.substr(eol + CRLF.size());
-
-                // Parse the hex chunk size (ignore any chunk extensions after ';').
-                std::string_view digits{size_line};
-                digits = digits.substr(0, digits.find_first_of(";\r"));
-                size_t size = 0;
-                const auto* begin = digits.data();
-                const auto* end = digits.data() + digits.size();
-                if (std::from_chars(begin, end, size, 16).ec != std::errc{}) {
-                    return Status::Error;
-                }
-                const auto* sp = reinterpret_cast<const std::byte*>(size_line.data());
-                out.insert(out.end(), sp, sp + size_line.size());
-                if (size == 0) {
-                    phase_ = Phase::BodyChunkedDone;  // forward the trailing CRLF, then loop
-                } else {
-                    chunk_remaining_ = size + CRLF.size();  // chunk DATA + its terminating CRLF
-                }
-                break;
-            }
-            case Phase::BodyChunkedDone: {
-                // Forward the final CRLF that closes the chunked body, then return to header phase.
-                const size_t take = std::min<size_t>(CRLF.size(), input.size());
-                const auto* p = reinterpret_cast<const std::byte*>(input.data());
-                out.insert(out.end(), p, p + take);
-                input = input.substr(take);
-                if (take == CRLF.size()) {
-                    phase_ = Phase::Header;  // keep-alive: next message
-                }
-                break;
-            }
-```
-
-- [ ] **Step 4: Build and run the chunked cases.** `cmake --build build`, then `ctest --test-dir build -R 'HttpFramingChunkedTest' --output-on-failure`. Expected PASS: both `HttpFramingChunkedTest` cases green — `LOCATION` authority rewritten, chunk-size lines and DATA byte-for-byte intact across the split feed.
-
-- [ ] **Step 5: Commit.**
-
-```sh
-git add src/reflector/http_message.cpp tests/http_message_test.cpp
-git commit -m "http_message: stream chunked bodies and rewrite Location"
-```
-
-### Task 3.4: HttpFraming — bodyless request Host rewrite, oversized header refusal, keep-alive pipelining
-
-The remaining behaviors: a bodyless `GET` request with its `Host` rewritten on the request side; an over-cap header block refused with `Status::Error`; and two pipelined keep-alive messages framed back-to-back in one `Feed`. The implementation from Tasks 3.2–3.3 already covers these (request-side `Host` in `RewriteHeaders`, the `max_header_bytes_` guard in the header phase, and the `Phase::Header` reset after each body) — so this task is a test-only proof that locks the behavior in.
-
-**Files**
-- Modify: `tests/http_message_test.cpp` (append `HttpFramingMiscTest` cases)
-
-- [ ] **Step 1: Write the failing tests.** Append to `tests/http_message_test.cpp`. The request rewrite swaps the captured TV description endpoint (`10.1.3.80:1461`) in `Host`:
-
-```cpp
-namespace {
-
-// A request-side rewrite swapping the description endpoint's authority for the reflector listener
-// authority the client actually connected to.
-struct HostRewrite {
-    std::optional<IpEndpoint> operator()(HttpFraming::Side, const IpEndpoint& found) {
-        if (found == IpEndpoint{IpAddress::FromV4Bytes(10, 1, 3, 80), 1461}) {
-            return IpEndpoint{IpAddress::FromV4Bytes(192, 168, 1, 2), 40000};
-        }
-        return std::nullopt;
-    }
-};
-
-} // namespace
-
-TEST(HttpFramingMiscTest, RewritesHostOnBodylessGetRequest) {
-    // The captured description GET: bodyless, keep-alive, Host carries the device authority the client
-    // reached the reflector listener for. The reverse (request) leg rewrites Host back to the device.
-    const std::string message =
-        "GET / HTTP/1.1\r\n"
-        "Host: 10.1.3.80:1461\r\n"
-        "Connection: keep-alive\r\n"
-        "\r\n";
-    HostRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Request, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(message), out), HttpFraming::Status::NeedMore);
-    EXPECT_EQ(Decode(out),
-        "GET / HTTP/1.1\r\n"
-        "Host: 10.1.3.80:1461\r\n"  // placeholder; replaced below by the rewritten expectation
-        "Connection: keep-alive\r\n"
-        "\r\n");
-}
-
-TEST(HttpFramingMiscTest, RefusesOversizedHeaderBlock) {
-    // A header block larger than the cap (no terminator within budget) is refused so the connection is
-    // closed — the only unbounded-buffer risk, since bodies are streamed.
-    std::string message = "GET / HTTP/1.1\r\nX-Pad: ";
-    message.append(200, 'a');  // overflow the tiny cap with no terminating blank line yet
-    HostRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Request, /*max_header_bytes=*/64, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(message), out), HttpFraming::Status::Error);
-}
-
-TEST(HttpFramingMiscTest, FramesTwoPipelinedKeepAliveMessages) {
-    // Two responses on one keep-alive connection in a single Feed: a Content-Length body then a
-    // bodyless 204. Each Application-URL is rewritten; the framer returns to header phase between them.
-    const std::string first =
-        "HTTP/1.1 200 OK\r\n"
-        "Application-URL: http://10.1.3.80:36866/apps\r\n"
-        "Content-Length: 2\r\n"
-        "\r\nhi";
-    const std::string second =
-        "HTTP/1.1 204 No Content\r\n"
-        "Application-URL: http://10.1.3.80:36866/apps\r\n"
-        "\r\n";
-    RecordingRewrite rewrite;
-    HttpFraming framing(HttpFraming::Side::Response, 65536, std::ref(rewrite));
-    std::vector<std::byte> out;
-    EXPECT_EQ(framing.Feed(AsBytes(first + second), out), HttpFraming::Status::NeedMore);
-    EXPECT_EQ(Decode(out),
-        "HTTP/1.1 200 OK\r\n"
-        "Application-URL: http://192.168.1.2:54321/apps\r\n"
-        "Content-Length: 2\r\n"
-        "\r\nhi"
-        "HTTP/1.1 204 No Content\r\n"
-        "Application-URL: http://192.168.1.2:54321/apps\r\n"
-        "\r\n");
-    // Both messages' Application-URL headers were surfaced to the rewrite.
-    EXPECT_EQ(rewrite.seen.size(), 2u);
-}
-```
-
-- [ ] **Step 2: Fix the Host-rewrite expectation to assert the rewritten bytes.** The placeholder line above is wrong on purpose so the test fails first; correct it to the post-rewrite authority before running. Replace the `RewritesHostOnBodylessGetRequest` expected block's `Host:` line:
-
-```cpp
-    EXPECT_EQ(Decode(out),
-        "GET / HTTP/1.1\r\n"
-        "Host: 192.168.1.2:40000\r\n"
-        "Connection: keep-alive\r\n"
-        "\r\n");
-```
-
-- [ ] **Step 3: Build and run the misc cases.** `cmake --build build`, then `ctest --test-dir build -R 'HttpFramingMiscTest' --output-on-failure`. Expected PASS: all three cases — `Host` rewritten on the request leg, the over-cap header block returns `Status::Error`, and the two pipelined keep-alive messages are framed with both `Application-URL` headers rewritten and the boundary handled.
-
-- [ ] **Step 4: Run the whole unit suite to confirm nothing regressed.** `ctest --test-dir build -L unit --output-on-failure`. Expected PASS: the full suite green, including all `RewriteAuthorityTest`, `HttpFramingContentLengthTest`, `HttpFramingChunkedTest`, and `HttpFramingMiscTest` cases.
-
-- [ ] **Step 5: Commit.**
-
-```sh
-git add tests/http_message_test.cpp
-git commit -m "http_message: cover Host rewrite, header cap, and keep-alive pipelining"
-```
+Review also extracted the shared ASCII helpers into `util/ascii.h` (`AsciiToLower`, `StartsWithNoCase`), de-duplicating identical copies in `ssdp_message.cpp` and `config.cpp`, and caught a latent header-cap body-truncation bug (fixed, with a regression test).
 
 ## Commit 4: dial_proxy — DialProxy orchestrator (drop-and-close backpressure)
 
@@ -2119,7 +1377,7 @@ private:
         IpEndpoint upstream_device;
     };
 
-    // Rest-role variant used by the response-side HeaderRewrite when it rewrites Application-URL/201.
+    // Rest-role variant used by the response-side EndpointRewrite when it rewrites Application-URL/201.
     [[nodiscard]] std::optional<IpEndpoint> EnsureRestListener(IpEndpoint device);
     [[nodiscard]] std::optional<IpEndpoint> EnsureListener(IpEndpoint device, Role role);
 
@@ -2363,7 +1621,7 @@ class DialProxyRestPeek;  // test seam: invokes the private EnsureRestListener
 ```cpp
 } // namespace  (close the earlier anon namespace before the class, if needed)
 
-// Test seam: reaches DialProxy's private EnsureRestListener (the response-side HeaderRewrite path).
+// Test seam: reaches DialProxy's private EnsureRestListener (the response-side EndpointRewrite path).
 class DialProxyRestPeek {
 public:
     explicit DialProxyRestPeek(DialProxy& proxy) : proxy_{&proxy} {}
@@ -2617,7 +1875,7 @@ Expected (with privilege): `AcceptStartsAnUpstreamConnect...` etc. FAIL (`Regist
 ```cpp
 namespace {
 
-// The fixed header set the proxy rewrites, expressed as the HeaderRewrite the HttpFraming calls per
+// The fixed header set the proxy rewrites, expressed as the EndpointRewrite the HttpFraming calls per
 // rewritable header. Request side: swap any Host matching the upstream device to that same device
 // (identity is fine — the upstream expects its own authority; rewriting Host is a no-op authority swap
 // here, kept for symmetry/explicitness). Response side: Application-URL/Location -> a REST listener.
@@ -2655,13 +1913,13 @@ void DialProxy::StartConnection(Endpoint& endpoint, TcpSocket client) {
 
     // Request side: rewrite Host naming the upstream device to the upstream device (identity swap;
     // the device expects its own authority). Returns the device endpoint for any matched authority.
-    HttpFraming::HeaderRewrite request_rewrite =
+    HttpFraming::EndpointRewrite request_rewrite =
         [upstream_device](HttpFraming::Side, const IpEndpoint&) -> std::optional<IpEndpoint> {
             return upstream_device;
         };
     // Response side: Application-URL / 201 Location naming the upstream device -> a REST listener's
     // reflector authority (spun up on first sight). nullopt (cap/bind) leaves the header unchanged.
-    HttpFraming::HeaderRewrite response_rewrite =
+    HttpFraming::EndpointRewrite response_rewrite =
         [this](HttpFraming::Side, const IpEndpoint& found) -> std::optional<IpEndpoint> {
             return EnsureRestListener(found);
         };
