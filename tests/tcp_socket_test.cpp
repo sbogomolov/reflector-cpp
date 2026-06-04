@@ -200,8 +200,8 @@ TEST_P(TcpSocketFamilyTest, SendBuffersTheTailAndFlushDrainsItInOrder) {
     // Every byte sent carries a continuing 0..255 ramp, so the receiver can verify exact ORDER and
     // content — not merely the byte count.
     uint8_t next = 0;
-    auto next_chunk = [&next] {
-        std::vector<std::byte> c(4 * 1024);
+    auto next_chunk = [&next](size_t size) {
+        std::vector<std::byte> c(size);
         for (std::byte& b : c) {
             b = std::byte{next++};
         }
@@ -211,15 +211,16 @@ TEST_P(TcpSocketFamilyTest, SendBuffersTheTailAndFlushDrainsItInOrder) {
 
     // The server never reads, so keep sending until the kernel buffer fills and Send must buffer a tail.
     while (!pair->client.WantsWrite()) {
-        const auto chunk = next_chunk();
+        const auto chunk = next_chunk(4 * 1024);
         ASSERT_EQ(pair->client.Send(chunk), SendStatus::Ok);
         sent.insert(sent.end(), chunk.begin(), chunk.end());
         ASSERT_LT(sent.size(), 16u * 1024u * 1024u) << "kernel buffer never filled";
     }
-    // A few more sends with the buffer already non-empty exercise the append-in-order path (Send skips
-    // the write-through and the tail must follow the backlog).
+    // A few more small sends with the buffer already non-empty exercise the append-in-order path (Send skips
+    // the write-through and the tail follows the backlog) — kept well under MAX_SEND_BUFFER alongside the
+    // already-buffered tail.
     for (int i = 0; i < 3; ++i) {
-        const auto chunk = next_chunk();
+        const auto chunk = next_chunk(512);
         ASSERT_EQ(pair->client.Send(chunk), SendStatus::Ok);
         sent.insert(sent.end(), chunk.begin(), chunk.end());
     }
@@ -253,8 +254,8 @@ TEST_P(TcpSocketFamilyTest, SendBeyondCapAborts) {
     auto pair = EstablishedPair();
     ASSERT_TRUE(pair.has_value());
 
-    // The server never reads: once the kernel buffer fills, the SendBuffer grows by each chunk until it
-    // exceeds the cap -> Send returns Overflow (the owner drops the connection).
+    // The server never reads: once the kernel buffer fills, the send buffer fills with each chunk until the
+    // next would exceed the cap -> Send returns Overflow (the owner drops the connection).
     const std::vector<std::byte> chunk(8 * 1024, std::byte{0x42});
     for (int i = 0; i < 100000; ++i) {
         const auto status = pair->client.Send(chunk);

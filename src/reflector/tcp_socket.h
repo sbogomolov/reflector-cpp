@@ -2,7 +2,7 @@
 
 #include "reflector/ip_endpoint.h"
 #include "reflector/util/no_copy.h"
-#include "reflector/util/send_buffer.h"
+#include "reflector/util/stream_buffer.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -91,13 +91,13 @@ private:
     // WouldBlock (0 bytes) when the kernel buffer is full, or Error on a fatal failure.
     [[nodiscard]] IoResult WriteSome(std::span<const std::byte> data) noexcept;
 
-    // Outbound-buffer cap: a Send whose tail would exceed this aborts the connection (drop-and-close).
-    // Sits well above any single DIAL message (a device-description XML is a few KB) — the proxy carries
-    // only small HTTP control messages — while bounding per-connection memory; mostly a stall/DoS valve.
-    static constexpr size_t MAX_SEND_BUFFER = 64 * 1024;
+    // Outbound-buffer cap: a Send whose tail would exceed this aborts the connection (drop-and-close). DIAL
+    // carries only small control messages (a device-description XML is a few KB), so a few messages' worth is
+    // ample — falling this far behind means the peer has stalled, and giving up beats buffering ever more.
+    static constexpr size_t MAX_SEND_BUFFER = 8 * 1024;
 
     // Members largest-first so the struct's only padding is at the end.
-    SendBuffer send_buffer_;
+    StreamBuffer send_buffer_{MAX_SEND_BUFFER};
     int fd_ = -1;
     bool connecting_ = false;
 };

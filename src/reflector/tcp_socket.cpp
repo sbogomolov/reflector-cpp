@@ -229,7 +229,8 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
 SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
     // Only write directly when nothing is already queued — otherwise the tail must follow the backlog in
     // order.
-    if (send_buffer_.Empty()) {
+    const bool was_buffering = !send_buffer_.Empty();
+    if (!was_buffering) {
         const IoResult wrote = WriteSome(data);
         if (wrote.status == IoStatus::Error) {
             return SendStatus::Error;
@@ -239,14 +240,17 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
             return SendStatus::Ok;
         }
     }
-    if (send_buffer_.Size() + data.size() > MAX_SEND_BUFFER) {
-        return SendStatus::Overflow;  // owner aborts the connection (drop-and-close)
+    if (!send_buffer_.Append(data)) {
+        return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
-    send_buffer_.Append(data);
+    if (!was_buffering) {
+        GetLogger().Info("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+    }
     return SendStatus::Ok;
 }
 
 SendStatus TcpSocket::Flush() noexcept {
+    const bool was_buffering = !send_buffer_.Empty();
     while (!send_buffer_.Empty()) {
         const IoResult wrote = WriteSome(send_buffer_.View());
         if (wrote.status == IoStatus::Error) {
@@ -256,6 +260,9 @@ SendStatus TcpSocket::Flush() noexcept {
             break;  // WouldBlock (the only zero-byte result here) — resume on the next writable edge
         }
         send_buffer_.Consume(wrote.bytes);
+    }
+    if (was_buffering && send_buffer_.Empty()) {
+        GetLogger().Info("fd {}: send buffer drained, resumed direct writes", fd_);
     }
     return SendStatus::Ok;
 }
