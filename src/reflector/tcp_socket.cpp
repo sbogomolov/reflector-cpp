@@ -223,6 +223,15 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
+#if defined(__APPLE__)
+    // A write to a still-connecting socket returns ENOTCONN on macOS (Linux returns EWOULDBLOCK, handled
+    // above). Only while connecting does it mean "not ready yet": treat it as WouldBlock so the tail buffers
+    // and the connect-completion writable edge flushes it, matching Linux. Gated on connecting_ so an
+    // ENOTCONN on an established socket stays a real Error; a failed connect is still caught by FinishConnect.
+    if (connecting_ && errno == ENOTCONN) {
+        return {IoStatus::WouldBlock, 0};
+    }
+#endif
     return {IoStatus::Error, 0};
 }
 
