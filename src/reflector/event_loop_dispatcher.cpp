@@ -309,6 +309,7 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     }
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
+        GetLogger().Error("Cannot set events for fd {}: not registered", fd);
         return false;
     }
     // Refuse to arm write with no write handler: a writable fd with nothing to invoke would busy-spin
