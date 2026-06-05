@@ -59,11 +59,8 @@ protected:
         if (!listener) {
             return std::nullopt;
         }
-        const auto local = listener->LocalEndpoint();
-        if (!local) {
-            return std::nullopt;
-        }
-        auto client = TcpSocket::Connect(*local, {Loopback(), 0});
+        const auto& local = listener->LocalEndpoint();
+        auto client = TcpSocket::Connect(local, {Loopback(), 0});
         if (!client || !WaitReadable(listener->Fd())) {
             return std::nullopt;
         }
@@ -82,10 +79,10 @@ INSTANTIATE_TEST_SUITE_P(Families, TcpSocketFamilyTest,
 TEST_P(TcpSocketFamilyTest, ListenAssignsAnEphemeralPort) {
     auto listener = TcpSocket::Listen({Loopback(), 0});
     ASSERT_TRUE(listener.has_value());
-    const auto local = listener->LocalEndpoint();
-    ASSERT_TRUE(local.has_value());
-    EXPECT_EQ(local->addr, Loopback());
-    EXPECT_NE(local->port, 0);
+    const auto& local = listener->LocalEndpoint();
+    EXPECT_EQ(local.addr, Loopback());
+    EXPECT_NE(local.port, 0);
+    EXPECT_FALSE(listener->PeerEndpoint().has_value());  // a listener has no connected peer
 }
 
 TEST_P(TcpSocketFamilyTest, MoveTransfersTheFdAndInvalidatesTheSource) {
@@ -104,10 +101,9 @@ TEST_P(TcpSocketFamilyTest, MoveTransfersTheFdAndInvalidatesTheSource) {
 TEST_P(TcpSocketFamilyTest, MoveConstructionTransfersConnectingState) {
     auto listener = TcpSocket::Listen({Loopback(), 0});
     ASSERT_TRUE(listener.has_value());
-    const auto local = listener->LocalEndpoint();
-    ASSERT_TRUE(local.has_value());
+    const auto& local = listener->LocalEndpoint();
 
-    auto client = TcpSocket::Connect(*local, {Loopback(), 0});
+    auto client = TcpSocket::Connect(local, {Loopback(), 0});
     ASSERT_TRUE(client.has_value());
     ASSERT_TRUE(client->IsConnecting());
 
@@ -147,10 +143,9 @@ TEST_P(TcpSocketFamilyTest, SelfMoveAssignmentIsANoOp) {
 TEST_P(TcpSocketFamilyTest, ConnectStartsConnectingThenFinishConnectEstablishes) {
     auto listener = TcpSocket::Listen({Loopback(), 0});
     ASSERT_TRUE(listener.has_value());
-    const auto local = listener->LocalEndpoint();
-    ASSERT_TRUE(local.has_value());
+    const auto& local = listener->LocalEndpoint();
 
-    auto client = TcpSocket::Connect(*local, {Loopback(), 0});
+    auto client = TcpSocket::Connect(local, {Loopback(), 0});
     ASSERT_TRUE(client.has_value());
     EXPECT_TRUE(client->IsConnecting());  // the CONNECTING start, asserted directly (not laundered through a helper)
     EXPECT_TRUE(client->WantsWrite());    // connecting wants the writable edge
@@ -277,13 +272,13 @@ TEST_P(TcpSocketFamilyTest, AcceptWithNoPendingConnectionReturnsNullopt) {
 TEST_P(TcpSocketFamilyTest, PeerEndpointMatchesTheOtherSidesLocalEndpoint) {
     auto pair = EstablishedPair();
     ASSERT_TRUE(pair.has_value());
-    const auto client_local = pair->client.LocalEndpoint();
-    const auto client_peer = pair->client.PeerEndpoint();
-    const auto server_local = pair->server.LocalEndpoint();
-    const auto server_peer = pair->server.PeerEndpoint();
-    ASSERT_TRUE(client_local && client_peer && server_local && server_peer);
-    EXPECT_EQ(*client_peer, *server_local);
-    EXPECT_EQ(*server_peer, *client_local);
+    const auto& client_local = pair->client.LocalEndpoint();
+    const auto& client_peer = pair->client.PeerEndpoint();
+    const auto& server_local = pair->server.LocalEndpoint();
+    const auto& server_peer = pair->server.PeerEndpoint();
+    ASSERT_TRUE(client_peer.has_value() && server_peer.has_value());
+    EXPECT_EQ(*client_peer, server_local);
+    EXPECT_EQ(*server_peer, client_local);
 }
 
 TEST_P(TcpSocketFamilyTest, ConnectToARefusedPortFails) {
@@ -291,12 +286,11 @@ TEST_P(TcpSocketFamilyTest, ConnectToARefusedPortFails) {
     auto listener = TcpSocket::Listen({Loopback(), 0});
     ASSERT_TRUE(listener.has_value());
     const auto dead = listener->LocalEndpoint();
-    ASSERT_TRUE(dead.has_value());
     listener->Close();
 
     // The refusal surfaces either synchronously (Connect -> nullopt, common on loopback) or, if the
     // connect started, on the writable edge as FinishConnect -> Error with connecting_ left set.
-    auto client = TcpSocket::Connect(*dead, {Loopback(), 0});
+    auto client = TcpSocket::Connect(dead, {Loopback(), 0});
     if (!client.has_value()) {
         SUCCEED() << "refused synchronously at connect()";
         return;
@@ -339,12 +333,11 @@ TEST_F(TcpSocketRequiresRootTest, EgressPinnedConnectReachesLoopback) {
 
     auto listener = TcpSocket::Listen({IpAddress::LoopbackV4(), 0});
     ASSERT_TRUE(listener.has_value());
-    const auto local = listener->LocalEndpoint();
-    ASSERT_TRUE(local.has_value());
+    const auto& local = listener->LocalEndpoint();
 
     // ifindex != 0 exercises PinEgress (SO_BINDTODEVICE / IP_BOUND_IF); pinned to lo, the loopback
     // connect still completes.
-    auto client = TcpSocket::Connect(*local, {IpAddress::LoopbackV4(), 0}, ifindex);
+    auto client = TcpSocket::Connect(local, {IpAddress::LoopbackV4(), 0}, ifindex);
     ASSERT_TRUE(client.has_value());
 
     ASSERT_TRUE(WaitReadable(listener->Fd()));

@@ -78,14 +78,18 @@ public:
     // this to Dispatcher::SetWriteInterest.
     [[nodiscard]] bool WantsWrite() const noexcept { return connecting_ || !send_buffer_.Empty(); }
 
-    [[nodiscard]] std::optional<IpEndpoint> LocalEndpoint() const noexcept;  // getsockname
-    [[nodiscard]] std::optional<IpEndpoint> PeerEndpoint() const noexcept;   // getpeername
+    // The socket's endpoints, captured once at construction (Listen/Connect/Accept) — no syscall, returned by
+    // reference (no copy). Local is always known; peer is empty for a listener (it has no connected peer).
+    [[nodiscard]] const IpEndpoint& LocalEndpoint() const noexcept { return local_; }
+    [[nodiscard]] const std::optional<IpEndpoint>& PeerEndpoint() const noexcept { return peer_; }
 
     void Close() noexcept;
 
 private:
-    // Wraps an owned fd; `connecting` is true only for a Connect() socket awaiting completion.
-    explicit TcpSocket(int fd, bool connecting = false) noexcept;
+    // Wraps an owned fd with its endpoints, known at construction (`peer` empty for a listener); `connecting`
+    // is true only for a Connect() socket awaiting completion.
+    TcpSocket(int fd, const IpEndpoint& local, const std::optional<IpEndpoint>& peer,
+        bool connecting = false) noexcept;
 
     // Write as much of `data` as the kernel takes now (SIGPIPE-safe): Ok with the bytes written,
     // WouldBlock (0 bytes) when the kernel buffer is full, or Error on a fatal failure.
@@ -100,6 +104,8 @@ private:
 
     // Members largest-first so the struct's only padding is at the end.
     StreamBuffer send_buffer_{MAX_SEND_BUFFER};
+    IpEndpoint local_;                // bound addr (Listen) / connect source / accept local — always known
+    std::optional<IpEndpoint> peer_;  // the connected peer; empty for a listener
     int fd_ = -1;
     bool connecting_ = false;
 };

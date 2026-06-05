@@ -64,11 +64,25 @@ Logger& GetLogger() noexcept {
     return true;
 }
 
+// getsockname as an IpEndpoint; nullopt on syscall/parse failure. The factories call this once to capture
+// the local endpoint at construction, so LocalEndpoint() needs no syscall.
+[[nodiscard]] std::optional<IpEndpoint> LocalNameOf(int fd) noexcept {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        GetLogger().Error("Cannot read local endpoint for fd {}: {}", fd, Error::FromErrno());
+        return std::nullopt;
+    }
+    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
+}
+
 } // namespace
 
 namespace reflector {
 
-TcpSocket::TcpSocket(int fd, bool connecting) noexcept : fd_{fd}, connecting_{connecting} {}
+TcpSocket::TcpSocket(int fd, const IpEndpoint& local, const std::optional<IpEndpoint>& peer,
+    bool connecting) noexcept
+        : local_{local}, peer_{peer}, fd_{fd}, connecting_{connecting} {}
 
 TcpSocket::~TcpSocket() noexcept {
     Close();
@@ -76,6 +90,8 @@ TcpSocket::~TcpSocket() noexcept {
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
         : send_buffer_{std::move(other.send_buffer_)},
+          local_{std::move(other.local_)},
+          peer_{std::move(other.peer_)},
           fd_{std::exchange(other.fd_, -1)},
           connecting_{std::exchange(other.connecting_, false)} {}
 
@@ -83,6 +99,8 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         Close();
         send_buffer_ = std::move(other.send_buffer_);
+        local_ = std::move(other.local_);
+        peer_ = std::move(other.peer_);
         fd_ = std::exchange(other.fd_, -1);
         connecting_ = std::exchange(other.connecting_, false);
     }
@@ -121,7 +139,12 @@ std::optional<TcpSocket> TcpSocket::Listen(const IpEndpoint& bind) {
         ::close(fd);
         return std::nullopt;
     }
-    return TcpSocket{fd};
+    auto local = LocalNameOf(fd);  // the now-bound addr:ephemeral-port (LocalNameOf logs on failure)
+    if (!local) {
+        ::close(fd);
+        return std::nullopt;
+    }
+    return TcpSocket{fd, *local, std::nullopt};  // a listener has no peer
 }
 
 std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const IpEndpoint& bind, unsigned ifindex) {
@@ -149,16 +172,24 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const IpEndpo
         ::close(fd);
         return std::nullopt;
     }
+    // connect() has assigned the local endpoint; the peer is dst (getpeername would fail until connected).
+    auto local = LocalNameOf(fd);
+    if (!local) {
+        ::close(fd);
+        return std::nullopt;
+    }
     // Start CONNECTING — even an immediate (loopback) completion resolves uniformly via the first
     // writable edge + FinishConnect.
-    return TcpSocket{fd, /*connecting=*/true};
+    return TcpSocket{fd, *local, dst, /*connecting=*/true};
 }
 
 std::optional<TcpSocket> TcpSocket::Accept() noexcept {
+    sockaddr_storage peer{};
+    socklen_t peer_len = sizeof(peer);
 #if defined(__linux__)
-    const int client = ::accept4(fd_, nullptr, nullptr, SOCK_NONBLOCK);
+    const int client = ::accept4(fd_, reinterpret_cast<sockaddr*>(&peer), &peer_len, SOCK_NONBLOCK);
 #else
-    const int client = ::accept(fd_, nullptr, nullptr);
+    const int client = ::accept(fd_, reinterpret_cast<sockaddr*>(&peer), &peer_len);
 #endif
     if (client < 0) {
         if (!IsWouldBlockErrno(errno)) {
@@ -173,7 +204,13 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
         return std::nullopt;
     }
 #endif
-    return TcpSocket{client};
+    // peer came from accept(); read the local endpoint once here (it matches the listener's bound address).
+    auto local = LocalNameOf(client);
+    if (!local) {
+        ::close(client);
+        return std::nullopt;
+    }
+    return TcpSocket{client, *local, IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&peer))};
 }
 
 IoStatus TcpSocket::FinishConnect() noexcept {
@@ -274,24 +311,6 @@ SendStatus TcpSocket::Flush() noexcept {
         GetLogger().Info("fd {}: send buffer drained, resumed direct writes", fd_);
     }
     return SendStatus::Ok;
-}
-
-std::optional<IpEndpoint> TcpSocket::LocalEndpoint() const noexcept {
-    sockaddr_storage addr{};
-    socklen_t len = sizeof(addr);
-    if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-        return std::nullopt;
-    }
-    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
-}
-
-std::optional<IpEndpoint> TcpSocket::PeerEndpoint() const noexcept {
-    sockaddr_storage addr{};
-    socklen_t len = sizeof(addr);
-    if (::getpeername(fd_, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-        return std::nullopt;
-    }
-    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
 }
 
 } // namespace reflector
