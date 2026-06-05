@@ -557,8 +557,8 @@ TEST_F(RawSocketTest, RejectsLoopbackWithUnsupportedFamily) {
 TEST_F(RawSocketTest, RejectsTooLongInterfaceName) {
     const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
     CaptureStdout([&] {  // swallow the rejection log; IsValid() is the contract
-        const RawSocket socket{too_long};
-        EXPECT_FALSE(socket.IsValid());
+        const RawSocket oversized{too_long};
+        EXPECT_FALSE(oversized.IsValid());
     });
 }
 

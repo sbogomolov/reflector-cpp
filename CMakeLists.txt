@@ -66,7 +66,6 @@ function(reflector_configure_project_target target)
         -Wall
         -Wextra
         -Wpedantic
-        -Wshadow
         -Wnon-virtual-dtor
         -Wold-style-cast
         -Wzero-as-null-pointer-constant
@@ -77,12 +76,27 @@ function(reflector_configure_project_target target)
         -Wundef
         -Wformat=2
         -Wswitch-enum
+        -Wsuggest-override
+        -Woverloaded-virtual
+        -Wextra-semi
+        # -Wshadow is per-compiler: GCC's catches a ctor parameter (and inherited-member) shadow; Clang needs
+        # -Wshadow-all (a superset: + -Wshadow-field-in-constructor / -Wshadow-uncaptured-local) for parity.
+        $<$<CXX_COMPILER_ID:GNU>:-Wshadow>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wshadow-all>
+        # Same check, different spelling: GCC's -Wcast-align=strict == Clang's plain -Wcast-align.
         $<$<CXX_COMPILER_ID:GNU>:-Wcast-align=strict>
-        $<$<CXX_COMPILER_ID:GNU>:-Wsuggest-override>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wcast-align>
+        # GCC-only (no Clang equivalent):
         $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-cond>
         $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-branches>
         $<$<CXX_COMPILER_ID:GNU>:-Wlogical-op>
-        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wcast-align>
+        # Clang-only (no GCC equivalent):
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wcomma>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wconditional-uninitialized>
+        # NOTE: a stricter GCC set (-Wuseless-cast, -Wformat-signedness, -Wmissing-declarations and the Clang
+        # twin -Wmissing-prototypes) is worth adding, but surfaces pre-existing warnings in the platform code
+        # (e.g. a useless cast in raw_socket.cpp, plus the Linux-only paths only the docker build compiles).
+        # Add it as a focused follow-up that fixes those under the docker gate, not bundled here.
         $<$<CONFIG:Debug>:-ggdb3>
         ${_reflector_release_compile_options}
     )
