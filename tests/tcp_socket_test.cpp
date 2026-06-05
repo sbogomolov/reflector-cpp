@@ -226,7 +226,7 @@ TEST_P(TcpSocketFamilyTest, SendBuffersTheTailAndFlushDrainsItInOrder) {
     for (int guard = 0; guard < 1000000 && (pair->client.WantsWrite() || received.size() < sent.size());
          ++guard) {
         if (pair->client.WantsWrite()) {
-            ASSERT_NE(pair->client.Flush(), SendStatus::Error);
+            ASSERT_TRUE(pair->client.Flush());
         }
         const auto read = pair->server.Read(buf);
         if (read.status == IoStatus::Ok) {

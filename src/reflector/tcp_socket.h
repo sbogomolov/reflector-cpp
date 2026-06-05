@@ -71,8 +71,9 @@ public:
     // exceed MAX_SEND_BUFFER (owner aborts the connection).
     [[nodiscard]] SendStatus Send(std::span<const std::byte> data) noexcept;
 
-    // Flush the buffered tail on a writable edge.
-    [[nodiscard]] SendStatus Flush() noexcept;
+    // Flush the buffered tail on a writable edge. true if it drained (or partially drained and would block —
+    // resume on the next edge); false on a fatal write error (the owner aborts).
+    [[nodiscard]] bool Flush() noexcept;
 
     // Whether the socket wants a writable event: connecting, or has a buffered tail. The owner forwards
     // this to Dispatcher::SetWriteInterest.

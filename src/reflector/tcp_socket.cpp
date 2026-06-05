@@ -242,6 +242,7 @@ IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
+    GetLogger().Error("Receive failed for fd {}: {}", fd_, Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -269,6 +270,7 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
         return {IoStatus::WouldBlock, 0};
     }
 #endif
+    GetLogger().Error("Send failed for fd {}: {}", fd_, Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -295,12 +297,12 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
     return SendStatus::Ok;
 }
 
-SendStatus TcpSocket::Flush() noexcept {
+bool TcpSocket::Flush() noexcept {
     const bool was_buffering = !send_buffer_.Empty();
     while (!send_buffer_.Empty()) {
         const IoResult wrote = WriteSome(send_buffer_.View());
         if (wrote.status == IoStatus::Error) {
-            return SendStatus::Error;
+            return false;
         }
         if (wrote.bytes == 0) {
             break;  // WouldBlock (the only zero-byte result here) — resume on the next writable edge
@@ -310,7 +312,7 @@ SendStatus TcpSocket::Flush() noexcept {
     if (was_buffering && send_buffer_.Empty()) {
         GetLogger().Info("fd {}: send buffer drained, resumed direct writes", fd_);
     }
-    return SendStatus::Ok;
+    return true;
 }
 
 } // namespace reflector
