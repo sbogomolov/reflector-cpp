@@ -60,9 +60,9 @@ public:
     [[nodiscard]] bool IsConnecting() const noexcept { return connecting_; }
 
     // On the writable edge: if connecting, read SO_ERROR and on success clear the connecting flag and
-    // return Ok (Error on failure). Once established it is a no-op Ok, so it is safe to call on any
-    // writable edge without first checking IsConnecting().
-    [[nodiscard]] IoStatus FinishConnect() noexcept;
+    // return true (false on connect failure). Once established it is a no-op returning true, so it is safe
+    // to call on any writable edge without first checking IsConnecting().
+    [[nodiscard]] bool FinishConnect() noexcept;
 
     // Read up to `out.size()` bytes into `out`.
     [[nodiscard]] IoResult Read(std::span<std::byte> out) noexcept;

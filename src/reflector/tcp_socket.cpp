@@ -213,22 +213,22 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
     return TcpSocket{client, *local, IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&peer))};
 }
 
-IoStatus TcpSocket::FinishConnect() noexcept {
+bool TcpSocket::FinishConnect() noexcept {
     if (!connecting_) {
-        return IoStatus::Ok;  // nothing in flight; reading SO_ERROR here would clear a pending Read() error
+        return true;  // nothing in flight; reading SO_ERROR here would clear a pending Read() error
     }
     int so_error = 0;
     socklen_t len = sizeof(so_error);
     if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
         GetLogger().Error("Cannot read SO_ERROR for fd {}: {}", fd_, Error::FromErrno());
-        return IoStatus::Error;
+        return false;
     }
     if (so_error != 0) {
         GetLogger().Error("Connect failed for fd {}: {}", fd_, Error::FromErrno(so_error));
-        return IoStatus::Error;
+        return false;
     }
     connecting_ = false;
-    return IoStatus::Ok;
+    return true;
 }
 
 IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {

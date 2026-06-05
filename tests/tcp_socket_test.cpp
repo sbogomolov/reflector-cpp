@@ -65,7 +65,7 @@ protected:
             return std::nullopt;
         }
         auto server = listener->Accept();
-        if (!server || !WaitWritable(client->Fd()) || client->FinishConnect() != IoStatus::Ok) {
+        if (!server || !WaitWritable(client->Fd()) || !client->FinishConnect()) {
             return std::nullopt;
         }
         return Pair{std::move(*client), std::move(*server)};
@@ -157,7 +157,7 @@ TEST_P(TcpSocketFamilyTest, ConnectStartsConnectingThenFinishConnectEstablishes)
     EXPECT_FALSE(server->WantsWrite());
 
     ASSERT_TRUE(WaitWritable(client->Fd()));
-    EXPECT_EQ(client->FinishConnect(), IoStatus::Ok);
+    EXPECT_TRUE(client->FinishConnect());
     EXPECT_FALSE(client->IsConnecting());  // the connecting -> established transition, asserted
     EXPECT_FALSE(client->WantsWrite());    // nothing buffered once established
 }
@@ -297,7 +297,7 @@ TEST_P(TcpSocketFamilyTest, ConnectToARefusedPortFails) {
     }
     EXPECT_TRUE(client->IsConnecting());
     ASSERT_TRUE(WaitWritable(client->Fd()));  // poll returns on POLLERR too
-    EXPECT_EQ(client->FinishConnect(), IoStatus::Error);
+    EXPECT_FALSE(client->FinishConnect());
     EXPECT_TRUE(client->IsConnecting());  // only a successful FinishConnect clears the flag
 }
 
@@ -344,7 +344,7 @@ TEST_F(TcpSocketRequiresRootTest, EgressPinnedConnectReachesLoopback) {
     auto server = listener->Accept();
     ASSERT_TRUE(server.has_value());
     ASSERT_TRUE(WaitWritable(client->Fd()));
-    EXPECT_EQ(client->FinishConnect(), IoStatus::Ok);
+    EXPECT_TRUE(client->FinishConnect());
 }
 
 } // namespace
