@@ -29,6 +29,10 @@ std::vector<std::byte> Bytes(std::string_view text) {
     }
     return out;
 }
+
+std::string_view AsText(std::span<const std::byte> bytes) {
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
 } // namespace
 
 class SsdpReflectorTestBase {
@@ -58,6 +62,26 @@ protected:
             "HOST: 239.255.255.250:1900\r\n"
             "NT: upnp:rootdevice\r\n"
             "NTS: ssdp:alive\r\n\r\n");
+    }
+
+    // The device authority both DIAL fixtures advertise; a non-loopback literal so a rewrite to the
+    // minted (loopback) reflector listener is observable in the forwarded payload.
+    static constexpr std::string_view DIAL_DEVICE_AUTHORITY = "192.168.1.50:8008";
+
+    static std::vector<std::byte> MakeDialAdvertisement() {
+        return Bytes(
+            "NOTIFY * HTTP/1.1\r\n"
+            "HOST: 239.255.255.250:1900\r\n"
+            "LOCATION: http://192.168.1.50:8008/dd.xml\r\n"
+            "NT: urn:dial-multiscreen-org:service:dial:1\r\n"
+            "NTS: ssdp:alive\r\n\r\n");
+    }
+
+    static std::vector<std::byte> MakeDialResponse() {
+        return Bytes(
+            "HTTP/1.1 200 OK\r\n"
+            "ST: urn:dial-multiscreen-org:service:dial:1\r\n"
+            "LOCATION: http://192.168.1.50:8008/dd.xml\r\n\r\n");
     }
 
     // A packet captured for `group` (its multicast destination), from that family's loopback. ttl 1
@@ -637,6 +661,200 @@ TEST_F(SsdpReflectorTest, DoesNotInfoLogWhenMxIsPresent) {
 
     EXPECT_EQ(target.sent.size(), 1u);
     EXPECT_EQ(output.find("M-SEARCH"), std::string::npos) << output;
+}
+
+// --- DIAL LOCATION rewrite. config.dial engages the proxy: a DIAL advertisement/response forwarded
+// target->source has its LOCATION device authority spliced to a minted source_if (loopback) listener.
+
+TEST_F(SsdpReflectorTest, DialRewritesAdvertisementLocationWhenEnabled) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_EQ(text.find(DIAL_DEVICE_AUTHORITY), std::string_view::npos) << text;  // device authority spliced out
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;    // to the minted listener
+}
+
+TEST_F(SsdpReflectorTest, DialRewritesPortLessAdvertisementLocation) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // A DIAL NOTIFY whose LOCATION omits the port (device on :80, legal per RFC 3986): the bare host is
+    // still spliced to the minted source_if listener authority.
+    const auto advertisement = Bytes(
+        "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+        "LOCATION: http://192.168.1.50/dd.xml\r\n"
+        "NT: urn:dial-multiscreen-org:service:dial:1\r\nNTS: ssdp:alive\r\n\r\n");
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_EQ(text.find("192.168.1.50"), std::string_view::npos) << text;       // bare host spliced out
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;  // to the minted listener
+}
+
+TEST_F(SsdpReflectorTest, DialRewritesUnicastResponseLocationWhenEnabled) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // An M-SEARCH establishes the session so the 200 OK has a searcher to be injected to.
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(target.sent.size(), 1u);
+    const uint16_t reserved_port = target.sent.back().src_port;
+
+    const auto response = MakeDialResponse();
+    Packet reply{
+        .header = PacketHeader{
+            .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
+            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},
+            .ttl = 4,
+        },
+        .payload = response,
+    };
+    packet_dispatcher.Deliver(target, reply);
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_EQ(text.find(DIAL_DEVICE_AUTHORITY), std::string_view::npos) << text;
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;
+}
+
+TEST_F(SsdpReflectorTest, DialDisabledLeavesAdvertisementLocationUnchanged) {
+    // config.dial defaults false: the DIAL URN is ignored and the LOCATION is forwarded byte-for-byte.
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto advertisement = MakeDialAdvertisement();
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_EQ(source.sent.back().payload, advertisement);
+}
+
+TEST_F(SsdpReflectorTest, DialIgnoresNonDialAdvertisement) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // A plain rootdevice NOTIFY carrying a LOCATION but no DIAL service URN: forwarded verbatim.
+    const auto advertisement = Bytes(
+        "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+        "LOCATION: http://192.168.1.50:8008/dd.xml\r\nNT: upnp:rootdevice\r\nNTS: ssdp:alive\r\n\r\n");
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_EQ(source.sent.back().payload, advertisement);
+}
+
+TEST_F(SsdpReflectorTest, DialAdvertisementWithoutLocationForwardedUnchanged) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // A DIAL-service NOTIFY with no LOCATION header: nothing to rewrite, so it is forwarded verbatim
+    // (and no listener is minted — there is no device authority to mint one for).
+    const auto advertisement = Bytes(
+        "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+        "NT: urn:dial-multiscreen-org:service:dial:1\r\nNTS: ssdp:alive\r\n\r\n");
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_EQ(source.sent.back().payload, advertisement);
+}
+
+TEST_F(SsdpReflectorTest, DialRewriteChangesOnlyTheLocationAuthority) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    // Only the LOCATION authority span changed: "192.168.1.50:8008" -> "127.0.0.1:<ephemeral>". The exact
+    // prefix (through "http://127.0.0.1:") and suffix (from "/dd.xml") prove every other byte is verbatim.
+    EXPECT_TRUE(text.starts_with(
+        "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nLOCATION: http://127.0.0.1:")) << text;
+    EXPECT_TRUE(text.ends_with(
+        "/dd.xml\r\nNT: urn:dial-multiscreen-org:service:dial:1\r\nNTS: ssdp:alive\r\n\r\n")) << text;
+}
+
+TEST_F(SsdpReflectorTest, DialListenerBindsOnSourceInterfaceNotTarget) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    // A distinct, non-loopback target_if address: if the proxy mistakenly bound its listener on target_if it
+    // would fail to bind and forward the LOCATION unchanged. A successful loopback rewrite proves the listener
+    // binds on source_if (device on target_if, client on source_if).
+    target.source_v4 = IpAddress::FromV4Bytes(10, 9, 9, 9);
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_EQ(text.find(DIAL_DEVICE_AUTHORITY), std::string_view::npos) << text;  // rewritten -> listener bound
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;    // on source_if's address
+}
+
+TEST_F(SsdpReflectorTest, DialForwardsLocationUnchangedWhenListenerMintFails) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+    source.source_v4 = std::nullopt;  // no source_if V4 address -> EnsureDiscoveryListener cannot bind a listener
+
+    const auto advertisement = MakeDialAdvertisement();
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+    });
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_EQ(source.sent.back().payload, advertisement);            // forwarded unchanged (benign fallback)
+    EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
+}
+
+TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingAdvertisementFails) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    source.fail_send = true;  // re-emitting the advertisement to source will fail
+
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(target, MakePacket(MakeAdvertisement(), IpAddress::SsdpGroupV4()));
+    });
+
+    EXPECT_TRUE(source.sent.empty());  // nothing reflected
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
+}
+
+TEST_F(SsdpReflectorTest, DoesNotRewriteDialContentInAnMSearch) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // DIAL rewriting applies only to the target->source advertisement/response paths. An M-SEARCH
+    // (source->target) carrying DIAL-like content is reflected verbatim — OnSourcePacket never rewrites.
+    const auto search = Bytes(
+        "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\n"
+        "ST: urn:dial-multiscreen-org:service:dial:1\r\nLOCATION: http://192.168.1.50:8008/dd.xml\r\n\r\n");
+    packet_dispatcher.Deliver(source, MakePacket(search, IpAddress::SsdpGroupV4()));
+
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.back().payload, search);  // reflected verbatim, no DIAL rewrite
 }
 
 } // namespace reflector

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "http_message.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -31,5 +33,17 @@ inline constexpr uint8_t MSEARCH_MX_DEFAULT = 3;
 // unparseable, leaving the fallback (MSEARCH_MX_DEFAULT) and the logging to the caller, which has the
 // searcher's address for context. Scans only the header block; case-insensitive on the field name.
 [[nodiscard]] std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexcept;
+
+// True if `payload` advertises the DIAL service — its service-type URN (urn:dial-multiscreen-org:service:dial)
+// appears anywhere in the message (ST/NT/USN). The SSDP path uses this to decide whether a response's LOCATION
+// should be rewritten through the DialProxy; DialProxy itself never parses SSDP.
+[[nodiscard]] bool IsDialServiceMessage(std::span<const std::byte> payload) noexcept;
+
+// The DIAL device-description authority from the message's LOCATION header's http URL: the device endpoint
+// to mint a reflector listener for, plus the byte span of its "host[:port]" text (here measured within
+// `payload`, so the SSDP path can splice the reflector authority over exactly that span). nullopt when there
+// is no LOCATION or it is unparseable. DIAL is IPv4-only; the URL's port may be omitted (defaults to 80) and
+// the host must be an IPv4 literal.
+[[nodiscard]] std::optional<Authority> ParseDialLocationAuthority(std::span<const std::byte> payload) noexcept;
 
 } // namespace reflector

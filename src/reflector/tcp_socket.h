@@ -33,8 +33,8 @@ enum class SendStatus : uint8_t {
 
 // A move-only, non-blocking TCP socket. It is deliberately DISPATCHER-INERT: it holds no Registration
 // and never toggles write interest — the owner registers the fd and forwards WantsWrite() to the
-// dispatcher (design §4.2 / decision D12). That inertness is what makes it safe to move (Accept returns
-// one by value; an owner stores it by value). SIGPIPE-safe.
+// dispatcher. That inertness is what makes it safe to move (Accept returns one by value; an owner
+// stores it by value). SIGPIPE-safe.
 class TcpSocket : NoCopy {
 public:
     // Listening socket bound to `bind` (port 0 = ephemeral; read it back via LocalEndpoint). Bound to a

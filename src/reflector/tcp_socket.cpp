@@ -345,8 +345,8 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
 
 SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) noexcept {
     // One sendmsg carries at most MAX_SEND_CHUNKS chunks; a larger scatter still sends correctly — the overflow
-    // buffers and flushes on later writable edges — but it is outside the design envelope (DIAL passes 2), so
-    // warn and carry on.
+    // buffers and flushes on later writable edges — but a caller only ever passes a header + body (2 chunks),
+    // so a scatter this large is unexpected: warn and carry on.
     if (chunks.size() > MAX_SEND_CHUNKS) {
         GetLogger().Warning("Scatter-send of {} chunks on fd {} exceeds the {}-chunk sendmsg cap; the overflow "
             "buffers and flushes on later writable edges", chunks.size(), fd_, MAX_SEND_CHUNKS);

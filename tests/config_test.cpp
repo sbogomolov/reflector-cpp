@@ -1405,3 +1405,116 @@ ssdp = true
 address_family = "ipv4"
 )").has_value());
 }
+
+// --- SSDP dial flag: struct-level Verify + formatter, and the TOML parse ---
+
+TEST(ConfigTest, SsdpVerifyAcceptsDialWithSsdpDefaultFamily) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot", .dial = true,
+    };  // default family has IPv4
+    EXPECT_FALSE(ssdp.Verify().has_value());
+}
+
+TEST(ConfigTest, SsdpVerifyAcceptsDialWithDualFamily) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot",
+        .address_family = AddressFamily::Dual, .dial = true,
+    };
+    EXPECT_FALSE(ssdp.Verify().has_value());
+}
+
+TEST(ConfigTest, SsdpVerifyAcceptsDialWithIpv4Family) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot",
+        .address_family = AddressFamily::IPv4, .dial = true,
+    };
+    EXPECT_FALSE(ssdp.Verify().has_value());
+}
+
+TEST(ConfigTest, SsdpVerifyRejectsDialWithIpv6OnlyFamily) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot",
+        .address_family = AddressFamily::IPv6, .dial = true,
+    };  // DIAL is IPv4-only: an ipv6-only entry has no IPv4 address to bind
+    const auto error = ssdp.Verify();
+    ASSERT_TRUE(error.has_value());
+    EXPECT_NE(error->Message().find("dial"), std::string::npos) << error->Message();
+}
+
+TEST(ConfigTest, SsdpVerifyAcceptsDialFalseWithIpv6) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot",
+        .address_family = AddressFamily::IPv6, .dial = false,
+    };  // the ipv6 rejection is gated on dial being on
+    EXPECT_FALSE(ssdp.Verify().has_value());
+}
+
+TEST(ConfigTest, SsdpFormatterPrintsDial) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = std::nullopt, .source_if = "lan", .target_if = "iot", .dial = true,
+    };
+    EXPECT_NE(std::format("{}", ssdp).find("dial: true"), std::string::npos);
+}
+
+TEST(ConfigTest, ParsesSsdpDialFlagFromToml) {
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "lan"
+target_if = "iot"
+ssdp = true
+dial = true
+)");
+    ASSERT_TRUE(config.has_value());
+    ASSERT_EQ(config->SsdpConfigs().size(), 1u);
+    EXPECT_TRUE(config->SsdpConfigs()[0].dial);
+}
+
+TEST(ConfigTest, SsdpDialDefaultsFalse) {
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "lan"
+target_if = "iot"
+ssdp = true
+)");
+    ASSERT_TRUE(config.has_value());
+    ASSERT_EQ(config->SsdpConfigs().size(), 1u);
+    EXPECT_FALSE(config->SsdpConfigs()[0].dial);
+}
+
+TEST(ConfigTest, RejectsDialWithoutSsdp) {
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "lan"
+target_if = "iot"
+dial = true
+)");
+    ASSERT_FALSE(config.has_value());  // dial requires ssdp (rejected at parse, no config appended)
+    EXPECT_NE(config.error().Message().find("ssdp"), std::string::npos) << config.error().Message();
+}
+
+TEST(ConfigTest, RejectsNonBooleanDial) {
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "lan"
+target_if = "iot"
+ssdp = true
+dial = "yes"
+)");
+    ASSERT_FALSE(config.has_value());
+    EXPECT_NE(config.error().Message().find("dial"), std::string::npos) << config.error().Message();
+}
+
+TEST(ConfigTest, RejectsDialWithIpv6OnlyFamilyFromToml) {
+    // The IPv4-only rejection (struct-level Verify is tested separately) also fires through the parser:
+    // AppendSsdp runs Verify before appending, so a dial+ipv6 entry is rejected, not stored.
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "lan"
+target_if = "iot"
+ssdp = true
+address_family = "ipv6"
+dial = true
+)");
+    ASSERT_FALSE(config.has_value());
+    EXPECT_NE(config.error().Message().find("dial"), std::string::npos) << config.error().Message();
+}

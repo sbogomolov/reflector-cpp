@@ -84,6 +84,7 @@ struct SsdpConfig {
     std::string source_if;
     std::string target_if;
     AddressFamily address_family = AddressFamily::Default;
+    bool dial = false;  // enable the DIAL application proxy for this entry (IPv4-only; see DialProxy)
 
     [[nodiscard]] constexpr bool UsesIPv4() const noexcept { return reflector::UsesIPv4(address_family); }
     [[nodiscard]] constexpr bool UsesIPv6() const noexcept { return reflector::UsesIPv6(address_family); }
@@ -229,8 +230,8 @@ struct std::formatter<reflector::SsdpConfig, char>
         } else {
             std::format_to(ctx.out(), "any");
         }
-        return std::format_to(ctx.out(), ", source_if: \"{}\", target_if: \"{}\", address_family: {}}}",
-            c.source_if, c.target_if, c.address_family);
+        return std::format_to(ctx.out(), ", source_if: \"{}\", target_if: \"{}\", address_family: {}, dial: {}}}",
+            c.source_if, c.target_if, c.address_family, c.dial);
     }
 };
 

@@ -1,5 +1,7 @@
 #include "ssdp_message.h"
 
+#include "http_message.h"
+#include "logger.h"
 #include "util/ascii.h"
 
 #include <algorithm>
@@ -9,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <system_error>
 
 namespace reflector {
 
@@ -29,6 +32,14 @@ constexpr std::string_view ADVERTISEMENT_TOKEN = "NOTIFY ";
 constexpr uint8_t MX_MIN = 1;
 constexpr uint8_t MX_MAX = 5;
 
+// The stable prefix of the DIAL service-type URN (the trailing ":1" version is dropped to match any version).
+constexpr std::string_view DIAL_SERVICE_TYPE = "urn:dial-multiscreen-org:service:dial";
+
+Logger& GetLogger() noexcept {
+    static Logger logger{"SsdpMessage"};
+    return logger;
+}
+
 } // namespace
 
 std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> payload) noexcept {
@@ -48,10 +59,8 @@ std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexce
         const auto end = text.find("\r\n", pos);
         const auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
         if (StartsWithNoCase(line, "MX:")) {
-            auto value = line.substr(3);
-            const auto first = value.find_first_not_of(" \t");
-            if (first != std::string_view::npos) {
-                value = value.substr(first);
+            const auto value = TrimLeadingSpace(line.substr(3));
+            if (!value.empty()) {
                 unsigned parsed = 0;
                 const auto* begin = value.data();
                 const auto* stop = value.data() + value.size();
@@ -67,6 +76,42 @@ std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexce
         pos = end + 2;
     }
     return std::nullopt;  // no MX header at all
+}
+
+bool IsDialServiceMessage(std::span<const std::byte> payload) noexcept {
+    const std::string_view text{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    return ContainsNoCase(text, DIAL_SERVICE_TYPE);
+}
+
+std::optional<Authority> ParseDialLocationAuthority(std::span<const std::byte> payload) noexcept {
+    const std::string_view text{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    constexpr std::string_view header{"LOCATION:"};
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const auto end = text.find("\r\n", pos);
+        const auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
+        if (StartsWithNoCase(line, header)) {
+            const auto url = TrimLeadingSpace(line.substr(header.size()));  // the LOCATION URL, a view into `text`
+            if (url.empty()) {
+                return std::nullopt;
+            }
+            const auto found = ParseAuthority(url, /*bare=*/false);
+            if (!found.has_value()) {
+                // A DIAL message carrying a LOCATION we cannot rewrite (an https URL, a hostname rather than
+                // an IPv4 literal, or a malformed port). The caller forwards it unchanged, so surface why.
+                GetLogger().Info("DIAL LOCATION \"{}\" is not a rewritable http://ip:port URL", url);
+                return std::nullopt;
+            }
+            // Map the authority's offset within the URL back to an offset within the whole payload.
+            const size_t offset = static_cast<size_t>(url.data() - text.data()) + found->offset;
+            return Authority{found->endpoint, offset, found->length};
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        pos = end + 2;
+    }
+    return std::nullopt;
 }
 
 } // namespace reflector

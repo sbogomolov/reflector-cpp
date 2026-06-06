@@ -167,6 +167,7 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
     bool wol = false;
     bool mdns = false;
     bool ssdp = false;
+    bool dial = false;
     AddressFamily address_family = AddressFamily::Default;
 
     for (const auto& [field_key, field_node] : table) {
@@ -199,7 +200,8 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
                 return std::move(ports).error();
             }
             wol_ports = std::move(*ports);
-        } else if (field_name == "wol" || field_name == "mdns" || field_name == "ssdp") {
+        } else if (field_name == "wol" || field_name == "mdns" || field_name == "ssdp"
+                || field_name == "dial") {
             const auto flag = field_node.value<bool>();
             if (!flag.has_value()) {
                 return Error{"entry \"{}\" {} must be a boolean", name, field_name};
@@ -208,8 +210,10 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
                 wol = *flag;
             } else if (field_name == "mdns") {
                 mdns = *flag;
-            } else {
+            } else if (field_name == "ssdp") {
                 ssdp = *flag;
+            } else {
+                dial = *flag;
             }
         } else if (field_name == "address_family") {
             const auto value = field_node.value<std::string_view>();
@@ -231,6 +235,9 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
     }
     if (wol_ports.has_value() && !wol) {
         return Error{"entry \"{}\" sets wol_ports but does not enable wol", name};
+    }
+    if (dial && !ssdp) {
+        return Error{"entry \"{}\" sets dial but does not enable ssdp", name};
     }
 
     if (wol) {
@@ -258,7 +265,7 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
     if (ssdp) {
         if (auto error = AppendSsdp(ssdp_configs, SsdpConfig{
                 .name = std::string{name}, .mac = mac, .source_if = source_if,
-                .target_if = target_if, .address_family = address_family})) {
+                .target_if = target_if, .address_family = address_family, .dial = dial})) {
             return error;
         }
     }
@@ -326,6 +333,9 @@ std::optional<Error> SsdpConfig::Verify() const {
     }
     if (source_if == target_if) {
         return Error{"ssdp source_if and target_if must be different: \"{}\"", source_if};
+    }
+    if (dial && !UsesIPv4()) {
+        return Error{"ssdp entry \"{}\" enables dial but has no IPv4 family (DIAL is IPv4-only)", name};
     }
     return std::nullopt;
 }

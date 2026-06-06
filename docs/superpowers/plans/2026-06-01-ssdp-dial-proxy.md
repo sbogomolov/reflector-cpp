@@ -14,9 +14,9 @@
 
 1. **`dispatcher`** — reactor read/write interest control (lands alone, like the timer commit; no DIAL dependency).
 2. **`tcp_socket`** — the `IpEndpoint` value type + a non-blocking `TcpSocket` RAII wrapper.
-3. **`http_message`** — minimal HTTP/1.1 framing + `RewriteAuthority` (pure, no sockets).
+3. **`http_message`** — minimal HTTP/1.1 framing + `ParseAuthority` (endpoint + authority span; pure, no sockets).
 4. **`dial_proxy`** — the `DialProxy` orchestrator (listeners, connection pump, drop-and-close backpressure, eviction).
-5. **`ssdp_reflector` + `config`** — the `dial` flag + tunables + `Verify` rules + the SSDP `LOCATION` rewrite hooks.
+5. **`ssdp_reflector` + `config`** — the `dial` flag (the only DIAL knob) + `Verify` rules + the SSDP `LOCATION` rewrite hooks.
 6. **`e2e` + `docs`** — a DIAL device emulator + launch round-trip case, and the README section.
 
 The **full test gate** (native `ctest -L unit` + `./docker_test.sh` + `./docker_test.sh release` + `python3 e2e/run.py`, with `grep REFLECTOR_SANITIZE build/CMakeCache.txt` showing `ON`) runs before each data-path commit (4, 5, 6).
@@ -29,7 +29,7 @@ The **full test gate** (native `ctest -L unit` + `./docker_test.sh` + `./docker_
 - `src/reflector/ip_endpoint.h` — `IpEndpoint { IpAddress addr; uint16_t port; }` value type (+ `operator==`, `std::formatter`, and the family-aware `ToSockaddr`/`FromSockaddr` conversion so `TcpSocket` stays family-agnostic). *(Commit 2)*
 - `src/reflector/util/stream_buffer.h` — `StreamBuffer`, a fixed-capacity FIFO byte buffer over a lazily allocated, never-zeroed block; backs both the send side (`Append`, capped) and the receive side (`ReserveTail`/`Commit` — read into the writable tail). Header-only, tested standalone. *(Commit 2; generalized 9a917f2)*
 - `src/reflector/tcp_socket.{h,cpp}` — move-only, **dispatcher-inert** non-blocking TCP RAII (`Listen`/`Accept`/`Connect`(bound+pinned)/`Read`/`Send`+bounded`StreamBuffer`/`Flush`/`WantsWrite`/`IsConnecting`/`FinishConnect`), SIGPIPE-safe; v4/v6. Holds no `Registration` — the owner does (B2, §11 D12). *(Commit 2)*
-- `src/reflector/http_message.{h,cpp}` — `RewriteAuthority` + `HttpFraming` (incremental HTTP/1.1 framing + header rewrite). *(Commit 3)*
+- `src/reflector/http_message.{h,cpp}` — `ParseAuthority` (shared, endpoint + span) + `HttpFraming` (incremental HTTP/1.1 framing + header rewrite). *(Commit 3)*
 - `src/reflector/dial_proxy.{h,cpp}` — `DialProxy`, `Endpoint`/`Connection`, the connection pump, drop-and-close backpressure, eviction `Timer` (the bounded send `StreamBuffer` lives in `TcpSocket`, C2; per-direction receive `StreamBuffer`s in each `Connection`). *(Commit 4)*
 
 **Modified source files**
@@ -1179,11 +1179,11 @@ Lazy-start/self-stop `Timer` sweeping `Connection`s past their connect or idle d
 ### Task 4.6: full gate + commit
 `ctest -L unit`, `./docker_test.sh`, `./docker_test.sh release`, `python3 e2e/run.py` green. Commit `dial_proxy.{h,cpp}` + test + CMake. (The cap-constant hoist landed separately in f0a3505.)
 
-## Commit 5: ssdp_reflector + config: add the `dial` flag, tunables, Verify rules, and the DIAL LOCATION rewrite
+## Commit 5: ssdp_reflector + config: add the `dial` flag, Verify rules, and the DIAL LOCATION rewrite
 
-> **Draft — reconcile with Commit 4's final `DialProxy` shape and the as-built API when you execute it.** The config tunables and the `DialProxy::EnsureDiscoveryListener` wiring are stable, but drop the flow-control tunables (no `HIGH_WATER`/`LOW_WATER`) per the drop-and-close decision; trust the interface-contract block above.
+> **As-built note.** `dial = true` is the only DIAL config knob — the tunables this draft once proposed (`dial_max_*`/`dial_*_idle`/`dial_connect_timeout`/`dial_max_header_bytes`) were dropped; every cap/timeout is a file-local `constexpr` in `dial_proxy.h`/`http_message.h`. The task steps below that parse/Verify/test those fields are superseded — ignore them; the `dial` bool + two `Verify` rejections is the whole config surface.
 
-This commit wires the (already-built, Commit 4) `DialProxy` into the SSDP path. It adds the `dial` flag and its tunables to `SsdpConfig` (with `Verify` rejections and the formatter), parses them from the `[name]` TOML table, adds two small SSDP-side DIAL helpers (service-type classification + LOCATION-authority parse) to `ssdp_message.{h,cpp}`, and splices a reflector authority into the `LOCATION` of a DIAL `200 OK`/`NOTIFY` before injection. It depends on the contract types `IpEndpoint` (Commit 2), `RewriteAuthority` (Commit 3), and `DialProxy::EnsureDiscoveryListener` (Commit 4).
+This commit wires the (already-built, Commit 4) `DialProxy` into the SSDP path. It adds the `dial` bool to `SsdpConfig` (with two `Verify` rejections and the formatter), parses it from the `[name]` TOML table, adds two small SSDP-side DIAL helpers (service-type classification + LOCATION-authority parse, the latter reusing `ParseAuthority` for the endpoint + its byte span) to `ssdp_message.{h,cpp}`, and — in `SsdpReflector::RewriteDialLocation`, called inline from `OnTargetPacket` (NOTIFY) and `OnUnicastResponse` (200 OK) — splices a minted reflector authority over the `LOCATION`'s authority span before injection (unchanged on proxy-disabled / non-DIAL / no-LOCATION / cap-or-bind `nullopt`; a present-but-unparseable LOCATION is logged at INFO). It depends on the contract types `IpEndpoint` (Commit 2), `ParseAuthority` (Commit 3), and `DialProxy::EnsureDiscoveryListener` (Commit 4).
 
 The full data-path gate (native unit + docker debug/release + e2e) runs before the final commit step (5.6).
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <format>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -77,9 +78,17 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
         }
     }
 
-    logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {})",
+    // config.Verify guarantees dial implies an IPv4 family, and the RequiresIPv4 gate above guarantees V4
+    // is reflectable here, so the proxy always has a source_if V4 address to bind its listeners on. The
+    // device speaks DIAL on target_if and the client reaches it on source_if (LOCATION rewrite direction).
+    if (config.dial) {
+        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket, target_socket);
+    }
+
+    logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",
         config.UsesIPv4() && reflectable(IpAddress::Family::V4) ? "enabled" : "disabled",
-        config.UsesIPv6() && reflectable(IpAddress::Family::V6) ? "enabled" : "disabled");
+        config.UsesIPv6() && reflectable(IpAddress::Family::V6) ? "enabled" : "disabled",
+        config.dial ? "enabled" : "disabled");
 }
 
 bool SsdpReflector::SetUpGroup(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
@@ -205,9 +214,21 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
 
 void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
     // Only advertisements flow target -> source; the source-MAC filter is applied by the dispatcher.
-    if (ShouldReflect(packet, SsdpMessageKind::Advertisement)) {
-        Reflect(source_socket_, packet);
+    if (!ShouldReflect(packet, SsdpMessageKind::Advertisement)) {
+        return;
     }
+    // A DIAL advertisement's LOCATION is first rewritten to a minted source_if listener (the string outlives
+    // the send). Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
+    // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
+    const auto rewritten = RewriteDialLocation(packet.payload);
+    const auto payload = rewritten.has_value()
+        ? std::as_bytes(std::span<const char>{*rewritten})
+        : packet.payload;
+    if (!source_socket_.SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
+        logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+        return;
+    }
+    logger_.Debug("Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
@@ -225,10 +246,15 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
         return;
     }
     const Session& session = *it;
-    // Inject the 200 OK to the original searcher from our own source address (no spoofing), addressed
-    // to the searcher's captured frame MAC — the split's plain SendUdpDatagram takes that dst MAC.
+    // Inject the 200 OK to the original searcher from our own source address (no spoofing), addressed to
+    // the searcher's captured frame MAC — the split's plain SendUdpDatagram takes that dst MAC. A DIAL
+    // response's LOCATION is first rewritten to a minted source_if listener (the string outlives the send).
+    const auto rewritten = RewriteDialLocation(packet.payload);
+    const auto payload = rewritten.has_value()
+        ? std::as_bytes(std::span<const char>{*rewritten})
+        : packet.payload;
     if (!source_socket_.SendUdpDatagram(session.searcher_mac, session.searcher,
-            packet.header.source.port, packet.payload, SSDP_TTL)) {
+            packet.header.source.port, payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect SSDP response to searcher {}", session.searcher);
         return;
     }
@@ -249,14 +275,28 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
     return *message_kind == kind;
 }
 
-void SsdpReflector::Reflect(LinkSocket& egress, const Packet& packet) noexcept {
-    // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
-    // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
-    if (!egress.SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, packet.payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
-        return;
+std::optional<std::string> SsdpReflector::RewriteDialLocation(std::span<const std::byte> payload) noexcept {
+    if (!dial_proxy_.has_value() || !IsDialServiceMessage(payload)) {
+        return std::nullopt;  // proxy disabled, or not a DIAL service message — forward unchanged
     }
-    logger_.Debug("Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+    const auto location = ParseDialLocationAuthority(payload);
+    if (!location.has_value()) {
+        return std::nullopt;  // a DIAL message with no/unparseable LOCATION: nothing to rewrite
+    }
+    const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint);
+    if (!reflector_authority.has_value()) {
+        logger_.Info("DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
+            location->endpoint);
+        return std::nullopt;
+    }
+    // Splice the reflector authority over exactly the LOCATION's host[:port] span. The port may have been
+    // omitted (defaulting to 80), in which case the span covers just the host — the inserted "addr:port"
+    // still lands correctly because it replaces that exact text.
+    std::string rewritten{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    rewritten.replace(location->offset, location->length, std::format("{}", *reflector_authority));
+    logger_.Debug("DIAL: rewrote device {} LOCATION to reflector listener {}",
+        location->endpoint, *reflector_authority);
+    return rewritten;
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {

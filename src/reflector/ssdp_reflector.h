@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "dial_proxy.h"
 #include "ip_address.h"
 #include "ip_endpoint.h"
 #include "link_socket.h"
@@ -16,6 +17,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
+#include <string>
 #include <vector>
 
 namespace reflector {
@@ -25,7 +28,7 @@ namespace reflector {
 // directionally: M-SEARCH searches source->target, NOTIFY advertisements target->source. The
 // target->source direction can be restricted to one device by its frame source MAC (config.mac).
 // Both sockets must outlive this reflector. A unicast M-SEARCH 200 OK is reflected back to the
-// searcher via a per-search reserved-port session (see the SSDP design doc).
+// searcher via a per-search reserved-port session.
 class SsdpReflector : public Reflector {
 public:
     SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
@@ -64,7 +67,12 @@ private:
     // SSDP request at all is logged and dropped (it shouldn't appear on the group); a message of the
     // other kind is dropped silently (normal bidirectional traffic).
     [[nodiscard]] bool ShouldReflect(const Packet& packet, SsdpMessageKind kind) noexcept;
-    void Reflect(LinkSocket& egress, const Packet& packet) noexcept;
+    // When the DIAL proxy is enabled and `payload` is a DIAL advertisement/response, rewrites its LOCATION
+    // authority (the device -> a minted source_if listener) so a source client reaches the device's
+    // description endpoint across the boundary, returning the rewritten bytes. nullopt -> forward `payload`
+    // unchanged: proxy disabled, not a DIAL message, no/invalid LOCATION, or the listener mint hit a
+    // cap/bind failure (all benign — the original LOCATION still resolves for an on-subnet client).
+    [[nodiscard]] std::optional<std::string> RewriteDialLocation(std::span<const std::byte> payload) noexcept;
     // Reserves a port + registers the 200-OK capture for a new client, returning the session to add
     // (not yet in the table) or nullopt (after logging) if the cap is hit or a step fails.
     [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet, IpAddress::Family family,
@@ -78,6 +86,7 @@ private:
     LinkSocket& target_socket_;
     PacketDispatcher& packet_dispatcher_;  // retained so OnSourcePacket can register response captures
     std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response capture
+    std::optional<DialProxy> dial_proxy_;  // the DIAL app proxy, engaged only when config.dial (IPv4-only)
     std::vector<Session> sessions_;
     Timer eviction_timer_;  // started only while sessions are in flight (lazy); declared last ->
                             // destroyed first (stops before the sessions it sweeps drop)

@@ -126,7 +126,7 @@ DISCOVERY (UDP, existing SSDP paths + a LOCATION rewrite hook)
   client --M-SEARCH(dial)--> [reflector relays] --> dev
   dev --200 OK, LOCATION: http://dev:Pdesc/ --> [reflector captures on target_if]
       [DIAL] SsdpReflector: EnsureDiscoveryListener(dev:Pdesc) -> listener L1 on source_if;
-      RewriteAuthority: LOCATION -> http://<source_if-addr>:L1/
+      splice the LOCATION authority -> http://<source_if-addr>:L1/
   [reflector injects rewritten 200 OK to client]            (NOTIFY rewritten the same way)
 
 DESCRIPTION FETCH (TCP, new)
@@ -295,8 +295,13 @@ DIAL endpoint; everything else, including all body bytes and the chunked chunk-d
 verbatim (for chunked, only the chunk-size lines are parsed, to find the terminating `0`-chunk, whose
 close must be a bare CRLF — chunked trailers are unsupported, so a trailer-bearing close is refused). Because
 only header authorities change, **`Content-Length` is never recomputed** and chunked framing is never
-rebuilt. The shared `RewriteAuthority(text, from, to)` primitive (a one-shot authority substitution over a
-string) backs the SSDP `LOCATION` path (§4.5); `HttpFraming` splices inline rather than calling it.
+rebuilt. Authority parsing is the shared `ParseAuthority(value, bare)` primitive — it validates an
+`http://host[:port]…` URL (or, for `Host`, a bare `host[:port]`) and returns the endpoint plus the byte
+span of the `host[:port]` text so a caller splices a replacement over exactly that span. The SSDP `LOCATION`
+path (§4.5) reuses the same primitive. Authority rules: the port is optional (an omitted port defaults to
+80 per RFC 3986, the span then covering just the host); the `http://` scheme is matched case-insensitively
+and must lead the value; the host must be an IPv4 literal; and the port must be fully numeric (trailing
+junk such as `:80x` is rejected, not silently truncated).
 
 Bounds: the header scratch is the only thing the framer holds, capped at the fixed `MAX_HEADER_BYTES`
 (2 KB); a header reaching that cap — or a chunk-size line reaching the separate `MAX_CHUNK_LINE_BYTES`
@@ -434,11 +439,13 @@ the existing injection — and the hook lives in `SsdpReflector` (which already 
 
 - `OnUnicastResponse` (the `M-SEARCH` `200 OK`) and `OnTargetPacket` (`NOTIFY`): if the message
   advertises the DIAL service type (`urn:dial-multiscreen-org:...` in `ST`/`NT`/`USN`) and carries a
-  `LOCATION`, parse the device's description endpoint, call `dial_proxy_->EnsureDiscoveryListener(device)`,
-  and splice the returned reflector authority into the `LOCATION` via the shared `RewriteAuthority`
-  helper (§4.3) — yielding the payload to inject. A resized payload is fine: the datagram is built from
-  a payload span and UDP has no sequence numbers (unlike TCP). On `nullopt` (cap/bind failure) the
-  `LOCATION` is injected unchanged.
+  `LOCATION`, parse the device's description endpoint and the byte span of its authority (the shared
+  `ParseAuthority`, §4.3), call `dial_proxy_->EnsureDiscoveryListener(device)`, and splice the returned
+  reflector authority over exactly that span — yielding the payload to inject. A resized payload is fine:
+  the datagram is built from a payload span and UDP has no sequence numbers (unlike TCP). On `nullopt`
+  (proxy disabled, not a DIAL message, no `LOCATION`, or a listener cap/bind failure) the `LOCATION` is
+  injected unchanged; a `LOCATION` that is present but unparseable (an `https` URL, a hostname rather than
+  an IPv4 literal, or a malformed port) is additionally logged at INFO so the dropped rewrite is visible.
 
 If the entry has a `mac` filter it already scopes which device's responses are seen, so only that
 device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives an SSDP message.
@@ -573,12 +580,12 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
    `Send`+bounded`StreamBuffer`/`Flush`/`WantsWrite`, SIGPIPE-safe, RAII) + loopback tests parameterized
    over v4/v6.
 3. `http_message`: incremental framing (CL/chunked/none) + case-insensitive header rewrite via the
-   shared `RewriteAuthority` helper + tests.
+   shared `ParseAuthority` helper (endpoint + authority span) + tests.
 4. `dial_proxy`: endpoint/listener map, connection pump + bounded `StreamBuffer` (drop-and-close on
    overflow), cap + connect/idle eviction `Timer`, `EnsureDiscoveryListener` + tests.
-5. `ssdp_reflector` + `config`: the `dial` flag (+ tunables, `Verify`, formatter) and the DIAL
-   `LOCATION` parse + `RewriteAuthority` splice (calling `EnsureDiscoveryListener`) in the
-   `200 OK`/`NOTIFY` paths + tests.
+5. `ssdp_reflector` + `config`: the `dial` flag (`Verify` + formatter; the only DIAL knob) and the DIAL
+   `LOCATION` parse + authority-span splice (via `ParseAuthority`, calling `EnsureDiscoveryListener`) in
+   the `200 OK`/`NOTIFY` paths + tests.
 6. `e2e`: the DIAL device emulator + launch round-trip.
 7. `docs`: README DIAL section.
 
@@ -628,7 +635,7 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
 - **D11 — `DialProxy` exposes only `EnsureDiscoveryListener`; SSDP stays in `SsdpReflector`.** The
   proxy is owned by `SsdpReflector` with no external callers, so its sole cross-boundary method is the
   listener primitive; DIAL-classification + `LOCATION` parse/splice live in the SSDP path via the
-  shared `RewriteAuthority` helper, keeping `DialProxy` free of SSDP-message knowledge. (§4.4/§4.5)
+  shared `ParseAuthority` helper, keeping `DialProxy` free of SSDP-message knowledge. (§4.4/§4.5)
 - **D12 — `TcpSocket` is dispatcher-inert; the `Connection`/`Endpoint` owns the `Registration` + the one
   `SetWriteInterest` ("honest Point B").** A `TcpSocket` captures nothing of the dispatcher (just `{fd,
   StreamBuffer, connecting}`) so it moves freely — `Accept()` returns one by value, a `Connection` holds
@@ -651,6 +658,10 @@ Each data-path commit runs the full gate (native unit + docker debug/release + e
   not through the reflector.
 - **TLS / Google Cast (port 8009)** — DIAL here is confirmed plain HTTP; an encrypted control channel
   can't be rewritten without MITM and is a separate problem.
+- **Hostname `LOCATION` / `Application-URL` authorities** — the DIAL spec also permits a host that
+  *resolves* to IPv4 (not only an IPv4 literal), but the rewrite requires an IPv4 literal (no DNS on the
+  single-threaded reactor). A hostname authority is left unrewritten and logged at INFO (§4.5); in practice
+  observed devices advertise IPv4-literal authorities.
 - **IPv6 DIAL** — the spec's `Application-URL` host "SHALL either resolve to an IPv4 address or be an
   IPv4 address" (§2.3), so DIAL is **IPv4 by spec**; the rewritten authority uses the `source_if` IPv4
   address and the proxy only stands up IPv4 listeners even on a dual entry. An `ipv6`-only entry with
