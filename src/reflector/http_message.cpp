@@ -102,6 +102,9 @@ bool HttpFraming::ScanAndRewriteHeader() {
             const std::string_view value = TrimLeadingSpace(line.substr(colon + 1));
             if (const auto found = ParseAuthority(value, /*bare=*/is_host)) {
                 if (const auto repl = rewrite_(found->endpoint)) {
+                    // Log before the splice: `line` views into header_, which the replace may reallocate.
+                    GetLogger().Debug("rewrote {} authority {} -> {}", line.substr(0, colon),
+                        found->endpoint, *repl);
                     const std::string repl_text = std::format("{}", *repl);
                     const size_t auth_off =
                         static_cast<size_t>(value.data() - header_view.data()) + found->offset;
