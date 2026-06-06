@@ -3,6 +3,7 @@
 #include "error.h"
 #include "logger.h"
 
+#include <array>
 #include <cerrno>
 #include <cstring>
 #include <utility>
@@ -10,6 +11,7 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 namespace {
@@ -274,6 +276,48 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
     return {IoStatus::Error, 0};
 }
 
+IoResult TcpSocket::WriteSomeV(std::span<const std::span<const std::byte>> chunks) noexcept {
+    // Pack the non-empty chunks into an iovec; sendmsg (not writev) so Linux can carry MSG_NOSIGNAL.
+    std::array<iovec, MAX_SEND_CHUNKS> iov;
+    size_t count = 0;
+    for (const std::span<const std::byte> chunk : chunks) {
+        if (chunk.empty()) {
+            continue;
+        }
+        if (count == iov.size()) {
+            break;  // iovec full; the rest buffers via AppendUnsent (Send already warned). A capped sendmsg
+                    // is indistinguishable from a short one — already_sent = bytes written.
+        }
+        iov[count].iov_base = const_cast<std::byte*>(chunk.data());  // sendmsg only reads the buffers
+        iov[count].iov_len = chunk.size();
+        ++count;
+    }
+    if (count == 0) {
+        return {IoStatus::Ok, 0};
+    }
+    msghdr message{};
+    message.msg_iov = iov.data();
+    message.msg_iovlen = static_cast<decltype(message.msg_iovlen)>(count);
+#if defined(__linux__)
+    const ssize_t n = ::sendmsg(fd_, &message, MSG_NOSIGNAL);
+#else
+    const ssize_t n = ::sendmsg(fd_, &message, 0);  // SO_NOSIGPIPE set at creation
+#endif
+    if (n >= 0) {
+        return {IoStatus::Ok, static_cast<size_t>(n)};
+    }
+    if (IsWouldBlockErrno(errno)) {
+        return {IoStatus::WouldBlock, 0};
+    }
+#if defined(__APPLE__)
+    if (connecting_ && errno == ENOTCONN) {  // still-connecting socket — see WriteSome's note
+        return {IoStatus::WouldBlock, 0};
+    }
+#endif
+    GetLogger().Error("Send failed for fd {}: {}", fd_, Error::FromErrno());
+    return {IoStatus::Error, 0};
+}
+
 SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
     // Only write directly when nothing is already queued — otherwise the tail must follow the backlog in
     // order.
@@ -297,6 +341,58 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         GetLogger().Info("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
     }
     return SendStatus::Ok;
+}
+
+SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) noexcept {
+    // One sendmsg carries at most MAX_SEND_CHUNKS chunks; a larger scatter still sends correctly — the overflow
+    // buffers and flushes on later writable edges — but it is outside the design envelope (DIAL passes 2), so
+    // warn and carry on.
+    if (chunks.size() > MAX_SEND_CHUNKS) {
+        GetLogger().Warning("Scatter-send of {} chunks on fd {} exceeds the {}-chunk sendmsg cap; the overflow "
+            "buffers and flushes on later writable edges", chunks.size(), fd_, MAX_SEND_CHUNKS);
+    }
+    // Write through only when nothing is already queued; otherwise the chunks follow the backlog in order
+    // (already_sent stays 0, so AppendUnsent queues them whole).
+    const size_t backlog = send_buffer_.Size();  // already-queued bytes the chunks must follow, in order
+    const bool was_buffering = backlog > 0;
+    size_t already_sent = 0;
+    if (!was_buffering) {
+        const IoResult wrote = WriteSomeV(chunks);
+        if (wrote.status == IoStatus::Error) {
+            return SendStatus::Error;
+        }
+        already_sent = wrote.bytes;  // 0 on WouldBlock — buffer the whole message
+    }
+    if (!AppendUnsent(send_buffer_, chunks, already_sent)) {
+        size_t total = 0;
+        for (const std::span<const std::byte> chunk : chunks) {
+            total += chunk.size();
+        }
+        GetLogger().Error("Send buffer overflow for fd {}: {} queued + {}-byte tail exceeds the {}-byte cap",
+            fd_, backlog, total - already_sent, MAX_SEND_BUFFER);
+        return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
+    }
+    if (!was_buffering && !send_buffer_.Empty()) {
+        GetLogger().Info("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+    }
+    return SendStatus::Ok;
+}
+
+bool TcpSocket::AppendUnsent(StreamBuffer& buf, std::span<const std::span<const std::byte>> chunks,
+        size_t already_sent) {
+    for (const std::span<const std::byte> chunk : chunks) {
+        if (already_sent >= chunk.size()) {  // this whole chunk is already on the wire
+            already_sent -= chunk.size();
+            continue;
+        }
+        // Append the unsent part of this chunk, then every later chunk whole. On overflow a partial append may
+        // have landed, but the caller logs and aborts the connection, so the buffer is discarded unflushed.
+        if (!buf.Append(chunk.subspan(already_sent))) {
+            return false;
+        }
+        already_sent = 0;
+    }
+    return true;
 }
 
 bool TcpSocket::Flush() noexcept {

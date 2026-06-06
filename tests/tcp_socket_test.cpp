@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -261,6 +262,253 @@ TEST_P(TcpSocketFamilyTest, SendBeyondCapAborts) {
         ASSERT_EQ(status, SendStatus::Ok);
     }
     FAIL() << "Send never overflowed the cap";
+}
+
+}  // namespace — the friend fixture below must be the named reflector::TcpSocketTest the friend grant names
+
+// ---- Scatter-gather Send ----
+
+// The AppendUnsent boundary-walk is private; this fixture is TcpSocket's friend — the named
+// `reflector::TcpSocketTest` the friend declaration refers to (a fixture in the file's anonymous namespace
+// would be a different class and get no access) — and exposes the walk for a chosen `already_sent`, since a
+// live socket can't be steered onto an exact chunk seam.
+class TcpSocketTest : public ::testing::Test {
+protected:
+    static bool AppendUnsent(StreamBuffer& buf, std::span<const std::span<const std::byte>> chunks,
+        size_t already_sent) {
+        return TcpSocket::AppendUnsent(buf, chunks, already_sent);
+    }
+};
+
+namespace {
+
+// AppendUnsent is the heart of the scatter Send: after a partial sendmsg it buffers the bytes past
+// `already_sent`, walked across the chunk boundary. A live socket can't be made to partial on an exact seam
+// (kernel partial-write slop), so each boundary — inside the header, exactly on the header/body seam, inside
+// the body — is driven here with a chosen count, no socket involved.
+TEST_F(TcpSocketTest, WalksTheHeaderBodyBoundaryForEveryPartialCount) {
+    std::array<std::byte, 10> header_storage;
+    for (size_t i = 0; i < header_storage.size(); ++i) {
+        header_storage[i] = std::byte{static_cast<uint8_t>(0x10 + i)};
+    }
+    std::array<std::byte, 20> body_storage;
+    for (size_t i = 0; i < body_storage.size(); ++i) {
+        body_storage[i] = std::byte{static_cast<uint8_t>(0x20 + i)};
+    }
+    const std::array<std::span<const std::byte>, 2> chunks{
+        std::span<const std::byte>{header_storage}, std::span<const std::byte>{body_storage}};
+
+    auto expect_tail_from = [&](size_t already_sent) {
+        std::vector<std::byte> want;
+        for (const std::span<const std::byte> chunk : chunks) {
+            want.insert(want.end(), chunk.begin(), chunk.end());
+        }
+        want.erase(want.begin(), want.begin() + static_cast<std::ptrdiff_t>(already_sent));
+
+        StreamBuffer buf{1024};
+        ASSERT_TRUE(AppendUnsent(buf, chunks, already_sent));
+        const std::span<const std::byte> got = buf.View();
+        EXPECT_EQ(std::vector<std::byte>(got.begin(), got.end()), want) << "already_sent=" << already_sent;
+    };
+
+    expect_tail_from(0);   // WouldBlock: nothing sent -> the whole header then body
+    expect_tail_from(4);   // part of the header sent -> header[4:] then body
+    expect_tail_from(10);  // header exactly fully sent -> exactly the body (not re-emitted, not dropped)
+    expect_tail_from(15);  // full header + part of the body -> body[5:]
+    expect_tail_from(30);  // everything sent -> nothing buffered
+}
+
+TEST_F(TcpSocketTest, ReportsOverflowWhenTheTailDoesNotFit) {
+    std::array<std::byte, 10> header_storage{};
+    std::array<std::byte, 20> body_storage{};
+    const std::array<std::span<const std::byte>, 2> chunks{
+        std::span<const std::byte>{header_storage}, std::span<const std::byte>{body_storage}};
+
+    StreamBuffer too_small{25};  // below the 30-byte total
+    EXPECT_FALSE(AppendUnsent(too_small, chunks, 0));  // the 30-byte tail does not fit (a chunk Append fails)
+
+    StreamBuffer fits{25};
+    EXPECT_TRUE(AppendUnsent(fits, chunks, 6));  // a 24-byte tail (6 already sent) fits
+    EXPECT_EQ(fits.Size(), 24u);
+}
+
+TEST_F(TcpSocketTest, HandlesEmptyChunksInTheWalk) {
+    const std::array<std::byte, 4> body_storage{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}};
+    const std::span<const std::byte> empty{};
+    const std::span<const std::byte> body{body_storage};
+    // Leading and trailing empty chunks contribute nothing and must not shift the boundary walk.
+    const std::array<std::span<const std::byte>, 3> chunks{empty, body, empty};
+
+    StreamBuffer buf{64};
+    ASSERT_TRUE(AppendUnsent(buf, chunks, 1));  // one body byte already sent
+    const std::span<const std::byte> got = buf.View();
+    const std::vector<std::byte> want(body_storage.begin() + 1, body_storage.end());
+    EXPECT_EQ(std::vector<std::byte>(got.begin(), got.end()), want);
+}
+
+TEST_P(TcpSocketFamilyTest, ScatterSendDeliversHeaderThenBodyInOrder) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    const std::vector<std::byte> header = Bytes("HEADER-");
+    const std::vector<std::byte> body = Bytes("body-payload");
+    const std::array<std::span<const std::byte>, 2> chunks{
+        std::span<const std::byte>{header}, std::span<const std::byte>{body}};
+    ASSERT_EQ(pair->client.Send(chunks), SendStatus::Ok);
+    EXPECT_FALSE(pair->client.WantsWrite());  // loopback takes the few bytes at once — nothing buffered
+
+    std::vector<std::byte> expected = header;
+    expected.insert(expected.end(), body.begin(), body.end());
+
+    std::vector<std::byte> received;
+    std::vector<std::byte> buf(256);
+    while (received.size() < expected.size() && WaitReadable(pair->server.Fd())) {
+        const IoResult read = pair->server.Read(buf);
+        ASSERT_EQ(read.status, IoStatus::Ok);
+        received.insert(received.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(read.bytes));
+    }
+    EXPECT_EQ(received, expected);  // header first, then body — one ordered message
+}
+
+TEST_P(TcpSocketFamilyTest, ScatterSendBehindABacklogDrainsInOrder) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    // Every byte is a continuing 0..255 ramp, so the receiver verifies exact ORDER and content across the
+    // backlog/header/body seams — not merely the count.
+    uint8_t next = 0;
+    auto ramp = [&next](size_t size) {
+        std::vector<std::byte> c(size);
+        for (std::byte& b : c) {
+            b = std::byte{next++};
+        }
+        return c;
+    };
+    std::vector<std::byte> sent;
+
+    // Back the socket's own send buffer up first (the server never reads), so the scatter Send below appends
+    // behind a non-empty backlog rather than writing through — deterministic on every platform, unlike forcing
+    // a kernel-level partial (Linux receive-buffer autotuning makes "kernel full" a moving target).
+    while (!pair->client.WantsWrite()) {
+        const auto chunk = ramp(4 * 1024);
+        ASSERT_EQ(pair->client.Send(std::span<const std::byte>{chunk}), SendStatus::Ok);
+        sent.insert(sent.end(), chunk.begin(), chunk.end());
+        ASSERT_LT(sent.size(), 16u * 1024u * 1024u) << "kernel buffer never filled";
+    }
+
+    // The scatter Send queues header+body behind the backlog, in order (already_sent==0, append-only path).
+    const auto header = ramp(40);
+    const auto body = ramp(2048);
+    const std::array<std::span<const std::byte>, 2> chunks{
+        std::span<const std::byte>{header}, std::span<const std::byte>{body}};
+    ASSERT_EQ(pair->client.Send(chunks), SendStatus::Ok);
+    EXPECT_TRUE(pair->client.WantsWrite());
+    sent.insert(sent.end(), header.begin(), header.end());
+    sent.insert(sent.end(), body.begin(), body.end());
+
+    // Drain: flush the client tail and read on the server until both are exhausted; bytes must match exactly.
+    std::vector<std::byte> received;
+    std::vector<std::byte> buf(64 * 1024);
+    for (int guard = 0; guard < 1000000 && (pair->client.WantsWrite() || received.size() < sent.size());
+         ++guard) {
+        if (pair->client.WantsWrite()) {
+            ASSERT_TRUE(pair->client.Flush());
+        }
+        const IoResult read = pair->server.Read(buf);
+        if (read.status == IoStatus::Ok) {
+            received.insert(received.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(read.bytes));
+        } else if (read.status == IoStatus::WouldBlock) {
+            if (pair->client.WantsWrite()) {
+                WaitWritable(pair->client.Fd());
+            } else {
+                WaitReadable(pair->server.Fd());
+            }
+        } else {
+            break;  // Closed/Error — unexpected
+        }
+    }
+    EXPECT_EQ(received, sent);                 // exact bytes, in order across every seam
+    EXPECT_FALSE(pair->client.WantsWrite());   // fully drained
+}
+
+TEST_P(TcpSocketFamilyTest, ScatterSendCoalescesMoreChunksThanTheIovecCapInOrder) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    // More non-empty chunks than the iovec holds (MAX_SEND_CHUNKS): the first batch rides one sendmsg, the
+    // rest fall through to the send buffer (a nonzero already_sent landing on a chunk boundary, wired through
+    // the real Send). All must arrive in order. Storage is filled fully before any span is taken, so the
+    // spans never dangle across a vector realloc.
+    std::vector<std::vector<std::byte>> storage;
+    std::vector<std::byte> expected;
+    for (int i = 0; i < 12; ++i) {  // > MAX_SEND_CHUNKS (8)
+        storage.push_back(Bytes("chunk" + std::to_string(i) + "/"));
+        expected.insert(expected.end(), storage.back().begin(), storage.back().end());
+    }
+    std::vector<std::span<const std::byte>> chunks;
+    for (const std::vector<std::byte>& s : storage) {
+        chunks.push_back(std::span<const std::byte>{s});
+    }
+    ASSERT_EQ(pair->client.Send(chunks), SendStatus::Ok);
+
+    std::vector<std::byte> received;
+    std::vector<std::byte> buf(1024);
+    for (int guard = 0; guard < 1000000 && received.size() < expected.size(); ++guard) {
+        if (pair->client.WantsWrite()) {
+            ASSERT_TRUE(pair->client.Flush());
+        }
+        const IoResult read = pair->server.Read(buf);
+        if (read.status == IoStatus::Ok) {
+            received.insert(received.end(), buf.begin(), buf.begin() + static_cast<std::ptrdiff_t>(read.bytes));
+        } else if (read.status == IoStatus::WouldBlock) {
+            if (pair->client.WantsWrite()) {
+                WaitWritable(pair->client.Fd());
+            } else {
+                WaitReadable(pair->server.Fd());
+            }
+        } else {
+            break;  // Closed/Error — unexpected
+        }
+    }
+    EXPECT_EQ(received, expected);
+}
+
+TEST_P(TcpSocketFamilyTest, ScatterSendBeyondCapAborts) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    // Persistently fill the kernel so every scatter Send buffers; the send buffer then fills until a Send's
+    // tail would exceed the 8KB cap -> Overflow (the owner aborts). The scatter analogue of SendBeyondCapAborts,
+    // exercising the scatter Send's overflow path on a live socket.
+    const std::array<std::byte, 4096> filler{};
+    while (true) {
+#if defined(__linux__)
+        const ssize_t w = ::send(pair->client.Fd(), filler.data(), filler.size(), MSG_NOSIGNAL);
+#else
+        const ssize_t w = ::send(pair->client.Fd(), filler.data(), filler.size(), 0);
+#endif
+        if (w > 0) {
+            continue;
+        }
+        ASSERT_TRUE(errno == EAGAIN || errno == EWOULDBLOCK);
+        if (!WaitFor(pair->client.Fd(), POLLOUT, 100)) {
+            break;
+        }
+    }
+
+    const std::vector<std::byte> header = Bytes("H:");
+    const std::vector<std::byte> body = Bytes(std::string(4096, 'b'));
+    const std::array<std::span<const std::byte>, 2> chunks{
+        std::span<const std::byte>{header}, std::span<const std::byte>{body}};
+    for (int i = 0; i < 100000; ++i) {
+        const SendStatus status = pair->client.Send(chunks);
+        if (status == SendStatus::Overflow) {
+            SUCCEED();
+            return;
+        }
+        ASSERT_EQ(status, SendStatus::Ok);
+    }
+    FAIL() << "scatter Send never overflowed the cap";
 }
 
 TEST_P(TcpSocketFamilyTest, AcceptWithNoPendingConnectionReturnsNullopt) {
