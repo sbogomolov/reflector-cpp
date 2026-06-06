@@ -104,6 +104,7 @@ protected:
         return conn.upstream.IsConnecting();
     }
     static bool ConnClosed(DialProxy::Connection& conn) { return conn.closed; }
+    static void AbortConn(DialProxy::Connection& conn) { conn.Abort(); }
     static TcpSocket& ConnUpstream(DialProxy::Connection& conn) { return conn.upstream; }
     static TcpSocket& ConnClient(DialProxy::Connection& conn) { return conn.client; }
     static StreamBuffer& ConnC2uRx(DialProxy::Connection& conn) { return conn.c2u_rx; }
@@ -421,6 +422,40 @@ TEST_F(DialProxyTest, AcceptCreatesConnectionAndRegistersBothFds) {
     EXPECT_TRUE(dispatcher.IsWatching(upstream_fd));
     EXPECT_TRUE(dispatcher.IsWriteArmed(upstream_fd));   // connecting -> armed for connect-completion
     EXPECT_FALSE(dispatcher.IsWriteArmed(accepted_client_fd));  // established at accept -> not armed
+
+    ::close(client_fd);
+}
+
+// Abort sends the client a FIN immediately (not deferred to the 5s eviction), yet still leaves the node in
+// place for the UAF-safe deferred reap.
+TEST_F(DialProxyTest, AbortShutsDownTheClientPromptlyButLeavesTheNodeForEviction) {
+    auto device = FakeDevice::Make();
+    auto proxy = MakeProxy();
+
+    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    ASSERT_TRUE(authority.has_value());
+    const int listener_fd = ListenerFd(proxy, device.endpoint);
+
+    const int client_fd = ConnectRawClient(*authority);
+    ASSERT_GE(client_fd, 0);
+
+    auto* conn = AcceptOne(proxy, listener_fd);
+    ASSERT_NE(conn, nullptr);
+    ASSERT_EQ(ConnectionCount(proxy), 1u);
+
+    AbortConn(*conn);
+
+    // The FIN reaches the client at once: a blocking recv returns an orderly EOF (0 bytes) now, not after a
+    // 5s eviction stall.
+    pollfd pfd{.fd = client_fd, .events = POLLIN, .revents = 0};
+    ASSERT_GT(::poll(&pfd, 1, 5000), 0) << "client did not see the FIN from Abort";
+    char buf[16];
+    EXPECT_EQ(::recv(client_fd, buf, sizeof(buf), 0), 0);
+
+    // The node still exists (deferred erasure keeps the on-stack handler safe); only eviction reaps it.
+    EXPECT_EQ(ConnectionCount(proxy), 1u);
+    Evict(proxy, std::chrono::steady_clock::now() + std::chrono::hours{1});
+    EXPECT_EQ(ConnectionCount(proxy), 0u);
 
     ::close(client_fd);
 }

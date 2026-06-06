@@ -533,14 +533,21 @@ def dial_client(args: argparse.Namespace) -> int:
     print(f"dial-client: LOCATION rewritten to reflector authority {desc_host}:{desc_port}", flush=True)
 
     if args.expect_fetch_failure:
-        # The LOCATION was rewritten (the reflector minted the listener), but the device's upstream is dead,
-        # so the proxied fetch must fail rather than hang forever. Time it so the failure latency is visible.
+        # The LOCATION was rewritten (the listener was minted), but the device's upstream is dead, so the
+        # proxied fetch must fail -- and fail PROMPTLY. The reflector must FIN the client when the upstream
+        # connect is refused, not leave it hanging until the eviction timer (~5s). A 2s budget cleanly
+        # separates the prompt close from that stall.
         start = time.monotonic()
         try:
             _http_request(desc_host, desc_port, "GET", desc_path, args.family)
         except Exception as exc:  # noqa: BLE001 - any failure (refused / reset / EOF / timeout) is the point
-            print(f"dial-client: description fetch failed as expected after {time.monotonic() - start:.1f}s "
-                  f"({type(exc).__name__}: {exc}) -- upstream unreachable through the reflector", flush=True)
+            elapsed = time.monotonic() - start
+            if elapsed > 2.0:
+                print(f"dial-client: fetch failed but only after {elapsed:.1f}s (> 2s) -- the reflector did "
+                      f"not close the client promptly on upstream failure", file=sys.stderr, flush=True)
+                return 1
+            print(f"dial-client: description fetch failed promptly after {elapsed:.1f}s "
+                  f"({type(exc).__name__}: {exc}) -- upstream unreachable, client closed promptly", flush=True)
             return 0
         print("dial-client: description fetch unexpectedly SUCCEEDED (upstream should be unreachable)",
               file=sys.stderr, flush=True)

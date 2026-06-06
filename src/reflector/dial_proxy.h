@@ -139,8 +139,9 @@ private:
         void Sync(TcpSocket& sock) noexcept;
 
         // Deferred teardown from inside a handler: drop both Registrations now (kills any level-triggered
-        // spin) but do NOT erase the node — erasing the node whose handler is on the stack is a UAF. The
-        // node lingers inert (closed) until the eviction timer reaps it.
+        // spin) and half-close both sockets so the FIN reaches the peers immediately, but do NOT erase the
+        // node — erasing the node whose handler is on the stack is a UAF. The node lingers inert (closed,
+        // fds shut down but still open) until the eviction timer reaps it and RAII closes the fds.
         void Abort() noexcept;
 
         DialProxy& owner;  // reaches owner.dispatcher_ for Sync and owner.EnsureRestListener for the u2c rewrite

@@ -89,6 +89,11 @@ public:
     [[nodiscard]] const IpEndpoint& LocalEndpoint() const noexcept { return local_; }
     [[nodiscard]] const std::optional<IpEndpoint>& PeerEndpoint() const noexcept { return peer_; }
 
+    // Half-close both directions (send a FIN to the peer now) without releasing the fd — the owner uses this
+    // to make a deferred teardown's FIN reach the peer promptly while the socket lives on until Close(). The
+    // fd stays valid (Close() still owns the descriptor). Best-effort: a never-connected or already-reset
+    // socket (ENOTCONN/EINVAL) is a no-op, not an error.
+    void Shutdown() noexcept;
     void Close() noexcept;
 
 private:

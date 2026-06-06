@@ -109,6 +109,14 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     return *this;
 }
 
+void TcpSocket::Shutdown() noexcept {
+    if (fd_ >= 0) {
+        // Best-effort FIN: ignore ENOTCONN (a refused/never-connected upstream) and the like — the point is
+        // to wake a blocked peer, not to report. Keep fd_ valid; Close() still owns the descriptor.
+        (void)::shutdown(fd_, SHUT_RDWR);
+    }
+}
+
 void TcpSocket::Close() noexcept {
     if (fd_ >= 0) {
         ::close(fd_);

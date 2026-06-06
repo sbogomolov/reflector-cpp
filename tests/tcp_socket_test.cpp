@@ -182,6 +182,26 @@ TEST_P(TcpSocketFamilyTest, ForwardsBytesAndSurfacesEof) {
     EXPECT_EQ(pair->server.Read(buf).status, IoStatus::Closed);
 }
 
+TEST_P(TcpSocketFamilyTest, ShutdownSendsFinButKeepsTheFdOpen) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    // Shutdown half-closes (sends a FIN) so the peer reads EOF, but unlike Close() it keeps the fd: the
+    // owner can shut a connection down promptly yet leave RAII to close the descriptor later.
+    pair->client.Shutdown();
+    EXPECT_TRUE(pair->client.IsValid());  // fd still owned
+    ASSERT_TRUE(WaitReadable(pair->server.Fd()));
+    std::byte buf[16];
+    EXPECT_EQ(pair->server.Read(buf).status, IoStatus::Closed);
+}
+
+TEST_P(TcpSocketFamilyTest, ShutdownOnAnUnconnectedSocketIsHarmless) {
+    auto listener = TcpSocket::Listen({Loopback(), 0});
+    ASSERT_TRUE(listener.has_value());
+    listener->Shutdown();  // ENOTCONN on a never-connected socket -> best-effort no-op, fd still valid
+    EXPECT_TRUE(listener->IsValid());
+}
+
 TEST_P(TcpSocketFamilyTest, ReadOnIdleSocketWouldBlock) {
     auto pair = EstablishedPair();
     ASSERT_TRUE(pair.has_value());

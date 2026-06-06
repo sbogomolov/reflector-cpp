@@ -132,8 +132,10 @@ DialProxy::Connection::~Connection() noexcept {
 
 void DialProxy::Connection::Abort() noexcept {
     closed = true;
-    client_reg = {};
-    upstream_reg = {};
+    client_reg = {};       // unwatch both fds FIRST (kills any level-triggered read-spin); shutting down a
+    upstream_reg = {};     // still-watched fd would re-fire its EOF edge into a handler that only re-checks closed
+    client.Shutdown();     // then FIN both peers now, so a client is not blocked until eviction reaps the node
+    upstream.Shutdown();
 }
 
 void DialProxy::Connection::Sync(TcpSocket& sock) noexcept {
