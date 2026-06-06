@@ -22,17 +22,10 @@ Logger& GetLogger() noexcept {
     return logger;
 }
 
-// An authority parsed out of a header value, with its position in that value so the caller can splice a
-// replacement without searching for it again.
-struct Authority {
-    IpEndpoint endpoint;
-    size_t offset;  // start of the "host:port" substring within the value
-    size_t length;
-};
+} // namespace
 
-// Parses the authority from a header value. `bare` (Host) treats the whole value as "host:port"; otherwise
-// (Application-URL / Location) it expects an "http://host:port..." absoluteURI. nullopt when there is no
-// scheme/authority or no explicit numeric port.
+namespace reflector {
+
 std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     size_t auth_start = 0;
     if (!bare) {
@@ -50,49 +43,20 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     const size_t auth_len = auth_end - auth_start;
     const std::string_view authority = value.substr(auth_start, auth_len);
     const size_t colon = authority.rfind(':');
-    if (colon == std::string_view::npos) {
-        return std::nullopt;  // no explicit port -> nothing this proxy advertises
-    }
-    const std::string host{authority.substr(0, colon)};
-    const auto addr = IpAddress::FromString(host);
+    const std::string_view host = colon == std::string_view::npos ? authority : authority.substr(0, colon);
+    const auto addr = IpAddress::FromString(std::string{host});
     if (!addr) {
         return std::nullopt;
     }
-    const std::string_view port_text = authority.substr(colon + 1);
-    uint16_t port = 0;
-    if (std::from_chars(port_text.data(), port_text.data() + port_text.size(), port).ec != std::errc{}
-        || port == 0) {
-        return std::nullopt;
+    uint16_t port = 80;  // the http scheme default (RFC 3986) when the authority omits the port
+    if (colon != std::string_view::npos) {
+        const std::string_view port_text = authority.substr(colon + 1);
+        if (std::from_chars(port_text.data(), port_text.data() + port_text.size(), port).ec != std::errc{}
+            || port == 0) {
+            return std::nullopt;  // a ':' was present but the port is empty or non-numeric
+        }
     }
     return Authority{IpEndpoint{*addr, port}, auth_start, auth_len};
-}
-
-// Trims leading optional whitespace (after the ':') from a header value.
-std::string_view TrimLeadingSpace(std::string_view value) noexcept {
-    const size_t first = value.find_first_not_of(" \t");
-    return first == std::string_view::npos ? std::string_view{} : value.substr(first);
-}
-
-} // namespace
-
-namespace reflector {
-
-std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to) {
-    const std::string from_authority = std::format("{}", from);
-    const std::string to_authority = std::format("{}", to);
-    std::string out;
-    out.reserve(text.size() + to_authority.size());  // headroom in case the replacement authority is longer
-    size_t pos = 0;
-    while (true) {
-        const size_t hit = text.find(from_authority, pos);
-        if (hit == std::string_view::npos) {
-            out.append(text.substr(pos));
-            return out;
-        }
-        out.append(text.substr(pos, hit - pos));
-        out.append(to_authority);
-        pos = hit + from_authority.size();
-    }
 }
 
 HttpFraming::HttpFraming(EndpointRewrite rewrite)

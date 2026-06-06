@@ -11,11 +11,21 @@
 
 namespace reflector {
 
-// Replaces the authority `from` (its formatted "addr:port", compared literally) with `to` wherever it
-// appears in `text` — an SSDP LOCATION line or any header value. Returns the rewritten copy; `text`
-// without `from`'s authority is returned unchanged. (Used by the SSDP LOCATION path; HttpFraming splices
-// inline rather than calling this.)
-[[nodiscard]] std::string RewriteAuthority(std::string_view text, const IpEndpoint& from, const IpEndpoint& to);
+// An HTTP authority ("host:port", or a bare "host" when the port is omitted) parsed out of a header value
+// or URL, with its byte span within that value so a caller can splice a replacement over exactly that text.
+// An omitted port defaults to 80 (the http scheme default, RFC 3986); `length` then covers just the host.
+// Shared by HttpFraming (Host / Application-URL / Location on the TCP path) and the SSDP LOCATION rewrite.
+struct Authority {
+    IpEndpoint endpoint;
+    size_t offset;  // start of the "host[:port]" substring within the parsed value
+    size_t length;  // its length, so the replacement is spliced over exactly the authority text
+};
+
+// Parses the authority from a header value. `bare` (a Host value) treats the whole value as the authority;
+// otherwise (an Application-URL / Location / SSDP LOCATION value) it expects an "http://host[:port]..." URL.
+// nullopt when there is no http scheme/authority, a host that is not an IPv4 literal, or a malformed explicit
+// port. A missing port is not an error — it defaults to 80.
+[[nodiscard]] std::optional<Authority> ParseAuthority(std::string_view value, bool bare);
 
 // Per-direction incremental HTTP/1.1 framing + authority-header rewrite. The owner reads into its own
 // buffer and feeds a contiguous view; HttpFraming copies only the header (to rewrite Host / Application-URL

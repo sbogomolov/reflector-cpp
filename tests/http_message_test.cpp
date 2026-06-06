@@ -105,23 +105,57 @@ struct Driver {
 
 } // namespace
 
-TEST(RewriteAuthorityTest, SwapsMatchingAuthority) {
-    const std::string before = "http://10.1.3.80:36866/apps";
-    const std::string after = RewriteAuthority(before, Device(36866), Reflector(54321));
-    EXPECT_EQ(after, "http://192.168.1.2:54321/apps");
+TEST(ParseAuthorityTest, BareHostPortReturnsEndpointAndSpan) {
+    const std::string_view value = "10.1.3.80:36866";
+    const auto a = ParseAuthority(value, /*bare=*/true);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->endpoint, Device(36866));
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80:36866");
 }
 
-TEST(RewriteAuthorityTest, RewritesEveryOccurrence) {
-    const std::string before = "http://10.1.3.80:1461/ http://10.1.3.80:1461/desc.xml";
-    const std::string after = RewriteAuthority(before, Device(1461), Reflector(40000));
-    EXPECT_EQ(after, "http://192.168.1.2:40000/ http://192.168.1.2:40000/desc.xml");
+TEST(ParseAuthorityTest, BareHostWithoutPortDefaultsTo80) {
+    const std::string_view value = "10.1.3.80";  // a Host header may omit the port (RFC 9110 7.2)
+    const auto a = ParseAuthority(value, /*bare=*/true);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->endpoint, Device(80));
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80");  // the span is the bare host
 }
 
-TEST(RewriteAuthorityTest, LeavesNonMatchingTextAlone) {
-    const std::string before = "http://10.1.3.80:36866/apps";
-    EXPECT_EQ(RewriteAuthority(before, Device(1461), Reflector(40000)), before);
-    const std::string host_only = "http://10.1.3.80/apps";
-    EXPECT_EQ(RewriteAuthority(host_only, Device(36866), Reflector(54321)), host_only);
+TEST(ParseAuthorityTest, UrlAuthorityExcludesSchemeAndPath) {
+    const std::string_view value = "http://10.1.3.80:36866/apps/Netflix";
+    const auto a = ParseAuthority(value, /*bare=*/false);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->endpoint, Device(36866));
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80:36866");
+}
+
+TEST(ParseAuthorityTest, UrlWithoutPortDefaultsTo80) {
+    const std::string_view value = "http://10.1.3.80/dd.xml";  // an absolute http URL may omit the port
+    const auto a = ParseAuthority(value, /*bare=*/false);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->endpoint, Device(80));
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80");
+}
+
+TEST(ParseAuthorityTest, RejectsNonHttpAndMalformed) {
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:8008/x", /*bare=*/false).has_value());  // no http:// scheme
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:notaport", /*bare=*/true).has_value());  // colon, non-numeric port
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:", /*bare=*/true).has_value());          // trailing colon, no port digits
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:0", /*bare=*/true).has_value());         // port 0 is invalid
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:99999", /*bare=*/true).has_value());     // port out of range
+    EXPECT_FALSE(ParseAuthority("not-an-ip:8008", /*bare=*/true).has_value());      // host is not an IPv4 literal
+}
+
+TEST(HttpFramingTest, RewritesPortLessApplicationUrl) {
+    // A device whose REST server is on port 80 advertises a port-less Application-URL; it is still parsed
+    // (port 80 implied) and rewritten to the reflector listener.
+    RecordingRewrite rewrite{Device(80), Reflector(54321)};
+    HttpFraming framing(AsRewrite(rewrite));
+    Driver d{framing};
+    d.Read("HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80/apps\r\nContent-Length: 0\r\n\r\n");
+    EXPECT_TRUE(d.ok);
+    EXPECT_NE(d.out.find("Application-URL: http://192.168.1.2:54321/apps"), std::string::npos) << d.out;
+    EXPECT_EQ(d.out.find("10.1.3.80"), std::string::npos) << d.out;  // device authority fully spliced out
 }
 
 TEST(HttpFramingTest, ForwardsUnchangedWhenNothingIsRewritten) {
@@ -479,13 +513,12 @@ TEST(HttpFramingTest, LeavesHostnameUrlAuthorityUnchanged) {
     EXPECT_TRUE(rewrite.seen.empty());
 }
 
-TEST(HttpFramingTest, LeavesPortlessAndNonHttpUrlsUnchanged) {
-    // A URL with no explicit port and one whose scheme is not http:// are both out of scope — neither is
-    // surfaced, both pass through verbatim.
+TEST(HttpFramingTest, LeavesNonHttpUrlsUnchanged) {
+    // A URL whose scheme is not http:// is out of scope — it is not surfaced and passes through verbatim.
+    // (A port-less http URL, by contrast, IS in scope now — see RewritesPortLessApplicationUrl.)
     const std::string message =
         "HTTP/1.1 200 OK\r\n"
         "Application-URL: https://10.1.3.80:36866/apps\r\n"
-        "Location: http://10.1.3.80/desc.xml\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;
     HttpFraming framing(AsRewrite(rewrite));
