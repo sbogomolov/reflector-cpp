@@ -30,11 +30,10 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     size_t auth_start = 0;
     if (!bare) {
         constexpr std::string_view SCHEME = "http://";
-        const size_t scheme_at = value.find(SCHEME);
-        if (scheme_at == std::string_view::npos) {
-            return std::nullopt;  // only plain-http absoluteURIs are in scope
+        if (!StartsWithNoCase(value, SCHEME)) {
+            return std::nullopt;  // only a value that starts with a (case-insensitive) plain-http scheme
         }
-        auth_start = scheme_at + SCHEME.size();
+        auth_start = SCHEME.size();
     }
     size_t auth_end = value.find_first_of("/ \t\r", auth_start);
     if (auth_end == std::string_view::npos) {
@@ -51,9 +50,11 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     uint16_t port = 80;  // the http scheme default (RFC 3986) when the authority omits the port
     if (colon != std::string_view::npos) {
         const std::string_view port_text = authority.substr(colon + 1);
-        if (std::from_chars(port_text.data(), port_text.data() + port_text.size(), port).ec != std::errc{}
-            || port == 0) {
-            return std::nullopt;  // a ':' was present but the port is empty or non-numeric
+        const auto* const port_end = port_text.data() + port_text.size();
+        const auto result = std::from_chars(port_text.data(), port_end, port);
+        // Require the whole port_text to be consumed so trailing junk (e.g. "80x") is rejected, not truncated.
+        if (result.ec != std::errc{} || result.ptr != port_end || port == 0) {
+            return std::nullopt;  // a ':' was present but the port is empty, non-numeric, has trailing junk, or 0
         }
     }
     return Authority{IpEndpoint{*addr, port}, auth_start, auth_len};

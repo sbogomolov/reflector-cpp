@@ -139,11 +139,21 @@ TEST(ParseAuthorityTest, UrlWithoutPortDefaultsTo80) {
 
 TEST(ParseAuthorityTest, RejectsNonHttpAndMalformed) {
     EXPECT_FALSE(ParseAuthority("10.1.3.80:8008/x", /*bare=*/false).has_value());  // no http:// scheme
+    EXPECT_FALSE(ParseAuthority("ahead http://10.1.3.80:8008/", /*bare=*/false).has_value());  // scheme not at the start
     EXPECT_FALSE(ParseAuthority("10.1.3.80:notaport", /*bare=*/true).has_value());  // colon, non-numeric port
+    EXPECT_FALSE(ParseAuthority("10.1.3.80:80x", /*bare=*/true).has_value());       // trailing junk after the port
     EXPECT_FALSE(ParseAuthority("10.1.3.80:", /*bare=*/true).has_value());          // trailing colon, no port digits
     EXPECT_FALSE(ParseAuthority("10.1.3.80:0", /*bare=*/true).has_value());         // port 0 is invalid
     EXPECT_FALSE(ParseAuthority("10.1.3.80:99999", /*bare=*/true).has_value());     // port out of range
     EXPECT_FALSE(ParseAuthority("not-an-ip:8008", /*bare=*/true).has_value());      // host is not an IPv4 literal
+}
+
+TEST(ParseAuthorityTest, AcceptsCaseInsensitiveHttpScheme) {
+    const std::string_view value = "HTTP://10.1.3.80:8008/dd.xml";  // the scheme is case-insensitive (RFC 3986)
+    const auto a = ParseAuthority(value, /*bare=*/false);
+    ASSERT_TRUE(a.has_value());
+    EXPECT_EQ(a->endpoint, Device(8008));
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80:8008");
 }
 
 TEST(HttpFramingTest, RewritesPortLessApplicationUrl) {
