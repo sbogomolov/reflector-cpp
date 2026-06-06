@@ -9,6 +9,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <vector>
 #include <fcntl.h>
 #include <unistd.h>
 #include <netinet/in.h>
@@ -497,6 +498,94 @@ TEST_F(EventLoopDispatcherTest, ArmingWriteInterestWithNoHandlerIsRejected) {
     // with nothing to invoke and busy-spin. Disarming (already disarmed) is a harmless no-op.
     EXPECT_FALSE(dispatcher.SetWriteInterest(pair.client, true));
     EXPECT_TRUE(dispatcher.SetWriteInterest(pair.client, false));
+}
+
+// Registers a batch of fresh fds the first time it fires, forcing callbacks_ to grow (and rehash). Its own
+// fd stays write-armed. This reproduces the re-entrant registration the proxy's accept / EnsureRestListener
+// do from inside a read handler: PollOnce must re-resolve the fd's entry before dispatching its write half,
+// because the rehash invalidated the iterator captured before the read ran (line ~229 of PollOnce).
+struct RehashingReadable {
+    EventLoopDispatcher* dispatcher = nullptr;
+    std::vector<int>* extra_fds = nullptr;        // fds to register (kept open by the caller)
+    std::vector<Dispatcher::Registration>* regs = nullptr;
+    ReadableCounter sink{};  // the registered-batch handler target; lives as long as this struct (never fired)
+    int read_count = 0;
+    void OnReadable(int) {
+        ++read_count;
+        if (read_count > 1 || dispatcher == nullptr) {
+            return;  // register the batch exactly once
+        }
+        for (const int fd : *extra_fds) {
+            auto reg = dispatcher->Register(fd, CreateDelegate<&ReadableCounter::OnReadable>(&sink));
+            if (reg.IsValid()) {
+                regs->push_back(std::move(reg));
+            }
+        }
+    }
+};
+
+// A read handler that, when it fires, registers enough new fds to force a callbacks_ rehash WHILE its own fd
+// stays write-armed; PollOnce must still dispatch the write handler with no use-after-free. This is the line
+// the proxy's re-entrant EnsureRestListener / OnAccept depend on (PollOnce re-resolves the fd's entry after
+// the read handler ran, because a rehash there invalidated the iterator captured before the read).
+//
+// PLATFORM NOTE: the exact single-PollOnce read-then-rehash-then-write path (PollOnce.cpp line ~229) is only
+// reachable on epoll, where one wakeup can carry EPOLLIN|EPOLLOUT together; the read handler rehashes, then
+// the same PollOnce re-resolves and dispatches write. On kqueue read and write are SEPARATE filters delivered
+// one event per PollOnce, so they never coincide in a single call and the re-resolve branch is dead code there
+// — unreachable through PollOnce, hence the assertion below is the strongest portable form: it pins that the
+// write handler dispatches cleanly (ASan-clean) after a rehash triggered by its own fd's read handler,
+// however the backend sequences the two halves. We arm write from the start and drain the readable byte after
+// the first read so the read filter quiesces; we pump until BOTH halves have fired.
+TEST_F(EventLoopDispatcherTest, WriteDispatchSurvivesARehashTriggeredByItsOwnReadHandler) {
+    LoopbackPair pair;
+    ASSERT_TRUE(pair.Valid());
+
+    // Open a batch of fresh fds for the read handler to register, large enough to grow the bucket count past
+    // the initial registration (a handful would not necessarily rehash; 64 reliably does).
+    std::vector<int> extra_fds;
+    for (int i = 0; i < 64; ++i) {
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(fd, 0);
+        extra_fds.push_back(fd);
+    }
+    std::vector<Dispatcher::Registration> extra_regs;
+
+    RehashingReadable reader{.dispatcher = &dispatcher, .extra_fds = &extra_fds, .regs = &extra_regs};
+    WritableCounter writer;
+    // Write armed from the start: on epoll this lets a single wakeup deliver EPOLLIN|EPOLLOUT and hit the
+    // in-PollOnce re-resolve directly; on kqueue the two filters are sequenced across polls regardless.
+    auto registration = dispatcher.Register(
+        pair.client,
+        {.read = CreateDelegate<&RehashingReadable::OnReadable>(&reader),
+         .write = CreateDelegate<&WritableCounter::OnWritable>(&writer),
+         .write_armed = true});
+    ASSERT_TRUE(registration.IsValid());
+
+    // Make pair.client readable; pump until the read handler has fired (rehashing callbacks_) AND the write
+    // handler has dispatched at least once. Drain the readable byte once read has run so the read filter goes
+    // quiet and the loop can reach the write dispatch (level-triggered, the readable edge would otherwise
+    // re-fire every poll). Bounded.
+    ASSERT_TRUE(pair.PushByteToClient());
+    bool drained = false;
+    for (int poll = 0; poll < 400 && (reader.read_count == 0 || writer.count == 0); ++poll) {
+        dispatcher.PollOnce(std::chrono::milliseconds{1000});
+        if (reader.read_count > 0 && !drained) {
+            std::byte sink_byte{};
+            (void)::recv(pair.client, &sink_byte, 1, 0);  // consume the byte so readability quiesces
+            drained = true;
+        }
+    }
+
+    EXPECT_GE(reader.read_count, 1);    // the read handler ran and registered the batch (forcing a rehash)
+    EXPECT_GE(extra_regs.size(), 1u);   // the re-entrant registrations succeeded
+    EXPECT_GE(writer.count, 1);         // the write handler dispatched cleanly after the rehash (no UAF)
+    EXPECT_EQ(writer.last_fd, pair.client);
+
+    extra_regs.clear();  // unregister before closing the fds
+    for (const int fd : extra_fds) {
+        ::close(fd);
+    }
 }
 
 TEST_F(EventLoopDispatcherTest, FailedConnectSurfacesToAnArmedHandler) {

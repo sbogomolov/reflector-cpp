@@ -279,8 +279,8 @@ forward and how much of the input it consumed:
 `std::optional<Output> Feed(std::string_view input)`, with `Output { string_view header; string_view body;
 size_t consumed; }`. `header` is the **rewritten** header block — a view into HttpFraming's own scratch,
 because rewriting changes it — and is empty while a body streams across feeds. `body` is a **zero-copy
-slice of `input`** (the receive buffer), possibly empty. The owner forwards `header` then `body` together
-(one `writev`) and drops `consumed` bytes from its buffer. `nullopt` = a malformed or over-cap message →
+slice of `input`** (the receive buffer), possibly empty. The owner forwards `header` and `body` together in
+one `sendmsg` (the scatter-gather `Send`) and drops `consumed` bytes from its buffer. `nullopt` = a malformed or over-cap message →
 the owner closes; `consumed == 0` = nothing forwardable yet (an incomplete header) → read more and feed
 again. Each `Feed` yields at most one message's worth — a complete header plus the body bytes that have
 arrived — so the owner loops `Feed` over its buffer until `consumed == 0`. **Only the header is copied**
@@ -340,7 +340,7 @@ struct Connection : NoMove {   // one client<->device proxied TCP pair; the stab
   §5): `MAX_REST_LISTENERS` (≈ max DIAL devices) and `MAX_DISCOVERY_LISTENERS` (transient). An `Endpoint`
   referenced as both roles (a device serving description + REST on one port, like the reference server)
   is tagged `Rest` — the longer-lived role — and counts against the REST cap.
-- `connections_` keyed by a `ConnId`; `MAX_CONNECTIONS = 32` drop-new (mirrors SSDP's `MAX_SESSIONS`).
+- `connections_` keyed by a `ConnId`; `MAX_CONNECTIONS = 64` drop-new (mirrors SSDP's `MAX_SESSIONS`).
 - **Both `Endpoint` and `Connection` are the dispatcher's callback targets** — their handler methods are
   bound into the `Registration`s — so both are `NoMove` and live in **node-stable, id-keyed containers**
   (`std::unordered_map`), **never `std::vector`**: a vector reallocation relocates an element and dangles
@@ -383,7 +383,8 @@ The `Connection` never computes a write boolean; it forwards `TcpSocket::WantsWr
    upstream (`EINPROGRESS`) into it, **then** `Register` both fds with handlers bound to that pinned
    `Connection`: client `{read, write, write_armed = false}` (already established), upstream `{read,
    write, write_armed = true}` (watching connect-completion). Read is always armed. Set the connect
-   deadline, phase `Connecting`. (No edge can fire before the next `PollOnce` — single-threaded — so
+   deadline; the upstream is `Connecting` (tracked by `TcpSocket::IsConnecting()`, no phase enum). (No edge
+   can fire before the next `PollOnce` — single-threaded — so
    there is no window between emplace and `Register`.)
 2. **Connect completes** (upstream writable): `upstream.FinishConnect()` reads `SO_ERROR`; on success go
    `Open` and `Sync` (which disarms the now-idle upstream write); on error tear down. A connect *failure*
@@ -444,7 +445,7 @@ device is rewritten. Non-DIAL SSDP is untouched, and `DialProxy` never receives 
 
 ## 5. Lifecycle, caps, and teardown
 
-- **Connections:** `MAX_CONNECTIONS = 32`, drop-new at capacity (RFC 6888 posture, as SSDP). A
+- **Connections:** `MAX_CONNECTIONS = 64`, drop-new at capacity (RFC 6888 posture, as SSDP). A
   separate **connect deadline** reaps a pair stuck in `EINPROGRESS` (no I/O event ever fires for it);
   an **idle deadline** reaps an open-but-quiet pair. Both swept by the eviction `Timer`.
 - **Listeners — two roles, different lifetimes** (the DIAL spec mandates no port stability, §2.3):

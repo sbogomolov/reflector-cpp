@@ -420,6 +420,33 @@ TEST(HttpFramingTest, RewritesMultipleAuthorityHeadersInOneMessage) {
     EXPECT_EQ(rewrite.seen.size(), 2u);
 }
 
+TEST(HttpFramingTest, ScanDoesNotShortCircuitWhenAnEarlierHeaderIsAccepted) {
+    // Two URL headers in one message: the rewrite accepts the FIRST (Device(36866) -> Reflector) and
+    // declines the SECOND (a different device authority it doesn't own). The scan must visit BOTH headers
+    // (no short-circuit after the accepted splice), splicing the first and leaving the second verbatim, and
+    // still consume the whole message. This is the http_message half of the dial_proxy "second URL fails"
+    // partial-rewrite-then-Abort case: there the framer must still surface the second (unroutable) authority
+    // so the owner can drop the connection rather than leak it.
+    const std::string message =
+        "HTTP/1.1 200 OK\r\n"
+        "Application-URL: http://10.1.3.80:36866/apps\r\n"     // owned -> spliced
+        "Location: http://10.1.3.80:40000/apps/YouTube\r\n"   // NOT owned -> declined, left verbatim
+        "Content-Length: 0\r\n\r\n";
+    UrlRewrite rewrite;  // only swaps 10.1.3.80:36866
+    HttpFraming framing(AsRewrite(rewrite));
+    const auto r = framing.Feed(message);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->consumed, message.size());  // the whole message consumed despite the second decline
+    EXPECT_EQ(r->header,
+        "HTTP/1.1 200 OK\r\n"
+        "Application-URL: http://192.168.1.2:54321/apps\r\n"  // first spliced
+        "Location: http://10.1.3.80:40000/apps/YouTube\r\n"   // second left verbatim
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_EQ(rewrite.seen.size(), 2u);                       // BOTH headers surfaced — no short-circuit
+    EXPECT_EQ(rewrite.seen[0], Device(36866));
+    EXPECT_EQ(rewrite.seen[1], (IpEndpoint{IpAddress::FromV4Bytes(10, 1, 3, 80), 40000}));
+}
+
 TEST(HttpFramingTest, LeavesAuthorityUnchangedWhenRewriteDeclines) {
     // ParseAuthority surfaces a valid IP:port, but the rewrite returns nullopt for an endpoint it doesn't own.
     // The header passes through untouched, yet the endpoint was offered — distinguishing this from a value the

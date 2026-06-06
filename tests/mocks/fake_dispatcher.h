@@ -18,6 +18,10 @@ namespace reflector {
 class FakeDispatcher : public Dispatcher {
 public:
     [[nodiscard]] Dispatcher::Registration Register(int fd, FdCallbacks callbacks) override {
+        if (fail_registers_remaining > 0) {
+            --fail_registers_remaining;
+            return {};  // seam: drive the EnsureListener / OnAccept registration-failure rollback paths
+        }
         if (fd < 0 || !callbacks.read.IsValid() || callbacks_.contains(fd)) {
             return {};
         }
@@ -29,6 +33,10 @@ public:
     // Write interest starts disarmed — mirroring production (read is always armed). Toggling updates
     // the armed flag; false on an unwatched fd.
     [[nodiscard]] bool SetWriteInterest(int fd, bool enabled) noexcept override {
+        if (fail_set_write_interest_remaining > 0) {
+            --fail_set_write_interest_remaining;
+            return false;  // seam: drive Sync()'s SetWriteInterest-false -> Abort path
+        }
         const auto it = callbacks_.find(fd);
         if (it == callbacks_.end()) {
             return false;
@@ -47,6 +55,12 @@ public:
     void Run(const volatile std::sig_atomic_t& /*stop_requested*/) override { ++run_calls; }
 
     size_t run_calls = 0;
+
+    // Test seam: while > 0, the next Register fails (and decrements). A real reactor only fails Register under
+    // fd exhaustion; this drives the registration-failure rollback paths deterministically.
+    int fail_registers_remaining = 0;
+    // Test seam: while > 0, the next SetWriteInterest returns false (and decrements), driving Sync -> Abort.
+    int fail_set_write_interest_remaining = 0;
 
     // Invokes the read callback for `fd`, as the reactor would when `fd` becomes readable. Read is
     // always armed and always present (Register requires it), so this is a no-op only on an unwatched
