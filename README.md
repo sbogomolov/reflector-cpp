@@ -124,11 +124,12 @@ mac       = "B0:37:95:C5:60:BE"  # optional; the device's MAC (see below). Omit 
 wol       = true                 # optional; enable Wake-on-LAN reflection (default false)
 mdns      = true                 # optional; enable mDNS reflection (default false)
 ssdp      = true                 # optional; enable SSDP reflection (default false)
+dial      = true                 # optional; enable the DIAL app proxy (requires ssdp; IPv4-only; default false)
 wol_ports = [7, 9]               # optional; WoL UDP ports (default [7, 9]); only valid when wol = true
 address_family = "default"       # optional; default | dual | ipv4 | ipv6 (default "default")
 ```
 
-An entry must enable at least one protocol and expands into one reflector per enabled protocol, all sharing the entry's interfaces, `mac`, and `address_family`. The same shape serves a single device (set `mac`) or a whole network (omit `mac`). No IP addresses ever appear in the config.
+An entry must enable at least one protocol and expands into one reflector per enabled protocol, all sharing the entry's interfaces, `mac`, and `address_family`. The same shape serves a single device (set `mac`) or a whole network (omit `mac`). No IP addresses ever appear in the config. `dial` is not a separate reflector — it augments the entry's SSDP reflector with the DIAL application proxy (so it requires `ssdp`; see [DIAL](#dial)).
 
 ### The `mac` field
 
@@ -150,10 +151,19 @@ Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and 
 | WoL | `wol_ports` (default 7, 9) | `255.255.255.255` (v4) / `ff02::1` (v6) | magic packets source → target |
 | mDNS | 5353 | `224.0.0.251` / `ff02::fb` | queries source→target, responses target→source |
 | SSDP | 1900 | `239.255.255.250` / `ff02::c` + `ff05::c` | M-SEARCH source→target, NOTIFY target→source |
+| DIAL | 1900 + ephemeral TCP | (uses SSDP discovery) | terminating HTTP reverse proxy (IPv4 only) |
 
 WoL matching requires the magic-packet sequence (six `0xFF` bytes followed by the target MAC repeated 16 times) at the start of the UDP payload; trailing bytes such as a SecureOn password are ignored when matching and forwarded as-is. mDNS responses include unsolicited announcements (so they flow target→source too); mDNS/SSDP datagrams are re-emitted verbatim to the same group (SSDP at hop limit 2).
 
-For SSDP, multicast reflection delivers **passive** discovery — devices' periodic `NOTIFY ssdp:alive` advertisements reach the source segment so clients see them. **Active** discovery works end to end as well: a client's `M-SEARCH` is relayed to the target segment from a reserved ephemeral port, and the device's unicast `HTTP/1.1 200 OK` reply to that port is proxied back across to the original searcher. The proxy is always on whenever `ssdp` is enabled — it keeps one short-lived session per in-flight search (expiring shortly after the search's `MX` window) and needs no configuration. Reaching a device's `LOCATION` URL or driving DIAL across segments remains out of scope.
+For SSDP, multicast reflection delivers **passive** discovery — devices' periodic `NOTIFY ssdp:alive` advertisements reach the source segment so clients see them. **Active** discovery works end to end as well: a client's `M-SEARCH` is relayed to the target segment from a reserved ephemeral port, and the device's unicast `HTTP/1.1 200 OK` reply to that port is proxied back across to the original searcher. The proxy is always on whenever `ssdp` is enabled — it keeps one short-lived session per in-flight search (expiring shortly after the search's `MX` window) and needs no configuration. Reaching a device's `LOCATION` URL and driving an app launch across segments is the job of the optional DIAL proxy below.
+
+### DIAL
+
+DIAL (DIscovery And Launch — the protocol behind "cast to TV" for YouTube, Netflix, etc.) lets a phone or laptop find a smart TV and launch an app on it. The catch: a DIAL device restricts its description and REST endpoints to its **own subnet**, so a client on a different segment discovers the device but cannot drive it. Setting `dial = true` on an SSDP entry makes the reflector bridge that gap.
+
+It is a **terminating HTTP reverse proxy**. When a DIAL `LOCATION` (in a relayed `NOTIFY` or `M-SEARCH` `200 OK`) crosses target→source, the reflector mints a per-device ephemeral TCP listener on `source_if`'s address and rewrites the `LOCATION` authority to point at that listener. A source-side client then connects to the reflector, which opens an upstream connection to the device **bound to `target_if`'s address** — so the device sees an on-subnet client and serves it. Along the way it rewrites the four authority-bearing headers (`LOCATION`, the description's `Application-URL`, request `Host`, and response `Location`) from the device's authority to a reflector authority and back; HTTP bodies stream through untouched. App launch (`POST`) and stop (`DELETE`) work end to end.
+
+`dial = true` requires `ssdp` and is **IPv4-only** (the DIAL spec ties the device authority to an IPv4 address); an `ipv6`-only entry with `dial = true` is rejected at startup. It is the only DIAL knob — every cap and timeout is a fixed constant. The proxy degrades benignly: a `LOCATION`/`Application-URL` the reflector can't rewrite (an `https` URL, a hostname instead of an IPv4 literal, a listener cap/bind failure) is forwarded unchanged and logged, leaving on-subnet discovery unaffected.
 
 ### Duplicate detection
 
