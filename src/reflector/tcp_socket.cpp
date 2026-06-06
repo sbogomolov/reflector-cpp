@@ -346,7 +346,7 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering) {
-        GetLogger().Info("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+        GetLogger().Debug("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -381,7 +381,7 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering && !send_buffer_.Empty()) {
-        GetLogger().Info("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+        GetLogger().Debug("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -416,7 +416,7 @@ bool TcpSocket::Flush() noexcept {
         send_buffer_.Consume(wrote.bytes);
     }
     if (was_buffering && send_buffer_.Empty()) {
-        GetLogger().Info("fd {}: send buffer drained, resumed direct writes", fd_);
+        GetLogger().Debug("fd {}: send buffer drained, resumed direct writes", fd_);
     }
     return true;
 }
