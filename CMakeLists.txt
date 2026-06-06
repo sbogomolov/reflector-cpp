@@ -90,13 +90,15 @@ function(reflector_configure_project_target target)
         $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-cond>
         $<$<CXX_COMPILER_ID:GNU>:-Wduplicated-branches>
         $<$<CXX_COMPILER_ID:GNU>:-Wlogical-op>
+        $<$<CXX_COMPILER_ID:GNU>:-Wuseless-cast>
+        $<$<CXX_COMPILER_ID:GNU>:-Wformat-signedness>
         # Clang-only (no GCC equivalent):
         $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wcomma>
         $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wconditional-uninitialized>
-        # NOTE: a stricter GCC set (-Wuseless-cast, -Wformat-signedness, -Wmissing-declarations and the Clang
-        # twin -Wmissing-prototypes) is worth adding, but surfaces pre-existing warnings in the platform code
-        # (e.g. a useless cast in raw_socket.cpp, plus the Linux-only paths only the docker build compiles).
-        # Add it as a focused follow-up that fixes those under the docker gate, not bundled here.
+        # A free function with no prior declaration should be static or in an anonymous namespace; GCC
+        # spells this -Wmissing-declarations, Clang's C++ form is -Wmissing-prototypes.
+        $<$<CXX_COMPILER_ID:GNU>:-Wmissing-declarations>
+        $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wmissing-prototypes>
         $<$<CONFIG:Debug>:-ggdb3>
         ${_reflector_release_compile_options}
     )

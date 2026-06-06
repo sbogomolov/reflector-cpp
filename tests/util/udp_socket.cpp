@@ -236,7 +236,7 @@ bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& in
     // kernel requires for the embedded address. Mirrors RawSocket::JoinMulticastGroup.
     group_req request{};
     request.gr_interface = idx;
-    group.ToSockaddr(reinterpret_cast<sockaddr_storage&>(request.gr_group), /*port=*/0);
+    group.ToSockaddr(request.gr_group, /*port=*/0);
     const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(fd_, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
         logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,

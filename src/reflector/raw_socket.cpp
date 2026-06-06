@@ -440,7 +440,7 @@ bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
     // length field that the kernel requires for the embedded address here.
     group_req request{};
     request.gr_interface = interface_index_;
-    group.ToSockaddr(reinterpret_cast<sockaddr_storage&>(request.gr_group), /*port=*/0);
+    group.ToSockaddr(request.gr_group, /*port=*/0);
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(join_fd, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
