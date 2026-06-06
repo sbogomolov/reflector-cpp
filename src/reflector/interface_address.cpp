@@ -136,7 +136,7 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
     // at one page covers the common case in a single pass. operator new over-aligns the
     // storage, so the nlmsghdr cast below is sound.
     std::vector<std::byte> buffer(8192);
-    for (;;) {
+    while (true) {
         const auto needed = recv(fd, buffer.data(), buffer.size(), MSG_PEEK | MSG_TRUNC);
         if (needed < 0) {
             if (errno == EINTR) {

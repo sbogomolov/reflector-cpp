@@ -138,7 +138,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     // index, and on overflow we drop the partial list and emit a single refresh-all instead.
     std::vector<unsigned> changed;
     bool overflowed = false;
-    for (;;) {
+    while (true) {
         const auto received = recv(fd_, buffer.data(), buffer.size(), 0);
         if (received < 0) {
             if (errno == EINTR) {
