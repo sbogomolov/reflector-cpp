@@ -289,6 +289,8 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         }
     }
     if (!send_buffer_.Append(data)) {
+        GetLogger().Error("Send buffer overflow for fd {}: {} queued + {}-byte tail exceeds the {}-byte cap",
+            fd_, send_buffer_.Size(), data.size(), MAX_SEND_BUFFER);
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering) {
