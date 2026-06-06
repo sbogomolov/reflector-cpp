@@ -122,10 +122,11 @@ private:
         std::span<const std::span<const std::byte>> chunks, size_t already_sent);
 
     // Outbound-buffer cap: a Send whose unsent tail would exceed this aborts the connection (drop-and-close).
-    // DIAL carries only small control messages that the kernel accepts immediately, so in normal operation
-    // this buffer stays empty — StreamBuffer is lazily allocated, so an undrained-tail of 0 costs no bytes —
-    // and the cap only ever bites a genuinely stalled peer. Independent of the receive cap (a single message
-    // never fills it), so it is not part of the receive-buffer cap hierarchy.
+    // On a constrained router the kernel send buffer can be ~1 segment, so a normal multi-segment response
+    // routinely parks its tail here for a round-trip until the peer ACKs and the kernel takes the rest —
+    // expected backpressure, not a fault. StreamBuffer is lazily allocated, so an empty buffer costs no bytes;
+    // the 8 KB cap only bites a genuinely stalled peer. Independent of the receive cap (a single message never
+    // fills it), so it is not part of the receive-buffer cap hierarchy.
     static constexpr size_t MAX_SEND_BUFFER = 8 * 1024;
 
     // One scatter-gather Send packs up to this many chunks into a single sendmsg (DIAL passes 2: header +
