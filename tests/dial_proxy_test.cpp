@@ -46,7 +46,7 @@ protected:
     FakeLinkSocket source_if;  // source_v4 defaults to 127.0.0.1, so listeners bind loopback
     FakeLinkSocket target_if;
 
-    DialProxy MakeProxy() { return DialProxy{dispatcher, source_if, target_if}; }
+    DialProxy MakeProxy() { return DialProxy{dispatcher, source_if, target_if, "DialProxy:test"}; }
 
     static std::optional<IpEndpoint> EnsureRest(DialProxy& proxy, const IpEndpoint& device) {
         return proxy.EnsureRestListener(device);

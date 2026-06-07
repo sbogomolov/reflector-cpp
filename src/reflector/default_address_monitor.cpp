@@ -1,6 +1,7 @@
 #include "default_address_monitor.h"
 
 #include "error.h"
+#include "logger.h"
 
 #include <algorithm>
 #include <array>
@@ -29,6 +30,11 @@ namespace reflector {
 
 namespace {
 
+Logger& GetLogger() noexcept {
+    static Logger logger{"AddressMonitor"};
+    return logger;
+}
+
 // A single address notification is small and bounded — an ifaddrmsg / ifa_msghdr plus a few short
 // attributes — with none of the large per-interface blocks that force the RTM_GETLINK dump to grow
 // its buffer. The kernel delivers each notification as its own datagram, so 4 KB comfortably holds
@@ -44,14 +50,14 @@ void AddUnique(std::vector<unsigned>& indices, unsigned index) {
 } // namespace
 
 DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher)
-        : logger_{"AddressMonitor"}, dispatcher_{&dispatcher} {
+        : dispatcher_{&dispatcher} {
     if (!Open()) {
         Close();
     }
 }
 
 DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher, int fd) noexcept
-        : logger_{"AddressMonitor"}, dispatcher_{&dispatcher}, fd_{fd} {}
+        : dispatcher_{&dispatcher}, fd_{fd} {}
 
 DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, int fd) {
     return DefaultAddressMonitor{dispatcher, fd};
@@ -59,7 +65,7 @@ DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, 
 
 bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept {
     if (!on_change.IsValid()) {
-        logger_.Error("Cannot start address monitor: the change callback is not bound");
+        GetLogger().Error("Cannot start address monitor: the change callback is not bound");
         Close();
         return false;
     }
@@ -77,7 +83,7 @@ bool DefaultAddressMonitor::Open() noexcept {
 #if defined(__linux__)
     fd_ = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE);
     if (fd_ < 0) {
-        logger_.Error("Cannot open netlink socket: {}", Error::FromErrno());
+        GetLogger().Error("Cannot open netlink socket: {}", Error::FromErrno());
         return false;
     }
 
@@ -85,17 +91,17 @@ bool DefaultAddressMonitor::Open() noexcept {
     address.nl_family = AF_NETLINK;
     address.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
     if (bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
-        logger_.Error("Cannot subscribe to netlink address groups: {}", Error::FromErrno());
+        GetLogger().Error("Cannot subscribe to netlink address groups: {}", Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
     fd_ = socket(PF_ROUTE, SOCK_RAW, 0);
     if (fd_ < 0) {
-        logger_.Error("Cannot open route socket: {}", Error::FromErrno());
+        GetLogger().Error("Cannot open route socket: {}", Error::FromErrno());
         return false;
     }
     if (fcntl(fd_, F_SETFL, O_NONBLOCK) != 0) {
-        logger_.Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
+        GetLogger().Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
         return false;
     }
 #endif
@@ -106,10 +112,10 @@ bool DefaultAddressMonitor::Open() noexcept {
 bool DefaultAddressMonitor::Watch() noexcept {
     registration_ = dispatcher_->Register(fd_, CreateDelegate<&DefaultAddressMonitor::OnReadable>(this));
     if (!registration_.IsValid()) {
-        logger_.Error("Cannot register the address-notification socket with the dispatcher");
+        GetLogger().Error("Cannot register the address-notification socket with the dispatcher");
         return false;
     }
-    logger_.Debug("Watching for interface address changes on fd {}", fd_);
+    GetLogger().Debug("Watching for interface address changes on fd {}", fd_);
     return true;
 }
 
@@ -153,7 +159,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
                 continue;
             }
 #endif
-            logger_.Error("Cannot read address notifications: {}", Error::FromErrno());
+            GetLogger().Error("Cannot read address notifications: {}", Error::FromErrno());
             break;
         }
         if (received == 0) {
@@ -168,7 +174,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     }
 
     if (overflowed) {
-        logger_.Warning("Address notifications overflowed; refreshing all interfaces");
+        GetLogger().Warning("Address notifications overflowed; refreshing all interfaces");
         on_change_(0u);
     } else {
         for (const unsigned index : changed) {

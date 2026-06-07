@@ -4,6 +4,7 @@
 #include "http_message.h"
 #include "ip_endpoint.h"
 #include "link_socket.h"
+#include "logger.h"
 #include "tcp_socket.h"
 #include "timer.h"
 #include "util/no_move.h"
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <unordered_map>
 
 namespace reflector {
@@ -69,7 +71,7 @@ public:
     // Borrows the dispatcher (reached via PacketDispatcher::UnderlyingDispatcher(), as the SSDP eviction
     // timer does) and the source/target interface sockets it binds/connects from. The sockets and the
     // dispatcher must outlive this proxy. DIAL is IPv4-only.
-    DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if);
+    DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if, std::string logger_name);
 
     // Find-or-create a Discovery listener for a device's description endpoint; returns the reflector
     // authority (source_if-addr:listener-port) to advertise in the rewritten LOCATION, or nullopt on a
@@ -184,6 +186,7 @@ private:
     // once both maps are empty. `now` is the reactor's fire-cycle time, also the test seam.
     void EvictExpired(std::chrono::steady_clock::time_point now) noexcept;
 
+    Logger logger_;  // "DialProxy:{name}:{src}->{tgt}" — passed in by SsdpReflector
     Dispatcher& dispatcher_;
     LinkSocket& source_if_;
     LinkSocket& target_if_;

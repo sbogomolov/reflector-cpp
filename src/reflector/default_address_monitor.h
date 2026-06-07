@@ -2,7 +2,6 @@
 
 #include "address_monitor.h"
 #include "dispatcher.h"
-#include "logger.h"
 #include "util/no_move.h"
 
 #include <cstddef>
@@ -55,7 +54,6 @@ private:
     void CollectChangedInterfaces(std::span<const std::byte> messages,
         std::vector<unsigned>& changed) const noexcept;
 
-    Logger logger_;
     Dispatcher* dispatcher_;
     // Invalid (default-constructed) until Start() or the testing constructor binds it. Always
     // valid by the time the fd is watched, so OnReadable can call it.

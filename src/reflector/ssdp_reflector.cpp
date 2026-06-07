@@ -82,7 +82,8 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
     // is reflectable here, so the proxy always has a source_if V4 address to bind its listeners on. The
     // device speaks DIAL on target_if and the client reaches it on source_if (LOCATION rewrite direction).
     if (config.dial) {
-        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket, target_socket);
+        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket, target_socket,
+            std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
     }
 
     logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",

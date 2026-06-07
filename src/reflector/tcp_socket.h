@@ -1,6 +1,7 @@
 #pragma once
 
 #include "reflector/ip_endpoint.h"
+#include "reflector/logger.h"
 #include "reflector/util/no_copy.h"
 #include "reflector/util/stream_buffer.h"
 
@@ -135,6 +136,7 @@ private:
 
     // Members largest-first so the struct's only padding is at the end.
     StreamBuffer send_buffer_{MAX_SEND_BUFFER};
+    Logger logger_;                   // "TcpSocket:{fd}" — set in the ctor once the fd is known
     IpEndpoint local_;                // bound addr (Listen) / connect source / accept local — always known
     std::optional<IpEndpoint> peer_;  // the connected peer; empty for a listener
     int fd_ = -1;

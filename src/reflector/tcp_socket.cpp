@@ -6,6 +6,7 @@
 #include <array>
 #include <cerrno>
 #include <cstring>
+#include <format>
 #include <utility>
 #include <fcntl.h>
 #include <net/if.h>
@@ -84,7 +85,8 @@ namespace reflector {
 
 TcpSocket::TcpSocket(int fd, const IpEndpoint& local, const std::optional<IpEndpoint>& peer,
     bool connecting) noexcept
-        : local_{local}, peer_{peer}, fd_{fd}, connecting_{connecting} {}
+        : logger_{std::format("TcpSocket:{}", fd)}
+        , local_{local}, peer_{peer}, fd_{fd}, connecting_{connecting} {}
 
 TcpSocket::~TcpSocket() noexcept {
     Close();
@@ -92,6 +94,7 @@ TcpSocket::~TcpSocket() noexcept {
 
 TcpSocket::TcpSocket(TcpSocket&& other) noexcept
         : send_buffer_{std::move(other.send_buffer_)},
+          logger_{std::move(other.logger_)},
           local_{std::move(other.local_)},
           peer_{std::move(other.peer_)},
           fd_{std::exchange(other.fd_, -1)},
@@ -101,6 +104,7 @@ TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
         Close();
         send_buffer_ = std::move(other.send_buffer_);
+        logger_ = std::move(other.logger_);
         local_ = std::move(other.local_);
         peer_ = std::move(other.peer_);
         fd_ = std::exchange(other.fd_, -1);
@@ -230,11 +234,11 @@ bool TcpSocket::FinishConnect() noexcept {
     int so_error = 0;
     socklen_t len = sizeof(so_error);
     if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
-        GetLogger().Error("Cannot read SO_ERROR for fd {}: {}", fd_, Error::FromErrno());
+        logger_.Error("Cannot read SO_ERROR: {}", Error::FromErrno());
         return false;
     }
     if (so_error != 0) {
-        GetLogger().Error("Connect failed for fd {}: {}", fd_, Error::FromErrno(so_error));
+        logger_.Error("Connect failed: {}", Error::FromErrno(so_error));
         return false;
     }
     connecting_ = false;
@@ -252,7 +256,7 @@ IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
-    GetLogger().Error("Receive failed for fd {}: {}", fd_, Error::FromErrno());
+    logger_.Error("Receive failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -280,7 +284,7 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
         return {IoStatus::WouldBlock, 0};
     }
 #endif
-    GetLogger().Error("Send failed for fd {}: {}", fd_, Error::FromErrno());
+    logger_.Error("Send failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -322,7 +326,7 @@ IoResult TcpSocket::WriteSomeV(std::span<const std::span<const std::byte>> chunk
         return {IoStatus::WouldBlock, 0};
     }
 #endif
-    GetLogger().Error("Send failed for fd {}: {}", fd_, Error::FromErrno());
+    logger_.Error("Send failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -341,12 +345,12 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         }
     }
     if (!send_buffer_.Append(data)) {
-        GetLogger().Error("Send buffer overflow for fd {}: {} queued + {}-byte tail exceeds the {}-byte cap",
-            fd_, send_buffer_.Size(), data.size(), MAX_SEND_BUFFER);
+        logger_.Error("Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
+            send_buffer_.Size(), data.size(), MAX_SEND_BUFFER);
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering) {
-        GetLogger().Debug("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+        logger_.Debug("Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -356,8 +360,8 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
     // buffers and flushes on later writable edges — but a caller only ever passes a header + body (2 chunks),
     // so a scatter this large is unexpected: warn and carry on.
     if (chunks.size() > MAX_SEND_CHUNKS) {
-        GetLogger().Warning("Scatter-send of {} chunks on fd {} exceeds the {}-chunk sendmsg cap; the overflow "
-            "buffers and flushes on later writable edges", chunks.size(), fd_, MAX_SEND_CHUNKS);
+        logger_.Warning("Scatter-send of {} chunks exceeds the {}-chunk sendmsg cap; the overflow "
+            "buffers and flushes on later writable edges", chunks.size(), MAX_SEND_CHUNKS);
     }
     // Write through only when nothing is already queued; otherwise the chunks follow the backlog in order
     // (already_sent stays 0, so AppendUnsent queues them whole).
@@ -376,12 +380,12 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
         for (const std::span<const std::byte> chunk : chunks) {
             total += chunk.size();
         }
-        GetLogger().Error("Send buffer overflow for fd {}: {} queued + {}-byte tail exceeds the {}-byte cap",
-            fd_, backlog, total - already_sent, MAX_SEND_BUFFER);
+        logger_.Error("Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
+            backlog, total - already_sent, MAX_SEND_BUFFER);
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering && !send_buffer_.Empty()) {
-        GetLogger().Debug("fd {}: started buffering, {} bytes queued", fd_, send_buffer_.Size());
+        logger_.Debug("Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -416,7 +420,7 @@ bool TcpSocket::Flush() noexcept {
         send_buffer_.Consume(wrote.bytes);
     }
     if (was_buffering && send_buffer_.Empty()) {
-        GetLogger().Debug("fd {}: send buffer drained, resumed direct writes", fd_);
+        logger_.Debug("Send buffer drained, resumed direct writes");
     }
     return true;
 }

@@ -12,21 +12,11 @@
 #include <string_view>
 #include <utility>
 
-namespace {
-
-using namespace reflector;
-
-Logger& GetLogger() noexcept {
-    static Logger logger{"DialProxy"};
-    return logger;
-}
-
-} // namespace
-
 namespace reflector {
 
-DialProxy::DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if)
-        : dispatcher_{dispatcher}
+DialProxy::DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if, std::string logger_name)
+        : logger_{std::move(logger_name)}
+        , dispatcher_{dispatcher}
         , source_if_{source_if}
         , target_if_{target_if}
         , eviction_timer_{dispatcher} {}
@@ -53,7 +43,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         // Over cap: refuse without demoting (close-don't-forward, as a fresh over-cap mint does).
         if (role == Endpoint::Role::Rest && endpoint.role == Endpoint::Role::Discovery) {
             if (CountInRole(Endpoint::Role::Rest) >= MAX_REST_LISTENERS) {
-                GetLogger().Error("Cannot promote {} to rest: rest listener cap reached", device);
+                logger_.Error("Cannot promote {} to rest: rest listener cap reached", device);
                 return std::nullopt;
             }
             endpoint.role = Endpoint::Role::Rest;
@@ -65,20 +55,20 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         ? MAX_DISCOVERY_LISTENERS
         : MAX_REST_LISTENERS;
     if (CountInRole(role) >= role_cap) {
-        GetLogger().Error("Cannot proxy {}: {} listener cap reached", device,
+        logger_.Error("Cannot proxy {}: {} listener cap reached", device,
             role == Endpoint::Role::Rest ? "rest" : "discovery");
         return std::nullopt;
     }
 
     const auto source_address = source_if_.SourceAddress(IpAddress::Family::V4);
     if (!source_address.has_value()) {
-        GetLogger().Error("Cannot proxy {}: source interface has no IPv4 address", device);
+        logger_.Error("Cannot proxy {}: source interface has no IPv4 address", device);
         return std::nullopt;
     }
 
     auto listener = TcpSocket::Listen({*source_address, 0});
     if (!listener.has_value()) {
-        GetLogger().Error("Cannot proxy {}: failed to open a listener on {}", device, *source_address);
+        logger_.Error("Cannot proxy {}: failed to open a listener on {}", device, *source_address);
         return std::nullopt;
     }
     const auto authority = listener->LocalEndpoint();
@@ -91,7 +81,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
 
     auto registration = dispatcher_.Register(listener_fd, CreateDelegate<&DialProxy::OnAccept>(this));
     if (!registration.IsValid()) {
-        GetLogger().Error("Cannot proxy {}: failed to register the listener", device);
+        logger_.Error("Cannot proxy {}: failed to register the listener", device);
         endpoints_.erase(it);  // drops the listener (registration was never valid)
         return std::nullopt;
     }
@@ -105,7 +95,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         eviction_timer_.Start(EVICTION_INTERVAL, CreateDelegate<&DialProxy::EvictExpired>(this));
     }
 
-    GetLogger().Debug("Created {} listener {} for {}", role == Endpoint::Role::Rest ? "rest" : "discovery",
+    logger_.Debug("Created {} listener {} for {}", role == Endpoint::Role::Rest ? "rest" : "discovery",
         authority, device);
     return authority;
 }
@@ -140,7 +130,7 @@ void DialProxy::Connection::Abort() noexcept {
 
 void DialProxy::Connection::Sync(TcpSocket& sock) noexcept {
     if (!owner.dispatcher_.SetWriteInterest(sock.Fd(), sock.WantsWrite())) {
-        GetLogger().Error("Cannot set write interest for fd {} (device {}); aborting connection",
+        owner.logger_.Error("Cannot set write interest for fd {} (device {}); aborting connection",
             sock.Fd(), endpoint.device);
         Abort();
     }
@@ -272,7 +262,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
 
     auto* ep = FindEndpointByListenerFd(listener_fd);
     if (ep == nullptr) {
-        GetLogger().Error("Accept on fd {} has no owning endpoint; ignoring", listener_fd);
+        logger_.Error("Accept on fd {} has no owning endpoint; ignoring", listener_fd);
         return;
     }
     ep->last_active = now;
@@ -283,18 +273,18 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     }
 
     if (connections_.size() >= MAX_CONNECTIONS) {
-        GetLogger().Warning("Dropping accept for {}: connection cap reached", ep->device);
+        logger_.Warning("Dropping accept for {}: connection cap reached", ep->device);
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 
     const auto bind = target_if_.SourceAddress(IpAddress::Family::V4);
     if (!bind.has_value()) {
-        GetLogger().Error("Dropping accept for {}: target interface has no IPv4 address", ep->device);
+        logger_.Error("Dropping accept for {}: target interface has no IPv4 address", ep->device);
         return;
     }
     auto upstream = TcpSocket::Connect(ep->device, {*bind, 0}, target_if_.InterfaceIndex());
     if (!upstream.has_value()) {
-        GetLogger().Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
+        logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;
     }
 
@@ -325,13 +315,13 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
         client_reg = {};
         upstream_reg = {};
         connections_.erase(it);
-        GetLogger().Error("Dropping accept for {}: failed to register the connection fds", ep->device);
+        logger_.Error("Dropping accept for {}: failed to register the connection fds", ep->device);
         return;
     }
 
     conn.client_reg = std::move(client_reg);
     conn.upstream_reg = std::move(upstream_reg);
-    GetLogger().Debug("Opened connection {} (client fd {}, upstream fd {}) for {}", id, client_fd, upstream_fd,
+    logger_.Debug("Opened connection {} (client fd {}, upstream fd {}) for {}", id, client_fd, upstream_fd,
         ep->device);
 }
 
@@ -364,7 +354,7 @@ void DialProxy::EvictExpired(std::chrono::steady_clock::time_point now) noexcept
     });
 
     if (connections_reaped > 0 || endpoints_reaped > 0) {
-        GetLogger().Debug("Evicted {} connection(s) and {} listener(s); {} connection(s), {} listener(s) remain",
+        logger_.Debug("Evicted {} connection(s) and {} listener(s); {} connection(s), {} listener(s) remain",
             connections_reaped, endpoints_reaped, connections_.size(), endpoints_.size());
     }
 

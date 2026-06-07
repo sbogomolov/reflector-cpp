@@ -5,7 +5,6 @@
 #include "default_packet_dispatcher.h"
 #include "dispatcher.h"
 #include "link_socket.h"
-#include "logger.h"
 #include "reflector.h"
 #include "util/no_move.h"
 
@@ -81,7 +80,6 @@ private:
     void OnInterfaceChanged(unsigned interface_index) noexcept;
 
     SocketFactory socket_factory_;
-    Logger logger_;
 
     // Declaration order is teardown order in reverse. Within the packet pipeline: reflectors drop
     // their packet-dispatcher registrations first, the packet dispatcher then drops its per-socket

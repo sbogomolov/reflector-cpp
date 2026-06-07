@@ -2,6 +2,7 @@
 
 #include "default_address_monitor.h"
 #include "event_loop_dispatcher.h"
+#include "logger.h"
 #include "mdns_reflector.h"
 #include "raw_socket.h"
 #include "ssdp_reflector.h"
@@ -14,13 +15,20 @@
 #include <utility>
 #include <vector>
 
+namespace {
+using namespace reflector;
+Logger& GetLogger() noexcept {
+    static Logger logger{"Application"};
+    return logger;
+}
+} // namespace
+
 namespace reflector {
 
 Application::Application()
         : socket_factory_{[](std::string_view interface) -> std::unique_ptr<LinkSocket> {
               return std::make_unique<RawSocket>(interface);
           }}
-        , logger_{"Application"}
         , dispatcher_{std::make_unique<EventLoopDispatcher>()}
         , address_monitor_{std::make_unique<DefaultAddressMonitor>(*dispatcher_)} {
     StartMonitor();
@@ -29,7 +37,6 @@ Application::Application()
 Application::Application(std::unique_ptr<Dispatcher> dispatcher, std::unique_ptr<AddressMonitor> monitor,
     SocketFactory socket_factory)
         : socket_factory_{std::move(socket_factory)}
-        , logger_{"Application"}
         , dispatcher_{std::move(dispatcher)}
         , address_monitor_{std::move(monitor)} {
     StartMonitor();
@@ -44,7 +51,7 @@ void Application::StartMonitor() {
     // Address-change refresh is best-effort: if the monitor can't start (it logs the cause),
     // carry on without it rather than failing the daemon.
     if (!address_monitor_->Start(CreateDelegate<&Application::OnInterfaceChanged>(this))) {
-        logger_.Warning("Address monitor unavailable; source addresses will not refresh on interface changes");
+        GetLogger().Warning("Address monitor unavailable; source addresses will not refresh on interface changes");
     }
 }
 
@@ -64,20 +71,20 @@ bool Application::ConfigureReflectors(const std::vector<ConfigType>& configs, st
     for (const auto& config : configs) {
         auto* source_socket = GetOrCreateSocket(config.source_if);
         if (source_socket == nullptr) {
-            logger_.Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+            GetLogger().Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
                 protocol, config.name, config.source_if);
             return false;
         }
         auto* target_socket = GetOrCreateSocket(config.target_if);
         if (target_socket == nullptr) {
-            logger_.Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+            GetLogger().Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
                 protocol, config.name, config.target_if);
             return false;
         }
 
         auto reflector = std::make_unique<ReflectorType>(packet_dispatcher_, *source_socket, *target_socket, config);
         if (!reflector->IsValid()) {
-            logger_.Error("Cannot configure {} reflector \"{}\": setup failed", protocol, config.name);
+            GetLogger().Error("Cannot configure {} reflector \"{}\": setup failed", protocol, config.name);
             return false;
         }
         reflectors_.push_back(std::move(reflector));
