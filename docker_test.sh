@@ -6,7 +6,8 @@
 #
 #   ./docker_test.sh                      # Debug (ASan/UBSan)
 #   ./docker_test.sh release              # Release
-#   ./docker_test.sh debug -R RawSocket   # extra args are forwarded to ctest
+#   ./docker_test.sh valgrind             # unit binary under Valgrind memcheck (Debug, no sanitizers)
+#   ./docker_test.sh debug -R RawSocket   # extra args forwarded to ctest (debug/release) or gtest (valgrind)
 set -euo pipefail
 
 variant="${1:-debug}"
@@ -15,9 +16,9 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "${variant}" in
-    debug | release) ;;
+    debug | release | valgrind) ;;
     *)
-        echo "usage: $0 [debug|release] [ctest args...]" >&2
+        echo "usage: $0 [debug|release|valgrind] [extra args...]" >&2
         exit 2
         ;;
 esac

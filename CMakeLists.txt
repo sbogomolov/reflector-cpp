@@ -28,6 +28,7 @@ unset(_reflector_sanitize_default)
 
 option(REFLECTOR_ENABLE_E2E_TESTS "Enable Docker-backed end-to-end tests" OFF)
 option(REFLECTOR_ENABLE_DOCKER_TESTS "Enable Docker-backed build tests" OFF)
+option(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS "Enable the Docker-backed unit suite under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
 
 if(REFLECTOR_ENABLE_CCACHE)
@@ -174,6 +175,25 @@ if(BUILD_TESTING)
         set_tests_properties(Docker.E2E PROPERTIES
             LABELS "e2e;docker"
             TIMEOUT 180
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endif()
+
+    if(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS)
+        find_program(DOCKER_EXECUTABLE docker)
+        if(NOT DOCKER_EXECUTABLE)
+            message(FATAL_ERROR "REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS requires the docker executable")
+        endif()
+
+        # docker_test.sh valgrind builds the test-valgrind image and runs the whole unit binary under
+        # memcheck in a CAP_NET_ADMIN container. Valgrind is ~20-40x slower, hence the long timeout.
+        add_test(
+            NAME Valgrind.Unit
+            COMMAND ${PROJECT_SOURCE_DIR}/docker_test.sh valgrind
+        )
+        set_tests_properties(Valgrind.Unit PROPERTIES
+            LABELS "unit;docker;valgrind"
+            TIMEOUT 1800
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
     endif()

@@ -41,8 +41,6 @@ RUN --mount=type=cache,target=/src/build-test-debug/_deps,sharing=locked \
     cmake -G Ninja -B build-test-debug \
         -D CMAKE_BUILD_TYPE=Debug \
         -D BUILD_TESTING=ON \
-        -D REFLECTOR_ENABLE_DOCKER_TESTS=OFF \
-        -D REFLECTOR_ENABLE_E2E_TESTS=OFF \
         -D REFLECTOR_SANITIZE=ON \
     && cmake --build build-test-debug --target reflector_test
 ENTRYPOINT ["ctest", "--test-dir", "build-test-debug", "-L", "unit"]
@@ -55,12 +53,38 @@ RUN --mount=type=cache,target=/src/build-test-release/_deps,sharing=locked \
     cmake -G Ninja -B build-test-release \
         -D CMAKE_BUILD_TYPE=Release \
         -D BUILD_TESTING=ON \
-        -D REFLECTOR_ENABLE_DOCKER_TESTS=OFF \
-        -D REFLECTOR_ENABLE_E2E_TESTS=OFF \
         -D REFLECTOR_SANITIZE=OFF \
     && cmake --build build-test-release --target reflector_test
 ENTRYPOINT ["ctest", "--test-dir", "build-test-release", "-L", "unit"]
 CMD ["--output-on-failure"]
+
+# Run the whole unit binary under Valgrind memcheck. Debug + no sanitizers (Valgrind and ASan are
+# mutually exclusive; -g yields readable traces) — the instrumentation is orthogonal to the
+# test-debug/test-release build variants. Run via `docker run --cap-add=NET_ADMIN` so the RequiresRoot
+# tests execute too; a definite/indirect/possible leak or any memcheck error exits 1 (see docker_test.sh
+# valgrind). "still reachable" is allowed — file-local static singletons (GetLogger) live to exit by
+# design. No --track-fds here: unit tests intentionally open/close/probe fds (one verifies a move closed
+# the old one), so fd-leak tracking belongs in Valgrind.E2E against the real daemon, not the test binary.
+FROM build-env AS test-valgrind
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends valgrind
+COPY tests/ ./tests/
+RUN --mount=type=cache,target=/src/build-test-valgrind/_deps,sharing=locked \
+    --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    cmake -G Ninja -B build-test-valgrind \
+        -D CMAKE_BUILD_TYPE=Debug \
+        -D BUILD_TESTING=ON \
+        -D REFLECTOR_SANITIZE=OFF \
+    && cmake --build build-test-valgrind --target reflector_test
+ENTRYPOINT ["valgrind", \
+    "--leak-check=full", \
+    "--show-leak-kinds=all", \
+    "--errors-for-leak-kinds=definite,indirect,possible", \
+    "--num-callers=30", \
+    "--error-exitcode=1", \
+    "/src/build-test-valgrind/tests/reflector_test"]
 
 FROM ${DISTROLESS_CC_DEBIAN13} AS runtime
 COPY --from=builder /src/build/reflector /usr/local/bin/reflector
