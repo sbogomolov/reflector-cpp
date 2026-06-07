@@ -176,7 +176,6 @@ TEST_P(TcpSocketFamilyTest, ForwardsBytesAndSurfacesEof) {
     EXPECT_EQ(read.status, IoStatus::Ok);
     EXPECT_EQ(read.bytes, msg.size());
 
-    // Peer closes -> the other side reads EOF.
     pair->client.Close();
     ASSERT_TRUE(WaitReadable(pair->server.Fd()));
     EXPECT_EQ(pair->server.Read(buf).status, IoStatus::Closed);

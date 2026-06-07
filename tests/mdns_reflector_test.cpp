@@ -267,7 +267,6 @@ TEST_F(MdnsReflectorTest, MacFilterRelaysOnlyTheConfiguredDevice) {
         MakePacket(response, IpAddress::Family::V4, *MacAddress::FromString("00:00:00:00:00:01")));
     EXPECT_TRUE(source.sent.empty());
 
-    // The configured device's response is relayed.
     packet_dispatcher.Deliver(target,
         MakePacket(response, IpAddress::Family::V4, *MacAddress::FromString("aa:bb:cc:dd:ee:ff")));
     EXPECT_EQ(source.sent.size(), 1u);

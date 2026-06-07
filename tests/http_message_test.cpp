@@ -118,7 +118,7 @@ TEST(ParseAuthorityTest, BareHostWithoutPortDefaultsTo80) {
     const auto a = ParseAuthority(value, /*bare=*/true);
     ASSERT_TRUE(a.has_value());
     EXPECT_EQ(a->endpoint, Device(80));
-    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80");  // the span is the bare host
+    EXPECT_EQ(value.substr(a->offset, a->length), "10.1.3.80");
 }
 
 TEST(ParseAuthorityTest, UrlAuthorityExcludesSchemeAndPath) {

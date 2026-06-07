@@ -390,7 +390,6 @@ struct LoopbackReceiver {
 
     [[nodiscard]] uint16_t Port() const { return BoundPort(socket); }
 
-    // Polls the socket for one datagram and records it. Returns true if a packet arrived.
     bool PollOnce(std::chrono::milliseconds timeout) {
         pollfd pfd{.fd = socket.Fd(), .events = POLLIN, .revents = 0};
         const auto ready = ::poll(&pfd, 1, static_cast<int>(timeout.count()));

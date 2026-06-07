@@ -949,7 +949,6 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, JoinsMulticastGroupsIdempotently)
 
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
-    // Re-joining an already-joined group succeeds without effect.
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
 }

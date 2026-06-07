@@ -34,7 +34,7 @@ InterfaceAddresses ResolveLoopback() {
 TEST(InterfaceAddressTest, ResolvesLoopbackIpv4) {
     const auto addresses = ResolveLoopback();
     ASSERT_TRUE(addresses.v4.has_value());
-    EXPECT_EQ(*addresses.v4, IpAddress::LoopbackV4());  // 127.0.0.1
+    EXPECT_EQ(*addresses.v4, IpAddress::LoopbackV4());
     EXPECT_EQ(addresses.mac, MacAddress{});  // loopback has no link-layer address
 }
 
@@ -63,7 +63,7 @@ TEST(InterfaceAddressTest, ResolvesLoopbackIpv6) {
     if (!addresses.v6.has_value()) {
         GTEST_SKIP() << "loopback has no IPv6 on this host";
     }
-    EXPECT_EQ(*addresses.v6, IpAddress::LoopbackV6());  // ::1
+    EXPECT_EQ(*addresses.v6, IpAddress::LoopbackV6());
 }
 
 #endif

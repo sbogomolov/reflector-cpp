@@ -361,7 +361,7 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
     }
     // Write through only when nothing is already queued; otherwise the chunks follow the backlog in order
     // (already_sent stays 0, so AppendUnsent queues them whole).
-    const size_t backlog = send_buffer_.Size();  // already-queued bytes the chunks must follow, in order
+    const size_t backlog = send_buffer_.Size();
     const bool was_buffering = backlog > 0;
     size_t already_sent = 0;
     if (!was_buffering) {

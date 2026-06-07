@@ -142,7 +142,7 @@ TEST(SsdpMessageTest, ParsesPortLessLocationDefaultingTo80) {
 
 TEST(SsdpMessageTest, ParsesLocationHeaderNameCaseInsensitively) {
     const auto payload = Bytes(
-        "HTTP/1.1 200 OK\r\nlocation: http://10.0.0.2:8009/setup.xml\r\n\r\n");  // lowercase header name
+        "HTTP/1.1 200 OK\r\nlocation: http://10.0.0.2:8009/setup.xml\r\n\r\n");
     const auto location = ParseDialLocationAuthority(payload);
     ASSERT_TRUE(location.has_value());
     EXPECT_EQ(location->endpoint, (IpEndpoint{IpAddress::FromString("10.0.0.2").value(), 8009}));

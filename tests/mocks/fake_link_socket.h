@@ -88,7 +88,7 @@ struct FakeLinkSocket : LinkSocket {
 
 private:
     // All three Send* overloads funnel here; dst_mac is engaged only for an explicit unicast
-    // destination (multicast/broadcast pass nullopt). Honors `fail_send`.
+    // destination (multicast/broadcast pass nullopt).
     [[nodiscard]] bool RecordSend(const IpAddress& dst_ip, std::optional<MacAddress> dst_mac, uint16_t dst_port,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) {
         if (fail_send) {

@@ -106,7 +106,7 @@ bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
         return false;
     }
     if (it->second.write_armed == enabled) {
-        return true;  // idempotent
+        return true;
     }
     if (!SetEvents(fd, enabled)) {
         return false;

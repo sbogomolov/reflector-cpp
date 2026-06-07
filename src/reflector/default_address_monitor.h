@@ -32,7 +32,7 @@ public:
 
 private:
     // Used by ForTesting: adopts an already-open `fd` instead of opening the kernel socket.
-    // Distinguished from the production constructor by the fd parameter. Watching begins at Start().
+    // Watching begins at Start().
     DefaultAddressMonitor(Dispatcher& dispatcher, int fd) noexcept;
 
     // Opens the notification socket into fd_, leaving fd_ >= 0 on success. Logs the specific cause

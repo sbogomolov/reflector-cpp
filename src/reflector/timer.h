@@ -39,7 +39,6 @@ public:
         running_ = dispatcher_->RegisterTimer(id_, interval, callback);
     }
 
-    // Cancels the timer (a no-op when not running). The destructor and move-assignment call it.
     void Stop() noexcept {
         if (running_ && dispatcher_ != nullptr) {
             dispatcher_->UnregisterTimer(id_);

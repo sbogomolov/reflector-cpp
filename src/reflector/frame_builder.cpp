@@ -52,7 +52,7 @@ size_t CheckedFrameSize(size_t l2_size, bool v4, size_t payload_size, size_t out
 
 // Writes the IPv4/IPv6 header and UDP datagram (headers zeroed, fields and checksums filled)
 // into `out`, which begins at the IP header. The caller writes the preceding L2 header and has
-// already bounds-checked the whole frame via UdpFrameSize.
+// already bounds-checked the whole frame via CheckedFrameSize.
 void WriteIpUdp(const IpAddress& src_ip, const IpAddress& dst_ip, uint16_t src_port, uint16_t dst_port,
     std::span<const std::byte> payload, uint8_t ttl, std::span<std::byte> out) noexcept {
     const bool v4 = src_ip.IsV4();

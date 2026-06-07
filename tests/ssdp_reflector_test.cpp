@@ -437,7 +437,7 @@ TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
     });
 
-    EXPECT_TRUE(target.sent.empty());      // nothing reflected
+    EXPECT_TRUE(target.sent.empty());
     EXPECT_EQ(RegistrationCount(), base);  // no session / capture created
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }

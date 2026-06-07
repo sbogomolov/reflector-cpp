@@ -31,7 +31,7 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     if (!bare) {
         constexpr std::string_view SCHEME = "http://";
         if (!StartsWithNoCase(value, SCHEME)) {
-            return std::nullopt;  // only a value that starts with a (case-insensitive) plain-http scheme
+            return std::nullopt;
         }
         auth_start = SCHEME.size();
     }

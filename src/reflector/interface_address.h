@@ -13,8 +13,8 @@ namespace reflector {
 // getifaddrs. Used by the raw egress path, which (unlike a kernel UDP socket) must supply the
 // source IP and MAC itself when building frames.
 struct InterfaceAddresses {
-    MacAddress mac{};             // link-layer address; all-zero when the interface has none (e.g. loopback)
-    std::optional<IpAddress> v4;  // the interface's IPv4 address, if any
+    MacAddress mac{};             // all-zero when the interface has none (e.g. loopback)
+    std::optional<IpAddress> v4;
     std::optional<IpAddress> v6;  // the interface's IPv6 link-local (fe80::) address, if any
 };
 

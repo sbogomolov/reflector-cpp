@@ -97,7 +97,7 @@ public:
     }
 
     template <auto function>
-    [[nodiscard]] static R FunctionStub(void* /* not used */, Args... args) {
+    [[nodiscard]] static R FunctionStub(void*, Args... args) {
         return (*function)(std::forward<Args>(args)...);
     }
 

@@ -13,7 +13,6 @@ namespace reflector {
     return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 }
 
-// ASCII lowercase copy of `s`.
 [[nodiscard]] inline std::string AsciiToLower(std::string_view s) {
     std::string lower;
     lower.reserve(s.size());
@@ -23,8 +22,7 @@ namespace reflector {
     return lower;
 }
 
-// Case-insensitive (ASCII) prefix test: does `text` begin with `prefix`? Used to match HTTP/SSDP header
-// names (e.g. "application-url:" against "Application-URL:").
+// Used to match HTTP/SSDP header names (e.g. "application-url:" against "Application-URL:").
 [[nodiscard]] inline bool StartsWithNoCase(std::string_view text, std::string_view prefix) noexcept {
     if (text.size() < prefix.size()) {
         return false;
@@ -37,8 +35,7 @@ namespace reflector {
     return true;
 }
 
-// Case-insensitive (ASCII) substring test: does `needle` appear anywhere in `haystack`? A naive scan,
-// fine for the short strings this matches against (an SSDP datagram, an HTTP header block).
+// A naive O(n*m) scan, fine for the short strings this matches against (an SSDP datagram, an HTTP header block).
 [[nodiscard]] inline bool ContainsNoCase(std::string_view haystack, std::string_view needle) noexcept {
     if (haystack.size() < needle.size()) {
         return false;

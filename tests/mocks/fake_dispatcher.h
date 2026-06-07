@@ -134,7 +134,7 @@ private:
         OnTimerCallback callback;
     };
 
-    std::unordered_map<int, FdCallbacks> callbacks_;  // FdCallbacks: read/write cbs + write_armed
+    std::unordered_map<int, FdCallbacks> callbacks_;
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
 };

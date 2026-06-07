@@ -107,13 +107,13 @@ bool MdnsReflector::SetUpFamily(PacketDispatcher& packet_dispatcher, LinkSocket&
 }
 
 void MdnsReflector::OnSourcePacket(const Packet& packet) noexcept {
-    if (ShouldRelay(packet, MdnsMessageKind::Query)) {  // only queries flow source -> target
+    if (ShouldRelay(packet, MdnsMessageKind::Query)) {
         Relay(target_socket_, packet);
     }
 }
 
 void MdnsReflector::OnTargetPacket(const Packet& packet) noexcept {
-    // Only responses flow target -> source; the source-MAC filter is applied by the dispatcher.
+    // The source-MAC filter is applied by the dispatcher, not here.
     if (ShouldRelay(packet, MdnsMessageKind::Response)) {
         Relay(source_socket_, packet);
     }
