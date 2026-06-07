@@ -136,9 +136,8 @@ protected:
         return it == proxy.endpoints_.end() ? 0 : it->second.active_connections;
     }
     // Drive the eviction sweep at simulated time `now` (the timer's fire-cycle clock), as the reactor would.
-    void Evict(DialProxy& proxy, std::chrono::steady_clock::time_point now) {
-        (void)proxy;  // the proxy owns the registered timer; FireTimers dispatches it
-        dispatcher.FireTimers(now);
+    void Evict(std::chrono::steady_clock::time_point now) {
+        dispatcher.FireTimers(now);  // the proxy registered the timer; the dispatcher fires it
     }
 
     // Fire the listener's readable edge until the accept queue yields the Connection. A loopback connect()
@@ -455,7 +454,7 @@ TEST_F(DialProxyTest, AbortShutsDownTheClientPromptlyButLeavesTheNodeForEviction
 
     // The node still exists (deferred erasure keeps the on-stack handler safe); only eviction reaps it.
     EXPECT_EQ(ConnectionCount(proxy), 1u);
-    Evict(proxy, std::chrono::steady_clock::now() + std::chrono::hours{1});
+    Evict(std::chrono::steady_clock::now() + std::chrono::hours{1});
     EXPECT_EQ(ConnectionCount(proxy), 0u);
 
     ::close(client_fd);
@@ -1223,7 +1222,7 @@ TEST_F(DialProxyRewriteTest, RestCapExhaustionDropsTheConnection) {
     // which lets the raw client see a real EOF. Then drain the raw client to EOF and assert it read
     // exactly zero bytes — a mutant that Sends the header before bailing would leave bytes in flight that
     // this surfaces, whereas a 200ms poll could race them.
-    Evict(proxy, std::chrono::steady_clock::now());  // reap the closed node -> proxy client socket closes
+    Evict(std::chrono::steady_clock::now());  // reap the closed node -> proxy client socket closes
     ASSERT_EQ(ConnectionCount(proxy), 0u);
 
     std::string leaked;
@@ -1284,7 +1283,7 @@ TEST_F(DialProxyRewriteTest, SecondUrlHeaderOverflowingTheCapDropsTheWholeRespon
     // Reap the lingering closed node so the proxy's client socket closes and the raw client sees a real EOF,
     // then drain to EOF and assert ZERO bytes: NOTHING was forwarded — not the rewritten first header, not
     // the first device authority, not the second.
-    Evict(proxy, std::chrono::steady_clock::now());
+    Evict(std::chrono::steady_clock::now());
     ASSERT_EQ(ConnectionCount(proxy), 0u);
 
     std::string leaked;
@@ -1496,7 +1495,7 @@ TEST_F(DialProxyForwardTest, EvictionReapsClosedConnectionNode) {
     ASSERT_TRUE(ConnClosed(*conn));
     ASSERT_EQ(ConnectionCount(proxy), 1u);  // the lingering closed node
 
-    Evict(proxy, std::chrono::steady_clock::now());
+    Evict(std::chrono::steady_clock::now());
 
     EXPECT_EQ(ConnectionCount(proxy), 0u);  // the closed node was reaped
 }
@@ -1515,10 +1514,10 @@ TEST_F(DialProxyForwardTest, EvictionReapsTimedOutConnectingPair) {
     ASSERT_FALSE(ConnIsOpen(*conn));  // still Connecting: deadline is the connect deadline
 
     const auto deadline = ConnDeadline(*conn);
-    Evict(proxy, deadline - std::chrono::milliseconds{1});  // just before: not yet reaped
+    Evict(deadline - std::chrono::milliseconds{1});  // just before: not yet reaped
     EXPECT_EQ(ConnectionCount(proxy), 1u);
 
-    Evict(proxy, deadline + std::chrono::milliseconds{1});  // just after: connect timeout reaps it
+    Evict(deadline + std::chrono::milliseconds{1});  // just after: connect timeout reaps it
     EXPECT_EQ(ConnectionCount(proxy), 0u);
 
     ::close(client_fd);
@@ -1544,7 +1543,7 @@ TEST_F(DialProxyForwardTest, EvictionReapsIdleOpenButNotRefreshed) {
     SetConnDeadline(*idle_conn, base);
     SetConnDeadline(*active_conn, base + DialProxy::IDLE_TIMEOUT);
 
-    Evict(proxy, base + std::chrono::milliseconds{1});  // past the idle deadline, before the refreshed one
+    Evict(base + std::chrono::milliseconds{1});  // past the idle deadline, before the refreshed one
 
     EXPECT_EQ(FindConnection(proxy, idle.id), nullptr);     // idle reaped
     EXPECT_NE(FindConnection(proxy, active.id), nullptr);   // refreshed survives
@@ -1576,14 +1575,14 @@ TEST_F(DialProxyForwardTest, EvictionReapsIdleListenersByRoleGraceButNotReferenc
     SetConnDeadline(*FindConnection(proxy, referenced.id), base + std::chrono::hours{1});
 
     // Just past the discovery grace, before the rest grace: only the unreferenced Discovery endpoint goes.
-    Evict(proxy, base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, discovery_dev));   // Discovery grace elapsed -> reaped
     EXPECT_TRUE(HasEndpoint(proxy, rest_dev));          // Rest grace not yet elapsed -> survives
     EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // referenced -> survives regardless of grace
 
     // Past the rest grace too: the unreferenced Rest endpoint goes; the referenced one still survives because
     // its Connection keeps it alive (idle past grace but referenced).
-    Evict(proxy, base + DialProxy::REST_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::REST_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, rest_dev));         // Rest grace elapsed -> reaped
     EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // still referenced by the live Connection -> survives
 }
@@ -1603,7 +1602,7 @@ TEST_F(DialProxyForwardTest, EvictionTimerLazyStartsAndSelfStops) {
     EXPECT_EQ(dispatcher.TimerCount(), 1u);
 
     // Drive past every grace: both endpoints are unreferenced, so the sweep empties both maps and self-stops.
-    Evict(proxy, std::chrono::steady_clock::now() + DialProxy::REST_ENDPOINT_GRACE + std::chrono::hours{1});
+    Evict(std::chrono::steady_clock::now() + DialProxy::REST_ENDPOINT_GRACE + std::chrono::hours{1});
 
     EXPECT_EQ(EndpointCount(proxy), 0u);
     EXPECT_EQ(ConnectionCount(proxy), 0u);
@@ -1628,14 +1627,14 @@ TEST_F(DialProxyForwardTest, EndpointReapedOnlyAfterItsLastConnectionEndsSameSwe
     SetConnDeadline(*conn, base + std::chrono::hours{1});    // keep the connection out of this first reap
 
     // Past grace but still referenced -> endpoint survives, count stays 1.
-    Evict(proxy, base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_TRUE(HasEndpoint(proxy, dev));
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 1u);
 
     // Expire the connection: in ONE sweep it is reaped (dtor: count 1->0) and the now-unreferenced, past-grace
     // endpoint is reaped after it. A reordered sweep (endpoints before connections) would keep the endpoint.
     SetConnDeadline(*conn, base);
-    Evict(proxy, base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_EQ(ConnectionCount(proxy), 0u);
     EXPECT_FALSE(HasEndpoint(proxy, dev));
 }
@@ -1667,13 +1666,13 @@ TEST_F(DialProxyForwardTest, MultiConnectionEndpointReapedAfterTheLast) {
     // Reap conn1 only: count 2->1, endpoint still referenced -> kept.
     SetConnDeadline(*conn1, base);
     SetConnDeadline(*conn2, base + std::chrono::hours{1});
-    Evict(proxy, base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 1u);
     EXPECT_TRUE(HasEndpoint(proxy, dev));
 
     // Reap conn2: count 1->0, the now-unreferenced past-grace endpoint goes.
     SetConnDeadline(*conn2, base);
-    Evict(proxy, base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, dev));
     EXPECT_EQ(ConnectionCount(proxy), 0u);
 
@@ -1726,7 +1725,7 @@ TEST_F(DialProxyForwardTest, AbortDefersRefcountReleaseUntilReap) {
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 1u);  // Abort did not decrement
 
     // The reap (well within the endpoint's grace, so the endpoint itself stays) runs the dtor -> count 0.
-    Evict(proxy, std::chrono::steady_clock::now());
+    Evict(std::chrono::steady_clock::now());
     EXPECT_EQ(ConnectionCount(proxy), 0u);
     EXPECT_TRUE(HasEndpoint(proxy, dev));                  // endpoint within grace -> still present
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 0u);  // released on destruction, not on close
@@ -1917,7 +1916,7 @@ TEST_F(DialProxyForwardTest, EvictionTimerKeepsRunningWhileAnEndpointRemains) {
     SetEndpointLastActive(proxy, dev, base + std::chrono::hours{1});  // endpoint well within grace
     SetConnDeadline(*FindConnection(proxy, oc.id), base);             // expire only the connection
 
-    Evict(proxy, base + std::chrono::milliseconds{1});
+    Evict(base + std::chrono::milliseconds{1});
 
     EXPECT_EQ(ConnectionCount(proxy), 0u);    // connection reaped
     EXPECT_EQ(EndpointCount(proxy), 1u);       // endpoint kept (within grace, now unreferenced)
@@ -1930,7 +1929,7 @@ TEST_F(DialProxyTest, EvictionTimerRestartsOnAMintAfterSelfStop) {
     ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(90)).has_value());
     ASSERT_EQ(dispatcher.TimerCount(), 1u);
 
-    Evict(proxy, std::chrono::steady_clock::now() + DialProxy::REST_ENDPOINT_GRACE + std::chrono::hours{1});
+    Evict(std::chrono::steady_clock::now() + DialProxy::REST_ENDPOINT_GRACE + std::chrono::hours{1});
     ASSERT_EQ(EndpointCount(proxy), 0u);
     ASSERT_EQ(dispatcher.TimerCount(), 0u);  // self-stopped
 
@@ -1969,7 +1968,7 @@ TEST_F(DialProxyForwardTest, EvictionReapsAClosedIdleAndConnectingNodeInOneSweep
     SetConnDeadline(*FindConnection(proxy, idle_oc.id), base);
     SetConnDeadline(*connecting, base);
 
-    Evict(proxy, base + std::chrono::milliseconds{1});
+    Evict(base + std::chrono::milliseconds{1});
     EXPECT_EQ(ConnectionCount(proxy), 0u);  // all three reaped in the one sweep
 
     ::close(conn_client);

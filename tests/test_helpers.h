@@ -354,7 +354,7 @@ private:
 
     // original_length sets bh_datalen; pass a value larger than frame.size() to model a frame BPF
     // truncated to fit the buffer. Ignored on Linux, which has no bpf_hdr.
-    static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame, uint32_t original_length) {
+    static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame, [[maybe_unused]] uint32_t original_length) {
 #if defined(__APPLE__)
         bpf_hdr header{};
         header.bh_hdrlen = static_cast<u_short>(BPF_WORDALIGN(sizeof(bpf_hdr)));
@@ -366,7 +366,6 @@ private:
         std::memcpy(buffer.data() + header.bh_hdrlen, frame.data(), frame.size());
         return buffer;
 #else
-        (void)original_length;
         return std::vector<std::byte>{frame.begin(), frame.end()};
 #endif
     }

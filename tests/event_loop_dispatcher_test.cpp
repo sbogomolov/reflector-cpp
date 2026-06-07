@@ -572,7 +572,7 @@ TEST_F(EventLoopDispatcherTest, WriteDispatchSurvivesARehashTriggeredByItsOwnRea
         dispatcher.PollOnce(std::chrono::milliseconds{1000});
         if (reader.read_count > 0 && !drained) {
             std::byte sink_byte{};
-            (void)::recv(pair.client, &sink_byte, 1, 0);  // consume the byte so readability quiesces
+            ::recv(pair.client, &sink_byte, 1, 0);  // consume the byte so readability quiesces
             drained = true;
         }
     }

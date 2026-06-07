@@ -44,9 +44,8 @@ Logger& GetLogger() noexcept {
 
 // Pin egress to interface `ifindex` so the connect leaves via that interface even if a host route would
 // otherwise send it elsewhere (SO_BINDTODEVICE on Linux — needs CAP_NET_RAW; IP_BOUND_IF on macOS).
-[[nodiscard]] bool PinEgress(int fd, int family, unsigned ifindex) noexcept {
+[[nodiscard]] bool PinEgress(int fd, [[maybe_unused]] int family, unsigned ifindex) noexcept {
 #if defined(__linux__)
-    (void)family;
     char name[IF_NAMESIZE];
     if (if_indextoname(ifindex, name) == nullptr) {
         GetLogger().Error("Cannot resolve interface index {}: {}", ifindex, Error::FromErrno());
@@ -117,7 +116,7 @@ void TcpSocket::Shutdown() noexcept {
     if (fd_ >= 0) {
         // Best-effort FIN: ignore ENOTCONN (a refused/never-connected upstream) and the like — the point is
         // to wake a blocked peer, not to report. Keep fd_ valid; Close() still owns the descriptor.
-        (void)::shutdown(fd_, SHUT_RDWR);
+        ::shutdown(fd_, SHUT_RDWR);
     }
 }
 
