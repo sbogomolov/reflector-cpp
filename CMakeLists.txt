@@ -154,11 +154,11 @@ if(BUILD_TESTING)
         # docker_test.sh builds the test image and runs the suite in a container with
         # CAP_NET_ADMIN, so the veth-pair tests run rather than skip.
         add_test(
-            NAME ReflectorDocker.UnitTests
+            NAME Docker.Unit
             COMMAND ${PROJECT_SOURCE_DIR}/docker_test.sh ${_reflector_docker_test_variant}
         )
-        set_tests_properties(ReflectorDocker.UnitTests PROPERTIES
-            LABELS "docker"
+        set_tests_properties(Docker.Unit PROPERTIES
+            LABELS "unit;docker"
             TIMEOUT 600
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
@@ -168,10 +168,10 @@ if(BUILD_TESTING)
     if(REFLECTOR_ENABLE_E2E_TESTS)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
         add_test(
-            NAME ReflectorE2E.WolReflection
+            NAME Docker.E2E
             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/e2e/run.py
         )
-        set_tests_properties(ReflectorE2E.WolReflection PROPERTIES
+        set_tests_properties(Docker.E2E PROPERTIES
             LABELS "e2e;docker"
             TIMEOUT 180
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
