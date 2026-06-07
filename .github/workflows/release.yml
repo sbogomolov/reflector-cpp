@@ -1,0 +1,260 @@
+name: Release
+
+# Cutting a release is just pushing a v* tag (see release.sh): this gates on CI, builds the per-arch
+# binaries, publishes the multi-arch image to GHCR, and creates the GitHub release with assets attached.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  # ci.yml runs on the push to main, so by the time a tag exists CI has already run on this commit.
+  # Look that run up and gate the release on it (wait if the tag was pushed before CI finished).
+  verify-ci:
+    name: Verify CI passed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+    steps:
+      - name: Wait for the CI workflow to pass on this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sha='${{ github.sha }}'
+          api="repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1"
+          for _ in $(seq 1 90); do  # 90 x 20s = 30 min, matches timeout-minutes
+            run=$(gh api "$api" --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"')
+            case "${run%%|*}" in
+              completed)
+                if [ "${run##*|}" = success ]; then echo "CI passed on $sha."; exit 0; fi
+                echo "::error::CI concluded '${run##*|}' on $sha"; exit 1 ;;
+              "") echo "No CI run for $sha yet; waiting..." ;;
+              *)  echo "CI '${run%%|*}'; waiting..." ;;
+            esac
+            sleep 20
+          done
+          echo "::error::Timed out waiting for CI on $sha"; exit 1
+
+  binaries:
+    name: Binary (${{ matrix.variant }})
+    needs: verify-ci
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: linux-amd64
+            runner: ubuntu-24.04
+            platform: linux
+            cc: gcc-14
+            cxx: g++-14
+            reflector_static: "ON"
+          - variant: linux-arm64
+            runner: ubuntu-24.04-arm
+            platform: linux
+            cc: gcc-14
+            cxx: g++-14
+            reflector_static: "ON"
+          - variant: macos-arm64
+            runner: macos-15
+            platform: macos
+            cc: clang
+            cxx: clang++
+            reflector_static: "OFF"  # macOS has no static libSystem; ships dynamic against the system libs
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++-14 gcc-14 ninja-build
+
+      - name: Install macOS dependencies
+        if: matrix.platform == 'macos'
+        run: brew list ninja >/dev/null 2>&1 || brew install ninja
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Release \
+            -D BUILD_TESTING=OFF \
+            -D REFLECTOR_STATIC="${REFLECTOR_STATIC}"
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+          REFLECTOR_STATIC: ${{ matrix.reflector_static }}
+
+      - name: Build
+        run: cmake --build build --target reflector_app
+
+      - name: Verify static linking (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          file build/reflector
+          ldd build/reflector 2>&1 | grep -q 'not a dynamic executable' \
+            || { echo "::error::reflector is not statically linked"; ldd build/reflector; exit 1; }
+
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp build/reflector "dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reflector-${{ matrix.variant }}
+          path: dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}
+          if-no-files-found: error
+
+  # Each arch builds on its own native runner (no emulation), pushes by digest, and the manifest job
+  # stitches the digests into one multi-arch tag.
+  image:
+    name: Image (${{ matrix.arch }})
+    needs: verify-ci
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}.digest"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: Image manifest -> GHCR
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Create and push the manifest list
+        working-directory: /tmp/digests
+        env:
+          REPO: ${{ github.repository }}
+          METADATA: ${{ steps.meta.outputs.json }}
+        run: |
+          mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
+          args=()
+          for tag in "${tags[@]}"; do args+=(--tag "$tag"); done
+          for f in *.digest; do args+=("ghcr.io/${REPO}@sha256:${f%.digest}"); done
+          docker buildx imagetools create "${args[@]}"
+
+      - name: Inspect
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "ghcr.io/${REPO}:${VERSION}"
+
+  release:
+    name: GitHub release
+    needs: [binaries, manifest]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: reflector-*
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum reflector-* | tee SHA256SUMS
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/reflector-*
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true
