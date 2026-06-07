@@ -5,6 +5,7 @@
 #include "reflector/util/stream_buffer.h"
 #include "mocks/fake_dispatcher.h"
 #include "mocks/fake_link_socket.h"
+#include "test_helpers.h"
 
 #include <gtest/gtest.h>
 
@@ -883,23 +884,28 @@ TEST_F(DialProxyForwardTest, SendOverflowDropsAndCloses) {
 
     size_t off = 0;
     bool aborted = false;
-    for (int round = 0; round < 2000000 && !aborted; ++round) {
-        if (off < response.size()) {
-            const std::span<const std::byte> chunk{
-                reinterpret_cast<const std::byte*>(response.data() + off),
-                std::min<size_t>(64 * 1024, response.size() - off)};
-            const SendStatus st = oc.DeviceSide().Send(chunk);
-            if (st == SendStatus::Ok) {
-                off += chunk.size();  // accepted (sent now or buffered in device_side's StreamBuffer)
-            } else if (st == SendStatus::Error) {
-                break;
+    // Feeding the oversized body into the harness device-side socket (8KB cap) Overflows it every round:
+    // expected backpressure, not the abort under test (the proxy's CLIENT-side Overflow). Capture stdout so
+    // those expected ERROR logs (hundreds of lines) don't flood the output.
+    CaptureStdout([&] {
+        for (int round = 0; round < 2000000 && !aborted; ++round) {
+            if (off < response.size()) {
+                const std::span<const std::byte> chunk{
+                    reinterpret_cast<const std::byte*>(response.data() + off),
+                    std::min<size_t>(64 * 1024, response.size() - off)};
+                const SendStatus st = oc.DeviceSide().Send(chunk);
+                if (st == SendStatus::Ok) {
+                    off += chunk.size();  // accepted (sent now or buffered in device_side's StreamBuffer)
+                } else if (st == SendStatus::Error) {
+                    break;
+                }
+                // On Overflow: leave `off` put and retry after an edge frees space. Always try to flush.
+                (void)oc.DeviceSide().Flush();
             }
-            // On Overflow: leave `off` put and retry after an edge frees space. Always try to flush.
-            (void)oc.DeviceSide().Flush();
+            dispatcher.FireReadable(oc.conn_upstream_fd);  // proxy reads <=4KB off upstream, forwards to client
+            aborted = ConnClosed(*conn);
         }
-        dispatcher.FireReadable(oc.conn_upstream_fd);  // proxy reads <=4KB off upstream, forwards to client
-        aborted = ConnClosed(*conn);
-    }
+    });
 
     EXPECT_TRUE(aborted) << "expected a stalled client to drive the forwarded response into send Overflow";
     EXPECT_TRUE(ConnClosed(*conn));
@@ -1326,22 +1332,27 @@ TEST_F(DialProxyRewriteTest, BackpressureDrainPathFlushesBufferedTail) {
 
     size_t off = 0;
     bool buffered = false;
-    for (int round = 0; round < 100000 && !buffered && !ConnClosed(*conn); ++round) {
-        if (off < response.size()) {
-            const std::span<const std::byte> chunk{
-                reinterpret_cast<const std::byte*>(response.data() + off),
-                std::min<size_t>(64 * 1024, response.size() - off)};
-            const SendStatus st = oc.DeviceSide().Send(chunk);
-            if (st == SendStatus::Ok) {
-                off += chunk.size();
-            } else if (st == SendStatus::Error) {
-                break;
+    // As in SendOverflowDropsAndCloses, feeding the oversized body Overflows the harness device-side socket
+    // every round (expected backpressure, not what's under test). Capture stdout so the expected ERROR logs
+    // don't flood the output.
+    CaptureStdout([&] {
+        for (int round = 0; round < 100000 && !buffered && !ConnClosed(*conn); ++round) {
+            if (off < response.size()) {
+                const std::span<const std::byte> chunk{
+                    reinterpret_cast<const std::byte*>(response.data() + off),
+                    std::min<size_t>(64 * 1024, response.size() - off)};
+                const SendStatus st = oc.DeviceSide().Send(chunk);
+                if (st == SendStatus::Ok) {
+                    off += chunk.size();
+                } else if (st == SendStatus::Error) {
+                    break;
+                }
+                (void)oc.DeviceSide().Flush();
             }
-            (void)oc.DeviceSide().Flush();
+            dispatcher.FireReadable(oc.conn_upstream_fd);
+            buffered = ConnClient(*conn).WantsWrite();
         }
-        dispatcher.FireReadable(oc.conn_upstream_fd);
-        buffered = ConnClient(*conn).WantsWrite();
-    }
+    });
 
     ASSERT_TRUE(buffered) << "the stalled client never buffered a tail";
     ASSERT_FALSE(ConnClosed(*conn)) << "the connection overflowed before a partial tail could be observed";
