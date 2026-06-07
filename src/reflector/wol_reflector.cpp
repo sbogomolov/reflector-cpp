@@ -52,7 +52,7 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
 
     target_mac_ = config.mac;
     std::fill_n(expected_magic_packet_.begin(), PREFIX_SIZE, std::byte{0xff});
-    if (target_mac_.has_value()) {
+    if (target_mac_) {
         BuildExpectedMagicPacket(*target_mac_);
     }
 
@@ -86,7 +86,7 @@ bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
         return false;
     }
 
-    if (target_mac_.has_value()) {
+    if (target_mac_) {
         if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
             logger_.Debug("Ignoring wol packet: magic packet does not match expected MAC");
             return false;

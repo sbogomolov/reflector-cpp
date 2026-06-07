@@ -163,7 +163,7 @@ struct std::formatter<reflector::WolConfig, char>
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::WolConfig& c, FmtContext& ctx) const {
         std::format_to(ctx.out(), "{{name: \"{}\", mac: ", c.name);
-        if (c.mac.has_value()) {
+        if (c.mac) {
             std::format_to(ctx.out(), "\"{}\"", *c.mac);
         } else {
             std::format_to(ctx.out(), "any");
@@ -199,7 +199,7 @@ struct std::formatter<reflector::MdnsConfig, char>
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::MdnsConfig& c, FmtContext& ctx) const {
         std::format_to(ctx.out(), "{{name: \"{}\", mac: ", c.name);
-        if (c.mac.has_value()) {
+        if (c.mac) {
             std::format_to(ctx.out(), "\"{}\"", *c.mac);
         } else {
             std::format_to(ctx.out(), "any");
@@ -225,7 +225,7 @@ struct std::formatter<reflector::SsdpConfig, char>
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::SsdpConfig& c, FmtContext& ctx) const {
         std::format_to(ctx.out(), "{{name: \"{}\", mac: ", c.name);
-        if (c.mac.has_value()) {
+        if (c.mac) {
             std::format_to(ctx.out(), "\"{}\"", *c.mac);
         } else {
             std::format_to(ctx.out(), "any");

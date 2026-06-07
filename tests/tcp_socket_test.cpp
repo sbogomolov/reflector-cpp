@@ -558,7 +558,7 @@ TEST_P(TcpSocketFamilyTest, ConnectToARefusedPortFails) {
     // The refusal surfaces either synchronously (Connect -> nullopt, common on loopback) or, if the
     // connect started, on the writable edge as FinishConnect -> Error with connecting_ left set.
     auto client = TcpSocket::Connect(dead, {Loopback(), 0});
-    if (!client.has_value()) {
+    if (!client) {
         SUCCEED() << "refused synchronously at connect()";
         return;
     }

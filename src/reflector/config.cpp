@@ -24,7 +24,7 @@ std::string_view ToStringView(const toml::key& key) {
 std::expected<std::string_view, Error> ReadStringField(const toml::node& field_node,
         std::string_view section, std::string_view field_name) {
     const auto field_value = field_node.value<std::string_view>();
-    if (!field_value.has_value()) {
+    if (!field_value) {
         // The key is present (we only reach here while iterating existing keys); it just
         // isn't a string. Absent required fields are caught later by the config's Verify().
         return std::unexpected(Error{"{} {} must be a string", section, field_name});
@@ -64,7 +64,7 @@ std::expected<std::vector<uint16_t>, Error> ReadPorts(const toml::node& ports_no
     ports.reserve(ports_array->size());
     for (const auto& port_node : *ports_array) {
         const auto port = port_node.value<uint16_t>();
-        if (!port.has_value()) {
+        if (!port) {
             return std::unexpected(Error{"wol ports entry is not an integer"});
         }
         ports.push_back(*port);
@@ -174,36 +174,36 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
         const auto field_name = ToStringView(field_key);
         if (field_name == "source_if") {
             auto value = ReadStringField(field_node, "entry", field_name);
-            if (!value.has_value()) {
+            if (!value) {
                 return std::move(value).error();
             }
             source_if = *value;
         } else if (field_name == "target_if") {
             auto value = ReadStringField(field_node, "entry", field_name);
-            if (!value.has_value()) {
+            if (!value) {
                 return std::move(value).error();
             }
             target_if = *value;
         } else if (field_name == "mac") {
             auto value = ReadStringField(field_node, "entry", field_name);
-            if (!value.has_value()) {
+            if (!value) {
                 return std::move(value).error();
             }
             auto parsed = MacAddress::FromString(*value);
-            if (!parsed.has_value()) {
+            if (!parsed) {
                 return Error{"entry \"{}\" mac is not a valid MAC address: \"{}\": {}", name, *value, parsed.error()};
             }
             mac = *parsed;
         } else if (field_name == "wol_ports") {
             auto ports = ReadPorts(field_node);
-            if (!ports.has_value()) {
+            if (!ports) {
                 return std::move(ports).error();
             }
             wol_ports = std::move(*ports);
         } else if (field_name == "wol" || field_name == "mdns" || field_name == "ssdp"
                 || field_name == "dial") {
             const auto flag = field_node.value<bool>();
-            if (!flag.has_value()) {
+            if (!flag) {
                 return Error{"entry \"{}\" {} must be a boolean", name, field_name};
             }
             if (field_name == "wol") {
@@ -217,11 +217,11 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
             }
         } else if (field_name == "address_family") {
             const auto value = field_node.value<std::string_view>();
-            if (!value.has_value()) {
+            if (!value) {
                 return Error{"entry \"{}\" address_family must be a string", name};
             }
             auto parsed = AddressFamilyFromString("entry", *value);
-            if (!parsed.has_value()) {
+            if (!parsed) {
                 return std::move(parsed).error();
             }
             address_family = *parsed;
@@ -233,7 +233,7 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
     if (!wol && !mdns && !ssdp) {
         return Error{"entry \"{}\" enables no protocol (set wol, mdns, or ssdp)", name};
     }
-    if (wol_ports.has_value() && !wol) {
+    if (wol_ports && !wol) {
         return Error{"entry \"{}\" sets wol_ports but does not enable wol", name};
     }
     if (dial && !ssdp) {
@@ -248,7 +248,7 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
             .target_if = target_if,
             .address_family = address_family,
         };
-        if (wol_ports.has_value()) {
+        if (wol_ports) {
             config.ports = *wol_ports;
         }
         if (auto error = AppendWol(wol_configs, std::move(config))) {
@@ -388,11 +388,11 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
             }
         } else if (key_name == "log_level") {
             const auto field_value = value.value<std::string_view>();
-            if (!field_value.has_value()) {
+            if (!field_value) {
                 return std::unexpected(Error{"log_level must be a string"});
             }
             auto level = LogLevelFromString(*field_value);
-            if (!level.has_value()) {
+            if (!level) {
                 return std::unexpected(std::move(level).error());
             }
             config.log_level_ = *level;

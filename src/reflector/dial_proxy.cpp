@@ -61,13 +61,13 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
     }
 
     const auto source_address = source_if_.SourceAddress(IpAddress::Family::V4);
-    if (!source_address.has_value()) {
+    if (!source_address) {
         logger_.Error("Cannot proxy {}: source interface has no IPv4 address", device);
         return std::nullopt;
     }
 
     auto listener = TcpSocket::Listen({*source_address, 0});
-    if (!listener.has_value()) {
+    if (!listener) {
         logger_.Error("Cannot proxy {}: failed to open a listener on {}", device, *source_address);
         return std::nullopt;
     }
@@ -268,7 +268,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     ep->last_active = now;
 
     auto client = ep->listener.Accept();
-    if (!client.has_value()) {
+    if (!client) {
         return;  // EAGAIN (nothing pending) or a real accept error already logged inside Accept()
     }
 
@@ -278,12 +278,12 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     }
 
     const auto bind = target_if_.SourceAddress(IpAddress::Family::V4);
-    if (!bind.has_value()) {
+    if (!bind) {
         logger_.Error("Dropping accept for {}: target interface has no IPv4 address", ep->device);
         return;
     }
     auto upstream = TcpSocket::Connect(ep->device, {*bind, 0}, target_if_.InterfaceIndex());
-    if (!upstream.has_value()) {
+    if (!upstream) {
         logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;
     }

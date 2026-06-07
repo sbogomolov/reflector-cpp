@@ -285,7 +285,7 @@ TEST_F(DialProxyTest, BindAddressFlowsFromTheSourceInterface) {
     // (127.0.0.2) catches a LoopbackV4-hardcoded mint. Not every platform routes all of 127/8 to lo (macOS
     // assigns only 127.0.0.1), so skip where it can't bind — the docker (Linux) gate still exercises this.
     const auto alt = IpAddress::FromString("127.0.0.2").value();
-    if (!TcpSocket::Listen({alt, 0}).has_value()) {
+    if (!TcpSocket::Listen({alt, 0})) {
         GTEST_SKIP() << "127.0.0.2 is not bindable on this platform";
     }
     source_if.source_v4 = alt;
@@ -738,7 +738,7 @@ protected:
 
         const auto authority = proxy.EnsureDiscoveryListener(oc.device->endpoint);
         EXPECT_TRUE(authority.has_value());
-        if (!authority.has_value()) {
+        if (!authority) {
             return oc;
         }
         const int listener_fd = ListenerFd(proxy, oc.device->endpoint);
@@ -771,7 +771,7 @@ protected:
         EXPECT_GT(::poll(&lpoll, 1, 5000), 0) << "device listener never became acceptable";
         auto device_side = oc.device->listener.Accept();
         EXPECT_TRUE(device_side.has_value());
-        if (device_side.has_value()) {
+        if (device_side) {
             oc.device_side.emplace(std::move(*device_side));
         }
         oc.id = id;

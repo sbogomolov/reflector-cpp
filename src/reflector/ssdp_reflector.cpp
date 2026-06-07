@@ -132,7 +132,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     const auto family = packet.header.dest.addr.AddressFamily();
     const auto parsed_mx = ParseMSearchMx(packet.payload);
     const uint8_t mx = parsed_mx.value_or(MSEARCH_MX_DEFAULT);
-    if (!parsed_mx.has_value()) {
+    if (!parsed_mx) {
         // A multicast M-SEARCH must carry MX (UDA 2.0); surface the non-conformant searcher at INFO.
         logger_.Info("M-SEARCH from {} has no/invalid MX; using the default {}s window",
             packet.header.source, static_cast<unsigned>(mx));
@@ -148,12 +148,12 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     std::optional<Session> new_session;
     if (existing_session == sessions_.end()) {
         new_session = MakeSession(packet, family, expiry);
-        if (!new_session.has_value()) {
+        if (!new_session) {
             return;  // MakeSession logged the cause
         }
     }
 
-    const uint16_t port = new_session.has_value() ? new_session->reservation.Port()
+    const uint16_t port = new_session ? new_session->reservation.Port()
                                                   : existing_session->reservation.Port();
     if (!target_socket_.SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
@@ -163,7 +163,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     logger_.Debug("Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
         packet.header.source, port, static_cast<unsigned>(mx));
 
-    if (!new_session.has_value()) {
+    if (!new_session) {
         existing_session->expiry = expiry;  // a retransmit: just refresh the client's window
         return;
     }
@@ -186,13 +186,13 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         return std::nullopt;
     }
     const auto our_address = target_socket_.SourceAddress(family);
-    if (!our_address.has_value()) {
+    if (!our_address) {
         logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
             packet.header.source, family);
         return std::nullopt;
     }
     auto reservation = PortReservation::Create(*our_address, target_socket_.InterfaceIndex());
-    if (!reservation.has_value()) {
+    if (!reservation) {
         return std::nullopt;  // Create logged the cause
     }
     // Register the 200-OK capture before the reflect, so a fast responder's reply can't arrive first.
@@ -222,7 +222,7 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
     // the send). Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
     const auto rewritten = RewriteDialLocation(packet.payload);
-    const auto payload = rewritten.has_value()
+    const auto payload = rewritten
         ? std::as_bytes(std::span<const char>{*rewritten})
         : packet.payload;
     if (!source_socket_.SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
@@ -251,7 +251,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
     // the searcher's captured frame MAC — the split's plain SendUdpDatagram takes that dst MAC. A DIAL
     // response's LOCATION is first rewritten to a minted source_if listener (the string outlives the send).
     const auto rewritten = RewriteDialLocation(packet.payload);
-    const auto payload = rewritten.has_value()
+    const auto payload = rewritten
         ? std::as_bytes(std::span<const char>{*rewritten})
         : packet.payload;
     if (!source_socket_.SendUdpDatagram(session.searcher_mac, session.searcher,
@@ -265,7 +265,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
 
 bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) noexcept {
     const auto message_kind = ClassifySsdpMessage(packet.payload);
-    if (!message_kind.has_value()) {
+    if (!message_kind) {
         // The group + port 1900 should carry only SSDP requests, so a payload that is neither an
         // M-SEARCH nor a NOTIFY (e.g. a stray unicast 200 OK, or junk) is anomalous and worth
         // surfacing. A message of the other kind, by contrast, is normal and dropped silently.
@@ -277,15 +277,15 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
 }
 
 std::optional<std::string> SsdpReflector::RewriteDialLocation(std::span<const std::byte> payload) noexcept {
-    if (!dial_proxy_.has_value() || !IsDialServiceMessage(payload)) {
+    if (!dial_proxy_ || !IsDialServiceMessage(payload)) {
         return std::nullopt;  // proxy disabled, or not a DIAL service message — forward unchanged
     }
     const auto location = ParseDialLocationAuthority(payload);
-    if (!location.has_value()) {
+    if (!location) {
         return std::nullopt;  // a DIAL message with no/unparseable LOCATION: nothing to rewrite
     }
     const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint);
-    if (!reflector_authority.has_value()) {
+    if (!reflector_authority) {
         logger_.Info("DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
             location->endpoint);
         return std::nullopt;

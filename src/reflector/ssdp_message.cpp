@@ -96,7 +96,7 @@ std::optional<Authority> ParseDialLocationAuthority(std::span<const std::byte> p
                 return std::nullopt;
             }
             const auto found = ParseAuthority(url, /*bare=*/false);
-            if (!found.has_value()) {
+            if (!found) {
                 // A DIAL message carrying a LOCATION we cannot rewrite (an https URL, a hostname rather than
                 // an IPv4 literal, or a malformed port). The caller forwards it unchanged, so surface why.
                 GetLogger().Info("DIAL LOCATION \"{}\" is not a rewritable http://ip:port URL", url);

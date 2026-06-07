@@ -45,7 +45,7 @@ TEST(InterfaceAddressTest, ResolvesLoopbackIpv4) {
 // scope id (bytes 2-3) is cleared so the source is the canonical fe80::1.
 TEST(InterfaceAddressTest, ResolvesLoopbackLinkLocalIpv6) {
     const auto addresses = ResolveLoopback();
-    if (!addresses.v6.has_value()) {
+    if (!addresses.v6) {
         GTEST_SKIP() << "loopback has no IPv6 on this host";
     }
     const auto& bytes = addresses.v6->Bytes();
@@ -61,7 +61,7 @@ TEST(InterfaceAddressTest, ResolvesLoopbackLinkLocalIpv6) {
 // Ipv6Rank fallback — rather than nothing, and don't fabricate an fe80::.
 TEST(InterfaceAddressTest, ResolvesLoopbackIpv6) {
     const auto addresses = ResolveLoopback();
-    if (!addresses.v6.has_value()) {
+    if (!addresses.v6) {
         GTEST_SKIP() << "loopback has no IPv6 on this host";
     }
     EXPECT_EQ(*addresses.v6, IpAddress::LoopbackV6());

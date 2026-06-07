@@ -35,7 +35,7 @@ int Run(int argc, char* argv[]) {
 
     const auto* config_path = argc == 2 ? argv[1] : "config.toml";
     auto config = reflector::Config::FromFile(config_path);
-    if (!config.has_value()) {
+    if (!config) {
         logger.Error("Cannot read configuration file: {}", config.error());
         return 1;
     }

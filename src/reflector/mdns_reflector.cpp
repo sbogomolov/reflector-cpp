@@ -121,7 +121,7 @@ void MdnsReflector::OnTargetPacket(const Packet& packet) noexcept {
 
 bool MdnsReflector::ShouldRelay(const Packet& packet, MdnsMessageKind kind) noexcept {
     const auto message_kind = ClassifyMdnsMessage(packet.payload);
-    if (!message_kind.has_value()) {
+    if (!message_kind) {
         // The group + port 5353 should carry only mDNS, so a payload too short to be a DNS message
         // is anomalous and worth surfacing — the dedicated group means this won't spam a healthy
         // network. A message of the other kind, by contrast, is normal and dropped silently.
