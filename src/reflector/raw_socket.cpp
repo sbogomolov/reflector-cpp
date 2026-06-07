@@ -177,8 +177,8 @@ RawSocket::RawSocket(std::string_view interface)
     }
 
 #if defined(__linux__)
-    fd_ = socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(ETH_P_ALL));
-    if (fd_ < 0) {
+    fd_.Reset(socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(ETH_P_ALL)));
+    if (!fd_) {
         logger_.Error("Cannot open AF_PACKET socket: {}", Error::FromErrno());
         return;
     }
@@ -187,7 +187,7 @@ RawSocket::RawSocket(std::string_view interface)
     addr.sll_family = AF_PACKET;
     addr.sll_protocol = htons(ETH_P_ALL);
     addr.sll_ifindex = static_cast<int>(interface_index_);
-    if (bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         Close();
         return;
@@ -197,7 +197,7 @@ RawSocket::RawSocket(std::string_view interface)
         .len = ETHERNET_UDP_FILTER.size(),
         .filter = reinterpret_cast<sock_filter*>(ETHERNET_UDP_FILTER.data()),
     };
-    if (setsockopt(fd_, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
         logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
         Close();
         return;
@@ -208,7 +208,7 @@ RawSocket::RawSocket(std::string_view interface)
     // Fatal if unsupported (kernel < 4.20): a capture socket that re-receives its own
     // injections would let mirrored reflector entries ping-pong a frame forever.
     const int ignore_outgoing = 1;
-    if (setsockopt(fd_, SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore_outgoing,
+    if (setsockopt(fd_.Get(), SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore_outgoing,
             sizeof(ignore_outgoing)) != 0) {
         logger_.Error("Cannot set PACKET_IGNORE_OUTGOING: {}", Error::FromErrno());
         Close();
@@ -217,32 +217,32 @@ RawSocket::RawSocket(std::string_view interface)
 
     receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
 
-    logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_);
+    logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_.Get());
 
 #elif defined(__APPLE__)
-    for (int n = 0; n < 256 && fd_ < 0; ++n) {
+    for (int n = 0; n < 256 && !fd_; ++n) {
         const auto path = std::format("/dev/bpf{}", n);
-        fd_ = open(path.c_str(), O_RDWR);
-        if (fd_ < 0 && errno != EBUSY) {
+        fd_.Reset(open(path.c_str(), O_RDWR));
+        if (!fd_ && errno != EBUSY) {
             logger_.Error("Cannot open {}: {}", path, Error::FromErrno());
             return;
         }
     }
-    if (fd_ < 0) {
+    if (!fd_) {
         logger_.Error("Cannot open any /dev/bpfN device");
         return;
     }
 
     ifreq ifr{};
     std::strncpy(ifr.ifr_name, interface_.c_str(), sizeof(ifr.ifr_name) - 1);
-    if (ioctl(fd_, BIOCSETIF, &ifr) != 0) {
+    if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
         logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
         Close();
         return;
     }
 
     u_int dlt = 0;
-    if (ioctl(fd_, BIOCGDLT, &dlt) != 0) {
+    if (ioctl(fd_.Get(), BIOCGDLT, &dlt) != 0) {
         logger_.Error("Cannot query BPF link type: {}", Error::FromErrno());
         Close();
         return;
@@ -258,7 +258,7 @@ RawSocket::RawSocket(std::string_view interface)
     }
 
     u_int immediate = 1;
-    if (ioctl(fd_, BIOCIMMEDIATE, &immediate) != 0) {
+    if (ioctl(fd_.Get(), BIOCIMMEDIATE, &immediate) != 0) {
         logger_.Error("Cannot set BIOCIMMEDIATE: {}", Error::FromErrno());
         Close();
         return;
@@ -279,7 +279,7 @@ RawSocket::RawSocket(std::string_view interface)
     // copy.
     if (link_type_ == LinkType::Ethernet) {
         u_int see_sent = 0;
-        if (ioctl(fd_, BIOCSSEESENT, &see_sent) != 0) {
+        if (ioctl(fd_.Get(), BIOCSSEESENT, &see_sent) != 0) {
             logger_.Error("Cannot clear BIOCSSEESENT: {}", Error::FromErrno());
             Close();
             return;
@@ -294,27 +294,27 @@ RawSocket::RawSocket(std::string_view interface)
         .bf_len = static_cast<u_int>(filter.size()),
         .bf_insns = reinterpret_cast<bpf_insn*>(filter.data()),
     };
-    if (ioctl(fd_, BIOCSETF, &program) != 0) {
+    if (ioctl(fd_.Get(), BIOCSETF, &program) != 0) {
         logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
         Close();
         return;
     }
 
     u_int blen = 0;
-    if (ioctl(fd_, BIOCGBLEN, &blen) != 0) {
+    if (ioctl(fd_.Get(), BIOCGBLEN, &blen) != 0) {
         logger_.Error("Cannot query BPF buffer length: {}", Error::FromErrno());
         Close();
         return;
     }
     receive_buffer_.resize(blen);
 
-    if (fcntl(fd_, F_SETFL, O_NONBLOCK) != 0) {
+    if (fcntl(fd_.Get(), F_SETFL, O_NONBLOCK) != 0) {
         logger_.Error("Cannot set BPF socket non-blocking: {}", Error::FromErrno());
         Close();
         return;
     }
 
-    logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_, blen);
+    logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_.Get(), blen);
 #endif
 
     RefreshAddresses();
@@ -410,10 +410,10 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
     addr.sll_ifindex = static_cast<int>(interface_index_);
-    const auto sent = sendto(fd_, frame.data(), length, 0,
+    const auto sent = sendto(fd_.Get(), frame.data(), length, 0,
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
 #elif defined(__APPLE__)
-    const auto sent = write(fd_, frame.data(), length);
+    const auto sent = write(fd_.Get(), frame.data(), length);
 #endif
     if (sent < 0 || static_cast<size_t>(sent) != length) {
         logger_.Error("Cannot inject datagram to {}: {}", dst.addr.ToString(), Error::FromErrno());
@@ -424,10 +424,10 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
 
 bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
     const bool v6 = group.IsV6();
-    int& join_fd = v6 ? join_fd_v6_ : join_fd_v4_;
-    if (join_fd < 0) {
-        join_fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
-        if (join_fd < 0) {
+    auto& join_fd = v6 ? join_fd_v6_ : join_fd_v4_;
+    if (!join_fd.IsValid()) {
+        join_fd.Reset(socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
+        if (!join_fd.IsValid()) {
             logger_.Error("Cannot open multicast-join socket for {}: {}", group.ToString(), Error::FromErrno());
             return false;
         }
@@ -442,7 +442,7 @@ bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
     group.ToSockaddr(request.gr_group, /*port=*/0);
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
-    if (setsockopt(join_fd, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
+    if (setsockopt(join_fd.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
         // Already a member (same group + interface on this fd) — idempotent success, not an error.
         if (errno == EADDRINUSE) {
             logger_.Debug("Already joined multicast group {}", group.ToString());
@@ -468,24 +468,19 @@ void RawSocket::ClearBuffer() noexcept {
 #endif
 
 void RawSocket::Close() noexcept {
-    if (fd_ >= 0) {
-        logger_.Debug("Closing capture socket fd {}", fd_);
-        close(fd_);
-        fd_ = -1;
+    if (fd_) {
+        logger_.Debug("Closing socket");
+        fd_.Reset();
     }
-    for (int* join_fd : {&join_fd_v4_, &join_fd_v6_}) {
-        if (*join_fd >= 0) {
-            close(*join_fd);
-            *join_fd = -1;
-        }
-    }
+    join_fd_v4_.Reset();
+    join_fd_v6_.Reset();
 #if defined(__APPLE__)
     ClearBuffer();
 #endif
 }
 
 std::optional<Packet> RawSocket::Receive() noexcept {
-    if (fd_ < 0) {
+    if (!fd_) {
         return std::nullopt;
     }
 
@@ -494,7 +489,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     // frame that didn't fit is detectable (bytes > buffer) instead of being silently truncated.
     ssize_t bytes;
     do {
-        bytes = recv(fd_, receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
+        bytes = recv(fd_.Get(), receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
     } while (bytes < 0 && errno == EINTR);
     if (bytes < 0) {
         if (IsWouldBlockErrno(errno)) {
@@ -514,7 +509,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     if (receive_buffer_offset_ >= receive_buffer_filled_) {
         ssize_t bytes;
         do {
-            bytes = read(fd_, receive_buffer_.data(), receive_buffer_.size());
+            bytes = read(fd_.Get(), receive_buffer_.data(), receive_buffer_.size());
         } while (bytes < 0 && errno == EINTR);
         if (bytes < 0) {
             if (IsWouldBlockErrno(errno)) {

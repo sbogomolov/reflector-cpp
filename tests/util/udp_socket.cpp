@@ -11,14 +11,13 @@
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <utility>
 
 namespace reflector {
 
 UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
     logger_.Debug("Creating socket");
-    fd_ = socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (fd_ < 0) {
+    fd_.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP));
+    if (!fd_) {
         if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) {
             logger_.Warning("Cannot create socket: address family not supported: {}", Error::FromErrno());
         } else {
@@ -27,7 +26,7 @@ UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
         return;
     }
 
-    logger_.SetName(std::format("UdpSocket:{}", fd_));
+    logger_.SetName(std::format("UdpSocket:{}", fd_.Get()));
 
     if (!SetNonBlocking()) {
         Close();
@@ -39,36 +38,14 @@ UdpSocket::~UdpSocket() noexcept {
 }
 
 void UdpSocket::Close() noexcept {
-    if (fd_ >= 0) {
+    if (fd_) {
         logger_.Debug("Closing socket");
-        close(fd_);
-        fd_ = -1;
+        fd_.Reset();
     }
-}
-
-UdpSocket::UdpSocket(UdpSocket&& other) noexcept
-        : logger_{std::move(other.logger_)}
-        , fd_{std::exchange(other.fd_, -1)}
-        , family_{other.family_}
-        , interface_index_{std::exchange(other.interface_index_, 0)} {}
-
-UdpSocket& UdpSocket::operator=(UdpSocket&& other) noexcept {
-    if (this == &other) {
-        return *this;
-    }
-
-    Close();
-
-    logger_ = std::move(other.logger_);
-    fd_ = std::exchange(other.fd_, -1);
-    family_ = other.family_;
-    interface_index_ = std::exchange(other.interface_index_, 0);
-
-    return *this;
 }
 
 bool UdpSocket::SetNonBlocking() noexcept {
-    const auto flags = fcntl(fd_, F_GETFL, 0);
+    const auto flags = fcntl(fd_.Get(), F_GETFL, 0);
     if (flags < 0) {
         logger_.Error("Cannot get socket flags: {}", Error::FromErrno());
         return false;
@@ -78,7 +55,7 @@ bool UdpSocket::SetNonBlocking() noexcept {
         return true;
     }
 
-    if (fcntl(fd_, F_SETFL, flags | O_NONBLOCK) != 0) {
+    if (fcntl(fd_.Get(), F_SETFL, flags | O_NONBLOCK) != 0) {
         logger_.Error("Cannot make socket nonblocking: {}", Error::FromErrno());
         return false;
     }
@@ -118,14 +95,14 @@ bool UdpSocket::SetInterface(const std::string& interface) {
         logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": interface name is too long", interface);
         return false;
     }
-    if (setsockopt(fd_, SOL_SOCKET, SO_BINDTODEVICE, interface.c_str(), static_cast<socklen_t>(interface_size)) != 0) {
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_BINDTODEVICE, interface.c_str(), static_cast<socklen_t>(interface_size)) != 0) {
         logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
     const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
     const int option = family_ == IpAddress::Family::V6 ? IPV6_BOUND_IF : IP_BOUND_IF;
-    if (setsockopt(fd_, level, option, &idx, sizeof(idx)) != 0) {
+    if (setsockopt(fd_.Get(), level, option, &idx, sizeof(idx)) != 0) {
         logger_.Error("Cannot bind socket to interface \"{}\" (index {}): {}",
                       interface, idx, Error::FromErrno());
         return false;
@@ -143,7 +120,7 @@ bool UdpSocket::SetBroadcast(bool enabled) noexcept {
     }
 
     int value = enabled ? 1 : 0;
-    if (setsockopt(fd_, SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) != 0) {
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) != 0) {
         logger_.Error("Cannot set SO_BROADCAST to {}: {}", enabled, Error::FromErrno());
         return false;
     }
@@ -158,7 +135,7 @@ bool UdpSocket::SetReuseAddr(bool enabled) noexcept {
     }
 
     int value = enabled ? 1 : 0;
-    if (setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) != 0) {
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) != 0) {
         logger_.Error("Cannot set SO_REUSEADDR to {}: {}", enabled, Error::FromErrno());
         return false;
     }
@@ -177,7 +154,7 @@ bool UdpSocket::SetV6Only(bool enabled) noexcept {
     }
 
     int value = enabled ? 1 : 0;
-    if (setsockopt(fd_, IPPROTO_IPV6, IPV6_V6ONLY, &value, sizeof(value)) != 0) {
+    if (setsockopt(fd_.Get(), IPPROTO_IPV6, IPV6_V6ONLY, &value, sizeof(value)) != 0) {
         logger_.Error("Cannot set IPV6_V6ONLY to {}: {}", enabled, Error::FromErrno());
         return false;
     }
@@ -204,7 +181,7 @@ bool UdpSocket::SetMulticastInterface(const std::string& interface) {
         return false;
     }
 
-    if (setsockopt(fd_, IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx)) != 0) {
+    if (setsockopt(fd_.Get(), IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx)) != 0) {
         logger_.Error("Cannot set IPV6_MULTICAST_IF to \"{}\" (index {}): {}",
                       interface, idx, Error::FromErrno());
         return false;
@@ -238,7 +215,7 @@ bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& in
     request.gr_interface = idx;
     group.ToSockaddr(request.gr_group, /*port=*/0);
     const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
-    if (setsockopt(fd_, level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
+    if (setsockopt(fd_.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
         logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
                       Error::FromErrno());
         return false;
@@ -265,7 +242,7 @@ bool UdpSocket::Bind(const IpEndpoint& endpoint) {
 
     sockaddr_storage storage{};
     const socklen_t length = endpoint.ToSockaddr(storage);
-    if (bind(fd_, reinterpret_cast<sockaddr*>(&storage), length) != 0) {
+    if (bind(fd_.Get(), reinterpret_cast<sockaddr*>(&storage), length) != 0) {
         logger_.Error("Cannot bind UDP socket: {}", Error::FromErrno());
         return false;
     }
@@ -289,7 +266,7 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpEndpoint& end
 
     ssize_t bytes_sent;
     do {
-        bytes_sent = sendto(fd_,
+        bytes_sent = sendto(fd_.Get(),
             payload.data(),
             payload.size(),
             0,

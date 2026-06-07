@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_address.h"
+#include "util/unique_fd.h"
 
 #include <cstdint>
 #include <optional>
@@ -23,14 +24,14 @@ public:
 
     PortReservation(PortReservation&& other) noexcept;
     PortReservation& operator=(PortReservation&& other) noexcept;
-    ~PortReservation() noexcept;
+    ~PortReservation() noexcept = default;
 
     [[nodiscard]] uint16_t Port() const noexcept { return port_; }
 
 private:
     PortReservation(int fd, uint16_t port) noexcept : fd_{fd}, port_{port} {}
 
-    int fd_ = -1;
+    UniqueFd fd_;
     uint16_t port_ = 0;
 };
 

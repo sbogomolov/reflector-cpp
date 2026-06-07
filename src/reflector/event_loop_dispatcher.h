@@ -2,6 +2,7 @@
 
 #include "dispatcher.h"
 #include "util/no_move.h"
+#include "util/unique_fd.h"
 
 #include <chrono>
 #include <csignal>
@@ -74,7 +75,7 @@ private:
     std::unordered_map<int, FdCallbacks> callbacks_;
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
-    int event_fd_ = -1;
+    UniqueFd event_fd_;
 };
 
 } // namespace reflector

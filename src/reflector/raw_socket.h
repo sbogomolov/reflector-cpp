@@ -5,6 +5,7 @@
 #include "logger.h"
 #include "packet.h"
 #include "util/no_move.h"
+#include "util/unique_fd.h"
 
 #include <cstddef>
 #include <memory>
@@ -49,8 +50,8 @@ public:
     // behind a pointer — e.g. Application's injectable capture-socket factory.
     [[nodiscard]] static std::unique_ptr<RawSocket> ForTestingPtr(std::string_view interface, int owned_fd);
 
-    [[nodiscard]] bool IsValid() const noexcept override { return fd_ >= 0; }
-    [[nodiscard]] int Fd() const noexcept override { return fd_; }
+    [[nodiscard]] bool IsValid() const noexcept override { return fd_.IsValid(); }
+    [[nodiscard]] int Fd() const noexcept override { return fd_.Get(); }
     [[nodiscard]] std::string_view Interface() const noexcept { return interface_; }
 
     // The interface's kernel index, resolved at open (0 for test-only sockets or if the
@@ -133,11 +134,11 @@ private:
 
     Logger logger_;
     std::string interface_;
-    int fd_ = -1;
+    UniqueFd fd_;
     // Dedicated unbound fds that hold multicast group memberships alive, one per family, opened
     // lazily by JoinMulticastGroup. Separate from fd_ (the capture/inject socket).
-    int join_fd_v4_ = -1;
-    int join_fd_v6_ = -1;
+    UniqueFd join_fd_v4_;
+    UniqueFd join_fd_v6_;
     unsigned interface_index_ = 0;
 
     // Source MAC and per-family source IPs of interface_, resolved once at open; the raw egress

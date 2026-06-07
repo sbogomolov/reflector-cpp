@@ -4,6 +4,7 @@
 #include "reflector/ip_endpoint.h"
 #include "reflector/logger.h"
 #include "reflector/util/no_copy.h"
+#include "reflector/util/unique_fd.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -17,11 +18,11 @@ public:
     explicit UdpSocket(IpAddress::Family family);
     ~UdpSocket() noexcept;
 
-    UdpSocket(UdpSocket&& other) noexcept;
-    UdpSocket& operator=(UdpSocket&& other) noexcept;
+    UdpSocket(UdpSocket&&) noexcept = default;
+    UdpSocket& operator=(UdpSocket&&) noexcept = default;
 
-    [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
-    [[nodiscard]] int Fd() const noexcept { return fd_; }
+    [[nodiscard]] bool IsValid() const noexcept { return fd_.IsValid(); }
+    [[nodiscard]] int Fd() const noexcept { return fd_.Get(); }
     [[nodiscard]] IpAddress::Family AddressFamily() const noexcept { return family_; }
 
     void Close() noexcept;
@@ -45,7 +46,7 @@ private:
     [[nodiscard]] bool IsInterfaceConsistent(const std::string& interface, unsigned int index) noexcept;
 
     Logger logger_{"UdpSocket"};
-    int fd_ = -1;
+    UniqueFd fd_;
     IpAddress::Family family_;
     // Used as the IPv6 scope id for link-local sends; 0 means no interface selected.
     unsigned interface_index_ = 0;

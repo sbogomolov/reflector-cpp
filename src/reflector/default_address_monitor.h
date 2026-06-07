@@ -3,6 +3,7 @@
 #include "address_monitor.h"
 #include "dispatcher.h"
 #include "util/no_move.h"
+#include "util/unique_fd.h"
 
 #include <cstddef>
 #include <span>
@@ -27,7 +28,7 @@ public:
 
     [[nodiscard]] bool Start(const OnInterfaceChanged& on_change) noexcept override;
 
-    [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
+    [[nodiscard]] bool IsValid() const noexcept { return fd_.IsValid(); }
 
 private:
     // Used by ForTesting: adopts an already-open `fd` instead of opening the kernel socket.
@@ -59,7 +60,7 @@ private:
     // valid by the time the fd is watched, so OnReadable can call it.
     OnInterfaceChanged on_change_;
     Dispatcher::Registration registration_;
-    int fd_ = -1;
+    UniqueFd fd_;
 };
 
 } // namespace reflector

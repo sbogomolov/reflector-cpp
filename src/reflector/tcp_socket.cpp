@@ -96,34 +96,33 @@ TcpSocket::TcpSocket(TcpSocket&& other) noexcept
           logger_{std::move(other.logger_)},
           local_{std::move(other.local_)},
           peer_{std::move(other.peer_)},
-          fd_{std::exchange(other.fd_, -1)},
+          fd_{std::move(other.fd_)},
           connecting_{std::exchange(other.connecting_, false)} {}
 
 TcpSocket& TcpSocket::operator=(TcpSocket&& other) noexcept {
     if (this != &other) {
-        Close();
         send_buffer_ = std::move(other.send_buffer_);
         logger_ = std::move(other.logger_);
         local_ = std::move(other.local_);
         peer_ = std::move(other.peer_);
-        fd_ = std::exchange(other.fd_, -1);
+        fd_ = std::move(other.fd_);
         connecting_ = std::exchange(other.connecting_, false);
     }
     return *this;
 }
 
 void TcpSocket::Shutdown() noexcept {
-    if (fd_ >= 0) {
+    if (fd_) {
         // Best-effort FIN: ignore ENOTCONN (a refused/never-connected upstream) and the like — the point is
         // to wake a blocked peer, not to report. Keep fd_ valid; Close() still owns the descriptor.
-        ::shutdown(fd_, SHUT_RDWR);
+        ::shutdown(fd_.Get(), SHUT_RDWR);
     }
 }
 
 void TcpSocket::Close() noexcept {
-    if (fd_ >= 0) {
-        ::close(fd_);
-        fd_ = -1;
+    if (fd_) {
+        logger_.Debug("Closing socket");
+        fd_.Reset();
     }
 }
 
@@ -200,9 +199,9 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
     sockaddr_storage peer{};
     socklen_t peer_len = sizeof(peer);
 #if defined(__linux__)
-    const int client = ::accept4(fd_, reinterpret_cast<sockaddr*>(&peer), &peer_len, SOCK_NONBLOCK);
+    const int client = ::accept4(fd_.Get(), reinterpret_cast<sockaddr*>(&peer), &peer_len, SOCK_NONBLOCK);
 #else
-    const int client = ::accept(fd_, reinterpret_cast<sockaddr*>(&peer), &peer_len);
+    const int client = ::accept(fd_.Get(), reinterpret_cast<sockaddr*>(&peer), &peer_len);
 #endif
     if (client < 0) {
         if (!IsWouldBlockErrno(errno)) {
@@ -232,7 +231,7 @@ bool TcpSocket::FinishConnect() noexcept {
     }
     int so_error = 0;
     socklen_t len = sizeof(so_error);
-    if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
+    if (::getsockopt(fd_.Get(), SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
         logger_.Error("Cannot read SO_ERROR: {}", Error::FromErrno());
         return false;
     }
@@ -245,7 +244,7 @@ bool TcpSocket::FinishConnect() noexcept {
 }
 
 IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
-    const ssize_t n = ::recv(fd_, out.data(), out.size(), 0);
+    const ssize_t n = ::recv(fd_.Get(), out.data(), out.size(), 0);
     if (n > 0) {
         return {IoStatus::Ok, static_cast<size_t>(n)};
     }
@@ -264,9 +263,9 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
         return {IoStatus::Ok, 0};
     }
 #if defined(__linux__)
-    const ssize_t n = ::send(fd_, data.data(), data.size(), MSG_NOSIGNAL);
+    const ssize_t n = ::send(fd_.Get(), data.data(), data.size(), MSG_NOSIGNAL);
 #else
-    const ssize_t n = ::send(fd_, data.data(), data.size(), 0);  // SO_NOSIGPIPE set at creation
+    const ssize_t n = ::send(fd_.Get(), data.data(), data.size(), 0);  // SO_NOSIGPIPE set at creation
 #endif
     if (n >= 0) {
         return {IoStatus::Ok, static_cast<size_t>(n)};
@@ -310,9 +309,9 @@ IoResult TcpSocket::WriteSomeV(std::span<const std::span<const std::byte>> chunk
     message.msg_iov = iov.data();
     message.msg_iovlen = static_cast<decltype(message.msg_iovlen)>(count);
 #if defined(__linux__)
-    const ssize_t n = ::sendmsg(fd_, &message, MSG_NOSIGNAL);
+    const ssize_t n = ::sendmsg(fd_.Get(), &message, MSG_NOSIGNAL);
 #else
-    const ssize_t n = ::sendmsg(fd_, &message, 0);  // SO_NOSIGPIPE set at creation
+    const ssize_t n = ::sendmsg(fd_.Get(), &message, 0);  // SO_NOSIGPIPE set at creation
 #endif
     if (n >= 0) {
         return {IoStatus::Ok, static_cast<size_t>(n)};

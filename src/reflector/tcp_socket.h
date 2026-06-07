@@ -4,6 +4,7 @@
 #include "reflector/logger.h"
 #include "reflector/util/no_copy.h"
 #include "reflector/util/stream_buffer.h"
+#include "reflector/util/unique_fd.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -56,8 +57,8 @@ public:
     TcpSocket(TcpSocket&& other) noexcept;
     TcpSocket& operator=(TcpSocket&& other) noexcept;
 
-    [[nodiscard]] bool IsValid() const noexcept { return fd_ >= 0; }
-    [[nodiscard]] int Fd() const noexcept { return fd_; }
+    [[nodiscard]] bool IsValid() const noexcept { return fd_.IsValid(); }
+    [[nodiscard]] int Fd() const noexcept { return fd_.Get(); }
     [[nodiscard]] bool IsConnecting() const noexcept { return connecting_; }
 
     // On the writable edge: if connecting, read SO_ERROR and on success clear the connecting flag and
@@ -139,7 +140,7 @@ private:
     Logger logger_;                   // "TcpSocket:{fd}" — set in the ctor once the fd is known
     IpEndpoint local_;                // bound addr (Listen) / connect source / accept local — always known
     std::optional<IpEndpoint> peer_;  // the connected peer; empty for a listener
-    int fd_ = -1;
+    UniqueFd fd_;
     bool connecting_ = false;
 };
 

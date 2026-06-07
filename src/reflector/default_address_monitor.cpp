@@ -70,7 +70,7 @@ bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept 
         return false;
     }
     on_change_ = on_change;
-    if (fd_ < 0 || !Watch()) {
+    if (!fd_ || !Watch()) {
         // Open() (at construction) or Watch() has already logged the specific cause; whether to
         // proceed without address refresh is the caller's policy, not ours.
         Close();
@@ -81,8 +81,8 @@ bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept 
 
 bool DefaultAddressMonitor::Open() noexcept {
 #if defined(__linux__)
-    fd_ = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE);
-    if (fd_ < 0) {
+    fd_.Reset(socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE));
+    if (!fd_) {
         GetLogger().Error("Cannot open netlink socket: {}", Error::FromErrno());
         return false;
     }
@@ -90,17 +90,17 @@ bool DefaultAddressMonitor::Open() noexcept {
     sockaddr_nl address{};
     address.nl_family = AF_NETLINK;
     address.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
-    if (bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
         GetLogger().Error("Cannot subscribe to netlink address groups: {}", Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
-    fd_ = socket(PF_ROUTE, SOCK_RAW, 0);
-    if (fd_ < 0) {
+    fd_.Reset(socket(PF_ROUTE, SOCK_RAW, 0));
+    if (!fd_) {
         GetLogger().Error("Cannot open route socket: {}", Error::FromErrno());
         return false;
     }
-    if (fcntl(fd_, F_SETFL, O_NONBLOCK) != 0) {
+    if (fcntl(fd_.Get(), F_SETFL, O_NONBLOCK) != 0) {
         GetLogger().Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
         return false;
     }
@@ -110,12 +110,12 @@ bool DefaultAddressMonitor::Open() noexcept {
 }
 
 bool DefaultAddressMonitor::Watch() noexcept {
-    registration_ = dispatcher_->Register(fd_, CreateDelegate<&DefaultAddressMonitor::OnReadable>(this));
+    registration_ = dispatcher_->Register(fd_.Get(), CreateDelegate<&DefaultAddressMonitor::OnReadable>(this));
     if (!registration_.IsValid()) {
         GetLogger().Error("Cannot register the address-notification socket with the dispatcher");
         return false;
     }
-    GetLogger().Debug("Watching for interface address changes on fd {}", fd_);
+    GetLogger().Debug("Watching for interface address changes on fd {}", fd_.Get());
     return true;
 }
 
@@ -125,10 +125,7 @@ DefaultAddressMonitor::~DefaultAddressMonitor() noexcept {
 }
 
 void DefaultAddressMonitor::Close() noexcept {
-    if (fd_ >= 0) {
-        close(fd_);
-        fd_ = -1;
-    }
+    fd_.Reset();
 }
 
 void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
@@ -145,7 +142,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     std::vector<unsigned> changed;
     bool overflowed = false;
     while (true) {
-        const auto received = recv(fd_, buffer.data(), buffer.size(), 0);
+        const auto received = recv(fd_.Get(), buffer.data(), buffer.size(), 0);
         if (received < 0) {
             if (errno == EINTR) {
                 continue;

@@ -67,24 +67,14 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
 }
 
 PortReservation::PortReservation(PortReservation&& other) noexcept
-        : fd_{std::exchange(other.fd_, -1)}, port_{std::exchange(other.port_, 0)} {}
+        : fd_{std::move(other.fd_)}, port_{std::exchange(other.port_, 0)} {}
 
 PortReservation& PortReservation::operator=(PortReservation&& other) noexcept {
     if (this != &other) {
-        if (fd_ >= 0) {
-            close(fd_);
-        }
-        fd_ = std::exchange(other.fd_, -1);
+        fd_ = std::move(other.fd_);
         port_ = std::exchange(other.port_, 0);
     }
     return *this;
-}
-
-PortReservation::~PortReservation() noexcept {
-    if (fd_ >= 0) {
-        close(fd_);
-        fd_ = -1;
-    }
 }
 
 } // namespace reflector

@@ -44,15 +44,15 @@ namespace reflector {
 
 EventLoopDispatcher::EventLoopDispatcher() {
 #if defined(__APPLE__)
-    event_fd_ = kqueue();
+    event_fd_.Reset(kqueue());
 #elif defined(__linux__)
-    event_fd_ = epoll_create1(0);
+    event_fd_.Reset(epoll_create1(0));
 #endif
 
-    if (event_fd_ < 0) {
+    if (!event_fd_) {
         GetLogger().Error("Cannot create dispatcher event queue: {}", Error::FromErrno());
     } else {
-        GetLogger().Debug("Created dispatcher event queue fd {}", event_fd_);
+        GetLogger().Debug("Created dispatcher event queue fd {}", event_fd_.Get());
     }
 }
 
@@ -64,10 +64,9 @@ EventLoopDispatcher::~EventLoopDispatcher() noexcept {
         GetLogger().Error("Destroying dispatcher with {} timer registration(s) still active", timers_.size());
     }
 
-    if (event_fd_ >= 0) {
-        GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_);
-        close(event_fd_);
-        event_fd_ = -1;
+    if (event_fd_) {
+        GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_.Get());
+        event_fd_.Reset();
     }
 }
 
@@ -133,7 +132,7 @@ bool EventLoopDispatcher::Unregister(int fd) noexcept {
 
 void EventLoopDispatcher::Run(const volatile std::sig_atomic_t& stop_requested) {
     GetLogger().Info("Starting dispatcher event loop");
-    if (event_fd_ < 0) {
+    if (!event_fd_) {
         GetLogger().Error("Cannot run dispatcher: event queue is invalid");
         return;
     }
@@ -149,7 +148,7 @@ void EventLoopDispatcher::Run(const volatile std::sig_atomic_t& stop_requested) 
 }
 
 bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
-    if (event_fd_ < 0) {
+    if (!event_fd_) {
         GetLogger().Error("Cannot poll dispatcher: event queue is invalid");
         return false;
     }
@@ -157,7 +156,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
 #if defined(__APPLE__)
     auto timeout_spec = ToTimespec(timeout);
     struct kevent event{};
-    const auto event_count = kevent(event_fd_, nullptr, 0, &event, 1, &timeout_spec);
+    const auto event_count = kevent(event_fd_.Get(), nullptr, 0, &event, 1, &timeout_spec);
     if (event_count < 0) {
         if (errno == EINTR) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
@@ -176,7 +175,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     }
 #elif defined(__linux__)
     epoll_event event{};
-    const auto event_count = epoll_wait(event_fd_, &event, 1, static_cast<int>(timeout.count()));
+    const auto event_count = epoll_wait(event_fd_.Get(), &event, 1, static_cast<int>(timeout.count()));
     if (event_count < 0) {
         if (errno == EINTR) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
@@ -303,7 +302,7 @@ std::chrono::milliseconds EventLoopDispatcher::NextTimeout(std::chrono::steady_c
 }
 
 bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
-    if (event_fd_ < 0) {
+    if (!event_fd_) {
         GetLogger().Error("Cannot set events for fd {}: event queue is invalid", fd);
         return false;
     }
@@ -325,13 +324,13 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     // rejects it with EINVAL); disarming uses bare EV_DISABLE, tolerating ENOENT when it was never added.
     struct kevent change{};
     EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
-    if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0) {
+    if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0) {
         GetLogger().Error("Cannot arm read interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
     const auto write_flags = static_cast<uint16_t>(enable_write ? (EV_ADD | EV_ENABLE) : EV_DISABLE);
     EV_SET(&change, fd, EVFILT_WRITE, write_flags, 0, 0, nullptr);
-    if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0 && (enable_write || errno != ENOENT)) {
+    if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0 && (enable_write || errno != ENOENT)) {
         GetLogger().Error("Cannot set write interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
@@ -342,8 +341,8 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     epoll_event event{};
     event.events = EPOLLIN | (enable_write ? EPOLLOUT : 0u);
     event.data.fd = fd;
-    if (epoll_ctl(event_fd_, EPOLL_CTL_MOD, fd, &event) != 0
-        && (errno != ENOENT || epoll_ctl(event_fd_, EPOLL_CTL_ADD, fd, &event) != 0)) {
+    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_MOD, fd, &event) != 0
+        && (errno != ENOENT || epoll_ctl(event_fd_.Get(), EPOLL_CTL_ADD, fd, &event) != 0)) {
         GetLogger().Error("Cannot set events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
@@ -354,7 +353,7 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
 }
 
 bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
-    if (event_fd_ < 0) {
+    if (!event_fd_) {
         GetLogger().Error("Cannot remove events for fd {}: event queue is invalid", fd);
         return false;
     }
@@ -367,7 +366,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     for (const auto filter : {EVFILT_READ, EVFILT_WRITE}) {
         struct kevent change{};
         EV_SET(&change, fd, static_cast<int16_t>(filter), EV_DELETE, 0, 0, nullptr);
-        if (kevent(event_fd_, &change, 1, nullptr, 0, nullptr) != 0 && errno != ENOENT) {
+        if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0 && errno != ENOENT) {
             GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
             ok = false;
         }
@@ -378,7 +377,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
 #elif defined(__linux__)
     // ENOENT is benign: the kernel auto-removes a closed fd, so a DEL issued after the owner already
     // closed it hits ENOENT (matching the macOS branch above). Any other failure is a real error.
-    if (epoll_ctl(event_fd_, EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
+    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
         GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
