@@ -74,9 +74,7 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -D REFLECTOR_ENABLE_DOCKER_TESTS=OFF \
-            -D REFLECTOR_ENABLE_E2E_TESTS=OFF
+            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
@@ -84,45 +82,11 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # Run under sudo so the RequiresRoot tests (loopback capture, veth/feth pairs needing
+      # CAP_NET_RAW/CAP_NET_ADMIN or bpf + root) run instead of skipping. Each fixture probes its
+      # operation and GTEST_SKIPs where unavailable, so this is safe on every platform.
       - name: Run unit tests
-        run: ctest --test-dir build -L unit --output-on-failure
-
-  docker-test:
-    name: Docker test (${{ matrix.build_type }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-
-    strategy:
-      fail-fast: false
-      matrix:
-        build_type: [Debug, Release]
-        include:
-          - build_type: Debug
-            target: test-debug
-          - build_type: Release
-            target: test-release
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build test image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          tags: reflector:${{ matrix.target }}
-          load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # docker build can't grant CAP_NET_ADMIN, which the veth-pair tests need; run the
-      # built image with it so they execute instead of skipping. See docker_test.sh.
-      - name: Run unit tests with CAP_NET_ADMIN
-        run: docker run --rm --cap-add=NET_ADMIN reflector:${{ matrix.target }}
+        run: sudo ctest --test-dir build --output-on-failure
 
   docker-e2e:
     name: Docker e2e
@@ -147,3 +111,75 @@ jobs:
 
       - name: Run e2e
         run: python3 e2e/run.py --skip-build
+
+  valgrind-unit:
+    name: Valgrind unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ccache \
+            cmake \
+            g++-14 \
+            gcc-14 \
+            ninja-build \
+            valgrind
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -D CMAKE_BUILD_TYPE=Debug \
+            -D REFLECTOR_SANITIZE=OFF
+        env:
+          CC: gcc-14
+          CXX: g++-14
+
+      - name: Build test binary
+        run: cmake --build build --target reflector_test
+
+      # The whole unit binary under Valgrind memcheck, sudo so the RequiresRoot tests run too.
+      # --error-exitcode=1 fails the job on any leak or memcheck error. No --track-fds: the unit tests
+      # intentionally open/close/probe fds (fd-leak tracking belongs in Valgrind.E2E, the real daemon).
+      - name: Run unit suite under Valgrind memcheck
+        run: |
+          sudo valgrind \
+            --leak-check=full \
+            --show-leak-kinds=all \
+            --errors-for-leak-kinds=definite,indirect,possible \
+            --num-callers=30 \
+            --error-exitcode=1 \
+            ./build/tests/reflector_test
+
+  valgrind-e2e:
+    name: Valgrind e2e
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build runtime-valgrind image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime-valgrind
+          tags: reflector:e2e-valgrind
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The e2e suite with the reflector under memcheck; --valgrind makes run.py SIGTERM the daemon per
+      # case and fail on any leak, leaked fd, or memcheck error. --skip-build reuses the image built above.
+      - name: Run e2e under Valgrind memcheck
+        run: python3 e2e/run.py --valgrind --skip-build
