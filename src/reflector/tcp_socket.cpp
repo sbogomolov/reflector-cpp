@@ -2,13 +2,13 @@
 
 #include "error.h"
 #include "logger.h"
+#include "util/fd_util.h"
 
 #include <array>
 #include <cerrno>
 #include <cstring>
 #include <format>
 #include <utility>
-#include <fcntl.h>
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -27,8 +27,7 @@ Logger& GetLogger() noexcept {
 // Make `fd` non-blocking and SIGPIPE-safe. On Linux SIGPIPE is suppressed per-send via MSG_NOSIGNAL, so
 // only the non-blocking flag is set here; on macOS there is no MSG_NOSIGNAL, so SO_NOSIGPIPE is set once.
 [[nodiscard]] bool ConfigureFd(int fd) noexcept {
-    const int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+    if (!SetNonBlocking(fd)) {
         GetLogger().Error("Cannot set socket non-blocking: {}", Error::FromErrno());
         return false;
     }

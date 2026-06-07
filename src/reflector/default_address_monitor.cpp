@@ -2,6 +2,7 @@
 
 #include "error.h"
 #include "logger.h"
+#include "util/fd_util.h"
 
 #include <algorithm>
 #include <array>
@@ -21,7 +22,6 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #elif defined(__APPLE__)
-#include <fcntl.h>
 #include <net/if.h>
 #include <net/route.h>
 #endif
@@ -100,7 +100,7 @@ bool DefaultAddressMonitor::Open() noexcept {
         GetLogger().Error("Cannot open route socket: {}", Error::FromErrno());
         return false;
     }
-    if (fcntl(fd_.Get(), F_SETFL, O_NONBLOCK) != 0) {
+    if (!SetNonBlocking(fd_.Get())) {
         GetLogger().Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
         return false;
     }

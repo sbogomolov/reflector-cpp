@@ -42,7 +42,6 @@ public:
     [[nodiscard]] bool SendTo(std::span<const std::byte> payload, const IpEndpoint& endpoint) noexcept;
 
 private:
-    [[nodiscard]] bool SetNonBlocking() noexcept;
     [[nodiscard]] bool IsInterfaceConsistent(const std::string& interface, unsigned int index) noexcept;
 
     Logger logger_{"UdpSocket"};

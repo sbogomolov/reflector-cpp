@@ -1,10 +1,10 @@
 #include "udp_socket.h"
 
 #include "reflector/error.h"
+#include "reflector/util/fd_util.h"
 
 #include <cerrno>
 #include <cstring>
-#include <fcntl.h>
 #include <format>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -28,7 +28,8 @@ UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
 
     logger_.SetName(std::format("UdpSocket:{}", fd_.Get()));
 
-    if (!SetNonBlocking()) {
+    if (!SetNonBlocking(fd_.Get())) {
+        logger_.Error("Cannot set socket non-blocking: {}", Error::FromErrno());
         Close();
     }
 }
@@ -42,25 +43,6 @@ void UdpSocket::Close() noexcept {
         logger_.Debug("Closing socket");
         fd_.Reset();
     }
-}
-
-bool UdpSocket::SetNonBlocking() noexcept {
-    const auto flags = fcntl(fd_.Get(), F_GETFL, 0);
-    if (flags < 0) {
-        logger_.Error("Cannot get socket flags: {}", Error::FromErrno());
-        return false;
-    }
-
-    if ((flags & O_NONBLOCK) != 0) {
-        return true;
-    }
-
-    if (fcntl(fd_.Get(), F_SETFL, flags | O_NONBLOCK) != 0) {
-        logger_.Error("Cannot make socket nonblocking: {}", Error::FromErrno());
-        return false;
-    }
-
-    return true;
 }
 
 bool UdpSocket::IsInterfaceConsistent(const std::string& interface, unsigned int index) noexcept {

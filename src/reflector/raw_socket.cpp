@@ -5,6 +5,7 @@
 #include "ip_address.h"
 #include "mac_address.h"
 #include "util/byte_order.h"
+#include "util/fd_util.h"
 
 #include <array>
 #include <arpa/inet.h>
@@ -308,7 +309,7 @@ RawSocket::RawSocket(std::string_view interface)
     }
     receive_buffer_.resize(blen);
 
-    if (fcntl(fd_.Get(), F_SETFL, O_NONBLOCK) != 0) {
+    if (!SetNonBlocking(fd_.Get())) {
         logger_.Error("Cannot set BPF socket non-blocking: {}", Error::FromErrno());
         Close();
         return;
