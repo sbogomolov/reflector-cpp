@@ -13,9 +13,8 @@
 #include <sys/socket.h>
 #include <vector>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 // Parses a known-valid address for the classification tests; fails the test if it doesn't parse.
 IpAddress Parse(const char* address) {
@@ -25,6 +24,8 @@ IpAddress Parse(const char* address) {
 }
 
 } // namespace
+
+namespace reflector {
 
 TEST(IpAddressTest, AnyV4AndAnyV6AreFamilyWildcards) {
     EXPECT_TRUE(IpAddress::AnyV4().IsV4());
@@ -331,3 +332,5 @@ TEST(IpAddressTest, Ipv4IsNeverIpv6Scoped) {
     EXPECT_FALSE(v4.IsUniqueLocal());
     EXPECT_FALSE(v4.IsGlobalUnicast());
 }
+
+}  // namespace reflector

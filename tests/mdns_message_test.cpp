@@ -8,9 +8,8 @@
 #include <optional>
 #include <span>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 // A 12-byte DNS header carrying `flags_high` as the high byte of the flags field (byte 2); all
 // other header bytes zero. The QR bit lives in this byte, so it's all the classifier reads.
@@ -21,6 +20,8 @@ std::array<std::byte, 12> HeaderWithFlagsHigh(uint8_t flags_high) {
 }
 
 } // namespace
+
+namespace reflector {
 
 TEST(MdnsMessageTest, ClassifiesQueryWhenQrBitClear) {
     EXPECT_EQ(ClassifyMdnsMessage(HeaderWithFlagsHigh(0x00)), MdnsMessageKind::Query);
@@ -56,3 +57,5 @@ TEST(MdnsMessageTest, RejectsPayloadShorterThanHeader) {
     EXPECT_EQ(ClassifyMdnsMessage(too_short), std::nullopt);
     EXPECT_EQ(ClassifyMdnsMessage(std::span<const std::byte>{}), std::nullopt);
 }
+
+}  // namespace reflector

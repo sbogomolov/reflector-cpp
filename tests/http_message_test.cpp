@@ -11,9 +11,8 @@
 #include "reflector/ip_endpoint.h"
 #include "reflector/util/delegate.h"
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 // Device and Reflector are the two ends of every rewrite here: the device's own address and the reflector
 // listener that stands in for it (what a client on another subnet reaches). Responses swap Device->Reflector
@@ -104,6 +103,8 @@ struct Driver {
 };
 
 } // namespace
+
+namespace reflector {
 
 TEST(ParseAuthorityTest, BareHostPortReturnsEndpointAndSpan) {
     const std::string_view value = "10.1.3.80:36866";
@@ -705,3 +706,5 @@ TEST(HttpFramingMiscTest, RefusesChunkedTrailers) {
         "X-Checksum: abc123\r\n\r\n");
     EXPECT_FALSE(d.ok);
 }
+
+}  // namespace reflector

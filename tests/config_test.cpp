@@ -15,9 +15,8 @@
 #include <system_error>
 #include <vector>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 std::filesystem::path MakeTempConfigPath(std::string_view test_name) {
     const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -40,6 +39,8 @@ wol = true
 }
 
 } // namespace
+
+namespace reflector {
 
 // --- struct-level Verify / policy (independent of the TOML format) ---
 
@@ -1518,3 +1519,5 @@ dial = true
     ASSERT_FALSE(config.has_value());
     EXPECT_NE(config.error().Message().find("dial"), std::string::npos) << config.error().Message();
 }
+
+}  // namespace reflector

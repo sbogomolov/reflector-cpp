@@ -5,7 +5,7 @@
 
 #include <gtest/gtest.h>
 
-using namespace reflector;
+namespace reflector {
 
 // Canonical IPv4 header example (Wikipedia): with the checksum field zeroed the checksum is
 // 0xb861, and with that value in place the header re-sums to zero.
@@ -72,3 +72,5 @@ TEST(ChecksumTest, UdpV6WithChecksumInPlaceMapsToAllOnes) {
     });
     EXPECT_EQ(UdpChecksum(src, dst, udp), 0xffff);
 }
+
+}  // namespace reflector

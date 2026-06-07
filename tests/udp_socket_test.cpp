@@ -15,9 +15,8 @@
 #include <sys/socket.h>
 #include <utility>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 IpAddress OtherLoopbackFor(IpAddress::Family family) {
     return family == IpAddress::Family::V6 ? IpAddress::LoopbackV4() : IpAddress::LoopbackV6();
@@ -52,6 +51,8 @@ INSTANTIATE_TEST_SUITE_P(
     FamilyName);
 
 } // namespace
+
+namespace reflector {
 
 TEST_P(UdpSocketPerFamilyTest, ConstructsValidSocket) {
     UdpSocket sock{GetParam()};
@@ -248,3 +249,5 @@ TEST(UdpSocketTest, JoinMulticastGroupWithUnknownInterfaceFails) {
     ASSERT_TRUE(sock.IsValid());
     EXPECT_FALSE(sock.JoinMulticastGroup(IpAddress::AllNodesLinkLocalV6(), "nonexistent-iface-xyz"));
 }
+
+}  // namespace reflector

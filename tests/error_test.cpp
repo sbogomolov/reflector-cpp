@@ -6,7 +6,7 @@
 #include <format>
 #include <system_error>
 
-using namespace reflector;
+namespace reflector {
 
 TEST(ErrorTest, ConstructsFromStringLvalue) {
     std::string test_error = "test error";
@@ -67,3 +67,5 @@ TEST(ErrorTest, IsWouldBlockErrnoMatchesEagainAndEwouldblock) {
 TEST(ErrorTest, FormatsThroughMessage) {
     EXPECT_EQ(std::format("{}", Error{"boom"}), "boom");
 }
+
+}  // namespace reflector

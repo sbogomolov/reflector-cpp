@@ -10,9 +10,8 @@
 #include <string_view>
 #include <vector>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 std::vector<std::byte> Bytes(std::string_view text) {
     std::vector<std::byte> out;
@@ -28,6 +27,8 @@ std::string_view AsText(const std::vector<std::byte>& bytes) {
 }
 
 } // namespace
+
+namespace reflector {
 
 TEST(SsdpMessageTest, ClassifiesMSearchAsSearch) {
     const auto payload = Bytes(
@@ -212,3 +213,5 @@ TEST(SsdpMessageTest, UsesTheFirstLocationHeader) {
     ASSERT_TRUE(location.has_value());
     EXPECT_EQ(location->endpoint, (IpEndpoint{IpAddress::FromString("192.168.1.5").value(), 8008}));  // first wins
 }
+
+}  // namespace reflector

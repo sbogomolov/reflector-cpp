@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <format>
 
-using namespace reflector;
+namespace reflector {
 
 TEST(MacAddressTest, ParsesLowercaseAddress) {
     const auto mac = MacAddress::FromString("00:11:22:33:44:55");
@@ -116,3 +116,5 @@ TEST(MacAddressTest, Equality) {
     EXPECT_EQ(mac, *MacAddress::FromString("00:11:22:33:44:55"));
     EXPECT_NE(mac, *MacAddress::FromString("00:11:22:33:44:56"));
 }
+
+}  // namespace reflector

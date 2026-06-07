@@ -17,9 +17,8 @@
 #include <sys/socket.h>
 #include <vector>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 MacAddress Mac(std::array<int, 6> octets) {
     MacAddress::ByteArray bytes{};
@@ -30,6 +29,8 @@ MacAddress Mac(std::array<int, 6> octets) {
 }
 
 } // namespace
+
+namespace reflector {
 
 TEST(MulticastMacForTest, Ipv4Multicast) {
     EXPECT_EQ(MulticastMacFor(*IpAddress::FromString("224.0.0.251")), Mac({0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb}));
@@ -214,3 +215,5 @@ TEST(FrameBuilderTest, LoopbackIpv6) {
     EXPECT_TRUE(std::equal(udp.begin() + 8, udp.end(), payload.begin()));  // payload
 }
 #endif
+
+}  // namespace reflector

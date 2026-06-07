@@ -15,9 +15,8 @@
 #include <string>
 #endif
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 // Resolve the loopback interface via each platform's native key — index on Linux (the form the
 // netlink resolver and production refresh use), name on macOS.
@@ -30,6 +29,8 @@ InterfaceAddresses ResolveLoopback() {
 }
 
 } // namespace
+
+namespace reflector {
 
 TEST(InterfaceAddressTest, ResolvesLoopbackIpv4) {
     const auto addresses = ResolveLoopback();
@@ -180,3 +181,5 @@ TEST(SelectSourceAddressesTest, EmptyCandidatesSelectNothing) {
     EXPECT_FALSE(selected.v4.has_value());
     EXPECT_FALSE(selected.v6.has_value());
 }
+
+}  // namespace reflector

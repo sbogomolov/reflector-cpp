@@ -4,7 +4,7 @@
 
 #include <utility>
 
-using namespace reflector;
+namespace reflector {
 
 struct DelegateTestClass {
     int Method(int, float) { return 1; }
@@ -195,3 +195,5 @@ TEST(DelegateTest, BindsInheritedMethodOnDerivedInstance) {
 
     EXPECT_EQ(delegate(5), 105);
 }
+
+}  // namespace reflector

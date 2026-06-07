@@ -11,9 +11,8 @@
 #include <system_error>
 #include <utility>
 
-using namespace reflector;
-
 namespace {
+using namespace reflector;
 
 constexpr char STATIC_ARRAY_NAME[] = "StaticArrayLogger";
 
@@ -25,6 +24,8 @@ static_assert(noexcept(std::declval<Logger&>().SetName(STATIC_ARRAY_NAME)));
 static_assert(!noexcept(std::declval<Logger&>().SetName(std::string_view{"DynamicLogger"})));
 
 } // namespace
+
+namespace reflector {
 
 TEST(LoggerTest, SetMinLevelUpdatesMinLevel) {
     const ScopedMinLogLevel level{LogLevel::Debug};
@@ -176,3 +177,5 @@ TEST(LoggerTest, LogLineIncludesSourceLocation) {
     EXPECT_EQ(result.ec, std::errc{}) << output;  // digits follow the colon
     EXPECT_GT(line, 0) << output;
 }
+
+}  // namespace reflector
