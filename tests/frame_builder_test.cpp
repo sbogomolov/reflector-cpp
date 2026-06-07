@@ -2,6 +2,7 @@
 
 #include "reflector/checksum.h"
 #include "reflector/ip_address.h"
+#include "reflector/ip_endpoint.h"
 #include "reflector/mac_address.h"
 #include "reflector/util/byte_order.h"
 #include "test_helpers.h"
@@ -52,7 +53,7 @@ TEST(FrameBuilderTest, ReturnsZeroWhenBufferTooSmall) {
     const auto dst_ip = *IpAddress::FromString("224.0.0.251");
     std::array<std::byte, 8> buffer{};  // far smaller than a 14+20+8 frame
     EXPECT_EQ(
-        BuildUdpFrame(MulticastMacFor(dst_ip), MacAddress{}, src_ip, dst_ip, 5353, 5353, {}, 255, buffer),
+        BuildUdpFrame(MulticastMacFor(dst_ip), MacAddress{}, IpEndpoint{src_ip, 5353}, IpEndpoint{dst_ip, 5353}, {}, 255, buffer),
         0u);
 }
 
@@ -67,14 +68,14 @@ TEST(FrameBuilderTest, ReturnsZeroWhenDatagramOverflowsLengthField) {
     const auto v4_dst = *IpAddress::FromString("224.0.0.251");
     const std::vector<std::byte> v4_payload(65508);  // 20 + 8 + 65508 = 65536, one past the limit
     EXPECT_EQ(
-        BuildUdpFrame(MulticastMacFor(v4_dst), MacAddress{}, v4_src, v4_dst, 5353, 5353, v4_payload, 255, buffer),
+        BuildUdpFrame(MulticastMacFor(v4_dst), MacAddress{}, IpEndpoint{v4_src, 5353}, IpEndpoint{v4_dst, 5353}, v4_payload, 255, buffer),
         0u);
 
     const auto v6_src = *IpAddress::FromString("fe80::1");
     const auto v6_dst = *IpAddress::FromString("ff02::fb");
     const std::vector<std::byte> v6_payload(65528);  // 8 + 65528 = 65536, one past the limit
     EXPECT_EQ(
-        BuildUdpFrame(MulticastMacFor(v6_dst), MacAddress{}, v6_src, v6_dst, 5353, 5353, v6_payload, 255, buffer),
+        BuildUdpFrame(MulticastMacFor(v6_dst), MacAddress{}, IpEndpoint{v6_src, 5353}, IpEndpoint{v6_dst, 5353}, v6_payload, 255, buffer),
         0u);
 }
 
@@ -86,7 +87,7 @@ TEST(FrameBuilderTest, EthernetIpv4) {
     const auto payload = MakeBytes({0xde, 0xad, 0xbe, 0xef});
 
     std::array<std::byte, 128> buffer{};
-    const auto size = BuildUdpFrame(dst_mac, src_mac, src_ip, dst_ip, 5353, 5353, payload, 255, buffer);
+    const auto size = BuildUdpFrame(dst_mac, src_mac, IpEndpoint{src_ip, 5353}, IpEndpoint{dst_ip, 5353}, payload, 255, buffer);
     ASSERT_EQ(size, 14u + 20u + 8u + 4u);
 
     const std::span<const std::byte> frame{buffer.data(), size};
@@ -122,7 +123,7 @@ TEST(FrameBuilderTest, EthernetIpv6) {
     const auto payload = MakeBytes({0x01, 0x02, 0x03});
 
     std::array<std::byte, 128> buffer{};
-    const auto size = BuildUdpFrame(dst_mac, src_mac, src_ip, dst_ip, 5353, 5353, payload, 255, buffer);
+    const auto size = BuildUdpFrame(dst_mac, src_mac, IpEndpoint{src_ip, 5353}, IpEndpoint{dst_ip, 5353}, payload, 255, buffer);
     ASSERT_EQ(size, 14u + 40u + 8u + 3u);
 
     const std::span<const std::byte> frame{buffer.data(), size};
@@ -155,7 +156,7 @@ TEST(FrameBuilderTest, LoopbackIpv4) {
     const auto payload = MakeBytes({0xde, 0xad, 0xbe, 0xef});
 
     std::array<std::byte, 128> buffer{};
-    const auto size = BuildLoopbackUdpFrame(src_ip, dst_ip, 5353, 5353, payload, 255, buffer);
+    const auto size = BuildLoopbackUdpFrame(IpEndpoint{src_ip, 5353}, IpEndpoint{dst_ip, 5353}, payload, 255, buffer);
     ASSERT_EQ(size, 4u + 20u + 8u + 4u);
 
     const std::span<const std::byte> frame{buffer.data(), size};
@@ -189,7 +190,7 @@ TEST(FrameBuilderTest, LoopbackIpv6) {
     const auto payload = MakeBytes({0x01, 0x02, 0x03});
 
     std::array<std::byte, 128> buffer{};
-    const auto size = BuildLoopbackUdpFrame(src_ip, dst_ip, 5353, 5353, payload, 255, buffer);
+    const auto size = BuildLoopbackUdpFrame(IpEndpoint{src_ip, 5353}, IpEndpoint{dst_ip, 5353}, payload, 255, buffer);
     ASSERT_EQ(size, 4u + 40u + 8u + 3u);
 
     const std::span<const std::byte> frame{buffer.data(), size};

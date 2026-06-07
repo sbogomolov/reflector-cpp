@@ -53,9 +53,9 @@ size_t CheckedFrameSize(size_t l2_size, bool v4, size_t payload_size, size_t out
 // Writes the IPv4/IPv6 header and UDP datagram (headers zeroed, fields and checksums filled)
 // into `out`, which begins at the IP header. The caller writes the preceding L2 header and has
 // already bounds-checked the whole frame via CheckedFrameSize.
-void WriteIpUdp(const IpAddress& src_ip, const IpAddress& dst_ip, uint16_t src_port, uint16_t dst_port,
+void WriteIpUdp(const IpEndpoint& src, const IpEndpoint& dst,
     std::span<const std::byte> payload, uint8_t ttl, std::span<std::byte> out) noexcept {
-    const bool v4 = src_ip.IsV4();
+    const bool v4 = src.addr.IsV4();
     const size_t ip_size = v4 ? IPV4_HEADER_SIZE : IPV6_HEADER_SIZE;
     const size_t udp_off = ip_size;
     const size_t payload_off = udp_off + UDP_HEADER_SIZE;
@@ -71,22 +71,22 @@ void WriteIpUdp(const IpAddress& src_ip, const IpAddress& dst_ip, uint16_t src_p
         WriteU16Be(static_cast<uint16_t>(ip_size + udp_length), out.subspan(2));  // total length
         out[8] = std::byte{ttl};  // TTL
         out[9] = UDP_PROTOCOL;  // protocol
-        std::memcpy(out.data() + 12, src_ip.Bytes().data(), 4);
-        std::memcpy(out.data() + 16, dst_ip.Bytes().data(), 4);
+        std::memcpy(out.data() + 12, src.addr.Bytes().data(), 4);
+        std::memcpy(out.data() + 16, dst.addr.Bytes().data(), 4);
         WriteU16Be(Ipv4HeaderChecksum(out.subspan(0, IPV4_HEADER_SIZE)), out.subspan(10));
     } else {
         out[0] = std::byte{0x60};  // version 6, zero traffic class / flow label
         WriteU16Be(static_cast<uint16_t>(udp_length), out.subspan(4));  // payload length
         out[6] = UDP_PROTOCOL;  // next header
         out[7] = std::byte{ttl};  // hop limit
-        std::memcpy(out.data() + 8, src_ip.Bytes().data(), 16);
-        std::memcpy(out.data() + 24, dst_ip.Bytes().data(), 16);
+        std::memcpy(out.data() + 8, src.addr.Bytes().data(), 16);
+        std::memcpy(out.data() + 24, dst.addr.Bytes().data(), 16);
     }
 
-    WriteU16Be(src_port, out.subspan(udp_off));
-    WriteU16Be(dst_port, out.subspan(udp_off + 2));
+    WriteU16Be(src.port, out.subspan(udp_off));
+    WriteU16Be(dst.port, out.subspan(udp_off + 2));
     WriteU16Be(static_cast<uint16_t>(udp_length), out.subspan(udp_off + 4));
-    WriteU16Be(UdpChecksum(src_ip, dst_ip, out.subspan(udp_off, udp_length)), out.subspan(udp_off + 6));
+    WriteU16Be(UdpChecksum(src.addr, dst.addr, out.subspan(udp_off, udp_length)), out.subspan(udp_off + 6));
 }
 
 } // namespace
@@ -121,45 +121,41 @@ MacAddress BroadcastMac() noexcept {
 size_t BuildUdpFrame(
     MacAddress dst_mac,
     MacAddress src_mac,
-    const IpAddress& src_ip,
-    const IpAddress& dst_ip,
-    uint16_t src_port,
-    uint16_t dst_port,
+    const IpEndpoint& src,
+    const IpEndpoint& dst,
     std::span<const std::byte> payload,
     uint8_t ttl,
     std::span<std::byte> out) noexcept {
-    assert(src_ip.AddressFamily() == dst_ip.AddressFamily());
-    const size_t frame_size = CheckedFrameSize(ETHERNET_HEADER_SIZE, src_ip.IsV4(), payload.size(), out.size());
+    assert(src.addr.AddressFamily() == dst.addr.AddressFamily());
+    const size_t frame_size = CheckedFrameSize(ETHERNET_HEADER_SIZE, src.addr.IsV4(), payload.size(), out.size());
     if (frame_size == 0) {
         return 0;
     }
 
     std::memcpy(out.data(), dst_mac.Bytes().data(), MAC_SIZE);
     std::memcpy(out.data() + MAC_SIZE, src_mac.Bytes().data(), MAC_SIZE);
-    WriteU16Be(src_ip.IsV4() ? IPV4_ETHERTYPE : IPV6_ETHERTYPE, out.subspan(12));
-    WriteIpUdp(src_ip, dst_ip, src_port, dst_port, payload, ttl, out.subspan(ETHERNET_HEADER_SIZE));
+    WriteU16Be(src.addr.IsV4() ? IPV4_ETHERTYPE : IPV6_ETHERTYPE, out.subspan(12));
+    WriteIpUdp(src, dst, payload, ttl, out.subspan(ETHERNET_HEADER_SIZE));
     return frame_size;
 }
 
 #if defined(__APPLE__)
 size_t BuildLoopbackUdpFrame(
-    const IpAddress& src_ip,
-    const IpAddress& dst_ip,
-    uint16_t src_port,
-    uint16_t dst_port,
+    const IpEndpoint& src,
+    const IpEndpoint& dst,
     std::span<const std::byte> payload,
     uint8_t ttl,
     std::span<std::byte> out) noexcept {
-    assert(src_ip.AddressFamily() == dst_ip.AddressFamily());
-    const size_t frame_size = CheckedFrameSize(LOOPBACK_HEADER_SIZE, src_ip.IsV4(), payload.size(), out.size());
+    assert(src.addr.AddressFamily() == dst.addr.AddressFamily());
+    const size_t frame_size = CheckedFrameSize(LOOPBACK_HEADER_SIZE, src.addr.IsV4(), payload.size(), out.size());
     if (frame_size == 0) {
         return 0;
     }
 
     // DLT_NULL: 4-byte address family in host byte order, matching the capture path.
-    const uint32_t family = src_ip.IsV4() ? static_cast<uint32_t>(AF_INET) : static_cast<uint32_t>(AF_INET6);
+    const uint32_t family = src.addr.IsV4() ? static_cast<uint32_t>(AF_INET) : static_cast<uint32_t>(AF_INET6);
     std::memcpy(out.data(), &family, sizeof(family));
-    WriteIpUdp(src_ip, dst_ip, src_port, dst_port, payload, ttl, out.subspan(LOOPBACK_HEADER_SIZE));
+    WriteIpUdp(src, dst, payload, ttl, out.subspan(LOOPBACK_HEADER_SIZE));
     return frame_size;
 }
 #endif

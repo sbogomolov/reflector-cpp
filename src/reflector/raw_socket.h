@@ -128,8 +128,8 @@ private:
     // Shared body of the three public sends: builds the frame to `dst_mac` from this interface's
     // cached source MAC/IP and writes it. The callers compute `dst_mac` (explicit unicast, derived
     // multicast, or broadcast) and enforce their address-type precondition first.
-    [[nodiscard]] bool SendFrame(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port,
-        uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept;
+    [[nodiscard]] bool SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
+        std::span<const std::byte> payload, uint8_t ttl) noexcept;
 
     Logger logger_;
     std::string interface_;

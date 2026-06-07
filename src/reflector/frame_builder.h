@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ip_address.h"
+#include "ip_endpoint.h"
 #include "mac_address.h"
 
 #include <cstddef>
@@ -19,16 +20,14 @@ namespace reflector {
 
 // Builds an Ethernet frame carrying one UDP datagram (IPv4/IPv6 + UDP headers, with the IPv4
 // header checksum and UDP checksum filled in) into `out`. Returns the frame length, or 0 if
-// `out` is too small or the datagram would overflow the 16-bit length fields. `src_ip`/`dst_ip`
+// `out` is too small or the datagram would overflow the 16-bit length fields. `src`/`dst`
 // must share an address family. Used on every interface on Linux and on Ethernet interfaces on
 // macOS.
 [[nodiscard]] size_t BuildUdpFrame(
     MacAddress dst_mac,
     MacAddress src_mac,
-    const IpAddress& src_ip,
-    const IpAddress& dst_ip,
-    uint16_t src_port,
-    uint16_t dst_port,
+    const IpEndpoint& src,
+    const IpEndpoint& dst,
     std::span<const std::byte> payload,
     uint8_t ttl,
     std::span<std::byte> out) noexcept;
@@ -38,10 +37,8 @@ namespace reflector {
 // of the Ethernet header, and no L2 MACs), as used on the macOS loopback interface (lo0). Linux
 // frames loopback as Ethernet, so this exists only on macOS.
 [[nodiscard]] size_t BuildLoopbackUdpFrame(
-    const IpAddress& src_ip,
-    const IpAddress& dst_ip,
-    uint16_t src_port,
-    uint16_t dst_port,
+    const IpEndpoint& src,
+    const IpEndpoint& dst,
     std::span<const std::byte> payload,
     uint8_t ttl,
     std::span<std::byte> out) noexcept;

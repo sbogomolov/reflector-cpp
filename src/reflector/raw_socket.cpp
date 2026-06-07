@@ -365,42 +365,41 @@ void RawSocket::RefreshAddresses() noexcept {
 bool RawSocket::SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept {
     assert(!dst.addr.IsMulticast() && !dst.addr.IsBroadcast());  // use the multicast/broadcast variants
-    return SendFrame(dst_mac, dst.addr, dst.port, src_port, payload, ttl);
+    return SendFrame(dst_mac, dst, src_port, payload, ttl);
 }
 
 bool RawSocket::SendUdpMulticastDatagram(const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     assert(dst.addr.IsMulticast());
-    return SendFrame(MulticastMacFor(dst.addr), dst.addr, dst.port, src_port, payload, ttl);
+    return SendFrame(MulticastMacFor(dst.addr), dst, src_port, payload, ttl);
 }
 
 bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
-    return SendFrame(BroadcastMac(), IpAddress::BroadcastV4(), dst_port, src_port, payload, ttl);
+    return SendFrame(BroadcastMac(), IpEndpoint{IpAddress::BroadcastV4(), dst_port}, src_port, payload, ttl);
 }
 
-bool RawSocket::SendFrame(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t dst_port, uint16_t src_port,
+bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
-    const auto family = dst_ip.AddressFamily();
+    const auto family = dst.addr.AddressFamily();
     const auto& source = family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
     if (!source.has_value()) {
         logger_.Error("Cannot send to {}: interface has no source address for that family",
-            dst_ip.ToString());
+            dst.addr.ToString());
         return false;
     }
 
     std::array<std::byte, SEND_BUFFER_SIZE> frame{};
 #if defined(__linux__)
-    const size_t length = BuildUdpFrame(dst_mac, addresses_.mac, *source, dst_ip,
-        src_port, dst_port, payload, ttl, frame);
+    const size_t length = BuildUdpFrame(dst_mac, addresses_.mac, IpEndpoint{*source, src_port}, dst,
+        payload, ttl, frame);
 #elif defined(__APPLE__)
     const size_t length = link_type_ == LinkType::Loopback
-        ? BuildLoopbackUdpFrame(*source, dst_ip, src_port, dst_port, payload, ttl, frame)
-        : BuildUdpFrame(dst_mac, addresses_.mac, *source, dst_ip, src_port,
-              dst_port, payload, ttl, frame);
+        ? BuildLoopbackUdpFrame(IpEndpoint{*source, src_port}, dst, payload, ttl, frame)
+        : BuildUdpFrame(dst_mac, addresses_.mac, IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
 #endif
     if (length == 0) {
-        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst_ip.ToString(),
+        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr.ToString(),
             payload.size());
         return false;
     }
@@ -417,7 +416,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpAddress& dst_ip, uint16_t 
     const auto sent = write(fd_, frame.data(), length);
 #endif
     if (sent < 0 || static_cast<size_t>(sent) != length) {
-        logger_.Error("Cannot inject datagram to {}: {}", dst_ip.ToString(), Error::FromErrno());
+        logger_.Error("Cannot inject datagram to {}: {}", dst.addr.ToString(), Error::FromErrno());
         return false;
     }
     return true;
