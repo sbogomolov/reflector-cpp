@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1.24
 
 ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
-ARG DISTROLESS_CC_DEBIAN13=gcr.io/distroless/cc-debian13:latest@sha256:8b5d1db6d2253036a53cb8362d3e3fa82a7caf84c247772c46a023166c64e977
 
 FROM ${DEBIAN_TRIXIE_SLIM} AS build-env
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -15,7 +14,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         cmake \
         git \
         iproute2 \
-        ninja-build
+        ninja-build \
+        tzdata
 
 WORKDIR /src
 COPY CMakeLists.txt ./
@@ -28,6 +28,7 @@ RUN --mount=type=cache,target=/src/build/_deps,sharing=locked \
         -D CMAKE_BUILD_TYPE=Release \
         -D BUILD_TESTING=OFF \
         -D REFLECTOR_SANITIZE=OFF \
+        -D REFLECTOR_STATIC=ON \
     && cmake --build build --target reflector_app
 
 # Build the test binary only — do NOT run ctest here. docker build can't grant CAP_NET_ADMIN,
@@ -54,6 +55,7 @@ RUN --mount=type=cache,target=/src/build-test-release/_deps,sharing=locked \
         -D CMAKE_BUILD_TYPE=Release \
         -D BUILD_TESTING=ON \
         -D REFLECTOR_SANITIZE=OFF \
+        -D REFLECTOR_STATIC=ON \
     && cmake --build build-test-release --target reflector_test
 ENTRYPOINT ["ctest", "--test-dir", "build-test-release", "-L", "unit"]
 CMD ["--output-on-failure"]
@@ -117,9 +119,12 @@ ENTRYPOINT ["valgrind", \
     "/usr/local/bin/reflector"]
 CMD ["/etc/reflector/config.toml"]
 
-# Production image — keep this LAST so a bare `docker build .` (no --target, as e2e/run.py and releases
-# use) defaults to it rather than to a test/valgrind stage.
-FROM ${DISTROLESS_CC_DEBIAN13} AS runtime
+# Production image: one fully static binary on scratch — nothing else to ship or to carry CVEs. zoneinfo
+# is copied in so a TZ=<zone> env var yields local-time logs (the static binary still reads the tz
+# database at runtime). Keep this LAST so a bare `docker build .` (no --target, as e2e/run.py and
+# releases use) defaults to it rather than to a test/valgrind stage.
+FROM scratch AS runtime
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /src/build/reflector /usr/local/bin/reflector
 ENTRYPOINT ["/usr/local/bin/reflector"]
 CMD ["/etc/reflector/config.toml"]

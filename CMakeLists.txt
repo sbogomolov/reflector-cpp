@@ -31,6 +31,21 @@ option(REFLECTOR_ENABLE_DOCKER_TESTS "Enable Docker-backed build tests" OFF)
 option(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS "Enable the Docker-backed unit suite under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_VALGRIND_E2E_TESTS "Enable the Docker-backed e2e suite with the reflector under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
+option(REFLECTOR_STATIC "Statically link the reflector binaries (Linux only)" OFF)
+
+# REFLECTOR_STATIC statically links every project target — the production binary (for a FROM-scratch
+# image and portable release binaries) and the test binary (so the suite exercises what ships). Linux
+# only (macOS has no static libSystem); incompatible with the ASan/UBSan runtime, so the sanitized
+# debug and the Valgrind runs stay dynamic. reflector resolves no hostnames (no NSS), so glibc -static
+# is self-contained — no "needs the shared libs at runtime" trap.
+if(REFLECTOR_STATIC)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        message(FATAL_ERROR "REFLECTOR_STATIC is Linux-only; macOS has no static libSystem.")
+    endif()
+    if(REFLECTOR_SANITIZE)
+        message(FATAL_ERROR "REFLECTOR_STATIC is incompatible with REFLECTOR_SANITIZE (ASan/UBSan need the dynamic runtime).")
+    endif()
+endif()
 
 if(REFLECTOR_ENABLE_CCACHE)
     if(CMAKE_CXX_COMPILER_LAUNCHER)
@@ -115,6 +130,9 @@ function(reflector_configure_project_target target)
     endif()
     if(_reflector_ipo_supported)
         set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    endif()
+    if(REFLECTOR_STATIC)
+        target_link_options(${target} PRIVATE -static)
     endif()
 endfunction()
 
