@@ -216,10 +216,11 @@ default capability set, so only `NET_ADMIN` has to be added.
 Run the e2e suite directly with:
 
 ```sh
-python3 e2e/run.py
+python3 e2e/run.py                # against the production image
+python3 e2e/run.py --valgrind     # the reflector under Valgrind memcheck
 ```
 
-The e2e runner builds `reflector:e2e` by default, uses `python:3.13-alpine` for UDP probe containers, can print reflector logs with `--show-reflector-logs`, and leaves Docker resources behind on failure when passed `--keep-on-failure`.
+`--valgrind` runs the reflector under memcheck (the `runtime-valgrind` image: the Release binary with `-ggdb3`) and fails the run on any leak, leaked fd, or memcheck error. The e2e runner builds `reflector:e2e` by default, uses `python:3.13-alpine` for UDP probe containers, can print reflector logs with `--show-reflector-logs`, and leaves Docker resources behind on failure when passed `--keep-on-failure`.
 
 To register Docker-backed tests with CTest:
 
@@ -227,11 +228,12 @@ To register Docker-backed tests with CTest:
 cmake -S . -B build \
     -DREFLECTOR_ENABLE_E2E_TESTS=ON \
     -DREFLECTOR_ENABLE_DOCKER_TESTS=ON \
-    -DREFLECTOR_ENABLE_VALGRIND_UNIT_TESTS=ON
+    -DREFLECTOR_ENABLE_VALGRIND_UNIT_TESTS=ON \
+    -DREFLECTOR_ENABLE_VALGRIND_E2E_TESTS=ON
 ctest --test-dir build -L docker --output-on-failure
 ```
 
-`REFLECTOR_ENABLE_DOCKER_TESTS` adds a `docker`-labeled test that runs `docker_test.sh` (building the Debug or Release test image to match the build and running its unit suite in a container with `CAP_NET_ADMIN`). `REFLECTOR_ENABLE_E2E_TESTS` adds the e2e runner. `REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS` adds `Valgrind.Unit`, which runs the unit binary under Valgrind memcheck — a Debug, no-sanitizer build, since Valgrind and ASan are mutually exclusive. All are labeled `docker`; the e2e test is also labeled `e2e` and the valgrind test `valgrind`, so `-L e2e` or `-L valgrind` selects just that coverage.
+`REFLECTOR_ENABLE_DOCKER_TESTS` adds a `docker`-labeled test that runs `docker_test.sh` (building the Debug or Release test image to match the build and running its unit suite in a container with `CAP_NET_ADMIN`). `REFLECTOR_ENABLE_E2E_TESTS` adds the e2e runner. `REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS` adds `Valgrind.Unit`, which runs the unit binary under Valgrind memcheck (a Debug, no-sanitizer build, since Valgrind and ASan are mutually exclusive); `REFLECTOR_ENABLE_VALGRIND_E2E_TESTS` adds `Valgrind.E2E`, which runs the e2e suite with the reflector under memcheck (the production Release binary built with `-ggdb3` for readable traces). All are labeled `docker`; the e2e tests are also labeled `e2e` and the valgrind tests `valgrind`, so `-L e2e` or `-L valgrind` selects just that coverage.
 
 ## License
 

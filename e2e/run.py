@@ -17,6 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 E2E_DIR = Path(__file__).resolve().parent
 
 DEFAULT_REFLECTOR_IMAGE = "reflector:e2e"
+VALGRIND_REFLECTOR_IMAGE = "reflector:e2e-valgrind"
 DEFAULT_HELPER_IMAGE = "python:3.13-alpine"
 CONFIGURED_MAC = "02:42:ac:11:00:09"
 WRONG_MAC = "02:42:ac:11:00:0a"
@@ -27,6 +28,9 @@ MALFORMED_MAGIC_PAYLOAD_HEX = "ff" * 6 + "0242ac11000a" * 15 + "0242ac11000b"
 REFLECTOR_READY_LOG = "Starting dispatcher event loop"
 RECEIVER_READY_LOG = "receiver ready: UDP socket bound"
 CONTAINER_READY_TIMEOUT_SECONDS = 15.0
+# A clean SIGTERM exit triggers valgrind's leak analysis; give `docker stop` this much grace to let it
+# finish, since SIGKILLing it mid-analysis would surface as a (false) finding.
+VALGRIND_STOP_GRACE_SECONDS = 60
 REFLECTOR_SOURCE_IFNAME = "wol_src"
 REFLECTOR_TARGET_IFNAME = "wol_dst"
 RECEIVER_IFNAME = "probe0"
@@ -544,6 +548,18 @@ class DockerE2E:
     def wait_for_reflector(self) -> None:
         self.wait_for_container_log(self.reflector_container, REFLECTOR_READY_LOG, "reflector")
 
+    def check_reflector_valgrind(self) -> None:
+        # SIGTERM the reflector so it shuts down cleanly and valgrind runs its leak analysis, then read
+        # its exit code: the image's --error-exitcode=1 fires on any leak, leaked fd, or memcheck error.
+        docker(["stop", "-t", str(VALGRIND_STOP_GRACE_SECONDS), self.reflector_container])
+        exit_code = docker(["wait", self.reflector_container]).stdout.strip()
+        if exit_code != "0":
+            print(f"\n--- valgrind report: {self.case.name} ---", file=sys.stderr, flush=True)
+            report = docker(["logs", self.reflector_container], check=False)
+            if report.stderr:
+                print(report.stderr, end="", file=sys.stderr, flush=True)
+            raise RuntimeError(f"valgrind reported errors in case {self.case.name} (reflector exited {exit_code})")
+
     def start_receiver(self) -> None:
         command = [
             "run",
@@ -858,8 +874,11 @@ def make_runner(args: argparse.Namespace, case: TestCase | RoundTripCase | DialC
     return DockerE2E(args, case)
 
 
-def build_reflector_image(image: str) -> None:
-    docker(["build", "-t", image, "."], capture=False)
+def build_reflector_image(image: str, target: str | None = None) -> None:
+    command = ["build", "-t", image]
+    if target is not None:
+        command += ["--target", target]
+    docker([*command, "."], capture=False)
 
 
 def select_cases(case_names: list[str]) -> list[TestCase | RoundTripCase | DialCase]:
@@ -877,8 +896,11 @@ def select_cases(case_names: list[str]) -> list[TestCase | RoundTripCase | DialC
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Docker-backed reflector e2e tests")
-    parser.add_argument("--image", default=DEFAULT_REFLECTOR_IMAGE, help="reflector image tag to run")
+    parser.add_argument("--image", default=None,
+        help="reflector image tag to run (default: reflector:e2e, or reflector:e2e-valgrind with --valgrind)")
     parser.add_argument("--skip-build", action="store_true", help="use --image without building it first")
+    parser.add_argument("--valgrind", action="store_true",
+        help="run the reflector under Valgrind memcheck; fail the run on any leak, leaked fd, or memcheck error")
     parser.add_argument("--helper-image", default=DEFAULT_HELPER_IMAGE, help="Python image used for UDP probes")
     parser.add_argument("--keep-on-failure", action="store_true", help="leave Docker resources behind after a failure")
     parser.add_argument("--show-reflector-logs", action="store_true", help="print reflector container logs after each passing case")
@@ -895,18 +917,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     require_command("docker")
+    if args.image is None:
+        args.image = VALGRIND_REFLECTOR_IMAGE if args.valgrind else DEFAULT_REFLECTOR_IMAGE
 
     cases = select_cases(args.case)
     print(f"expected magic payload: {magic_packet_hex(CONFIGURED_MAC)}", flush=True)
 
     if not args.skip_build:
-        build_reflector_image(args.image)
+        build_reflector_image(args.image, "runtime-valgrind" if args.valgrind else None)
 
     for case in cases:
         with make_runner(args, case) as runner:
             runner.run()
+            if args.valgrind:
+                runner.check_reflector_valgrind()
 
-    print(f"\nPASS {len(cases)} e2e case(s)", flush=True)
+    suffix = " under valgrind" if args.valgrind else ""
+    print(f"\nPASS {len(cases)} e2e case(s){suffix}", flush=True)
     return 0
 
 

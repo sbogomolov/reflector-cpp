@@ -86,6 +86,39 @@ ENTRYPOINT ["valgrind", \
     "--error-exitcode=1", \
     "/src/build-test-valgrind/tests/reflector_test"]
 
+# The production Release binary, rebuilt with -ggdb3 for readable traces (debug symbols don't change
+# the -O3/LTO codegen, so it's the same shipped machine code), wrapped in Valgrind memcheck. Run by
+# `e2e/run.py --valgrind`, which SIGTERMs the daemon for a clean exit so valgrind reports leaks at exit.
+# Unlike the unit gate this DOES use --track-fds: a leaked socket in the live daemon is a real bug.
+# --error-exitcode=1 fails the run on any leak, leaked fd, or memcheck error.
+FROM build-env AS builder-valgrind
+RUN --mount=type=cache,target=/src/build-valgrind/_deps,sharing=locked \
+    --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
+    cmake -G Ninja -B build-valgrind \
+        -D CMAKE_BUILD_TYPE=Release \
+        -D BUILD_TESTING=OFF \
+        -D REFLECTOR_SANITIZE=OFF \
+        -D CMAKE_CXX_FLAGS=-ggdb3 \
+    && cmake --build build-valgrind --target reflector_app
+
+FROM ${DEBIAN_TRIXIE_SLIM} AS runtime-valgrind
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends valgrind
+COPY --from=builder-valgrind /src/build-valgrind/reflector /usr/local/bin/reflector
+ENTRYPOINT ["valgrind", \
+    "--leak-check=full", \
+    "--show-leak-kinds=all", \
+    "--errors-for-leak-kinds=definite,indirect,possible", \
+    "--track-fds=yes", \
+    "--num-callers=30", \
+    "--error-exitcode=1", \
+    "/usr/local/bin/reflector"]
+CMD ["/etc/reflector/config.toml"]
+
+# Production image — keep this LAST so a bare `docker build .` (no --target, as e2e/run.py and releases
+# use) defaults to it rather than to a test/valgrind stage.
 FROM ${DISTROLESS_CC_DEBIAN13} AS runtime
 COPY --from=builder /src/build/reflector /usr/local/bin/reflector
 ENTRYPOINT ["/usr/local/bin/reflector"]

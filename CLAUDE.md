@@ -28,13 +28,14 @@ ctest --test-dir build -L unit --output-on-failure
 ./docker_test.sh release                              # docker test (Release)
 ./docker_test.sh valgrind                             # docker test (unit binary under Valgrind memcheck)
 python3 e2e/run.py                                    # docker e2e
+python3 e2e/run.py --valgrind                         # docker e2e under Valgrind memcheck
 ```
 
 Docker / e2e / valgrind via ctest is opt-in:
 
 ```sh
-cmake -S . -B build -DREFLECTOR_ENABLE_DOCKER_TESTS=ON -DREFLECTOR_ENABLE_E2E_TESTS=ON -DREFLECTOR_ENABLE_VALGRIND_UNIT_TESTS=ON
+cmake -S . -B build -DREFLECTOR_ENABLE_DOCKER_TESTS=ON -DREFLECTOR_ENABLE_E2E_TESTS=ON -DREFLECTOR_ENABLE_VALGRIND_UNIT_TESTS=ON -DREFLECTOR_ENABLE_VALGRIND_E2E_TESTS=ON
 ctest --test-dir build -L docker          # all docker-dependent
 ctest --test-dir build -L e2e             # e2e only
-ctest --test-dir build -L valgrind        # valgrind only (unit binary under memcheck)
+ctest --test-dir build -L valgrind        # valgrind only (unit + e2e under memcheck)
 ```

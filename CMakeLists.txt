@@ -29,6 +29,7 @@ unset(_reflector_sanitize_default)
 option(REFLECTOR_ENABLE_E2E_TESTS "Enable Docker-backed end-to-end tests" OFF)
 option(REFLECTOR_ENABLE_DOCKER_TESTS "Enable Docker-backed build tests" OFF)
 option(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS "Enable the Docker-backed unit suite under Valgrind memcheck" OFF)
+option(REFLECTOR_ENABLE_VALGRIND_E2E_TESTS "Enable the Docker-backed e2e suite with the reflector under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
 
 if(REFLECTOR_ENABLE_CCACHE)
@@ -193,6 +194,21 @@ if(BUILD_TESTING)
         )
         set_tests_properties(Valgrind.Unit PROPERTIES
             LABELS "unit;docker;valgrind"
+            TIMEOUT 1800
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endif()
+
+    if(REFLECTOR_ENABLE_VALGRIND_E2E_TESTS)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        # run.py --valgrind runs the e2e suite with the reflector under memcheck (runtime-valgrind image),
+        # SIGTERMing it per case so valgrind reports leaks at a clean exit. Much slower, hence the timeout.
+        add_test(
+            NAME Valgrind.E2E
+            COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/e2e/run.py --valgrind
+        )
+        set_tests_properties(Valgrind.E2E PROPERTIES
+            LABELS "e2e;docker;valgrind"
             TIMEOUT 1800
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
