@@ -15,7 +15,8 @@ class Dispatcher;
 // implementation (layered on the Dispatcher reactor); tests substitute a fake.
 class PacketDispatcher {
 public:
-    using RegistrationId = uint64_t;
+    // Strong id for one packet-callback registration. 0 is the invalid sentinel; real ids start at 1.
+    enum class RegistrationId : uint64_t {};
     // RAII handle for one packet-callback registration; resetting it unregisters the callback.
     using Registration = reflector::Registration<PacketDispatcher, RegistrationId>;
 

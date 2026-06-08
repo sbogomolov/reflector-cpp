@@ -6,6 +6,7 @@
 #include "fake_dispatcher.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace reflector {
@@ -24,7 +25,7 @@ public:
         if (++register_calls_ == fail_register_on_call) {
             return {};
         }
-        const auto id = next_id_++;
+        const auto id = static_cast<PacketDispatcher::RegistrationId>(next_id_++);
         entries_.push_back(Entry{.id = id, .socket = &socket, .filter = filter, .callback = callback});
         return MakeRegistration(id);
     }
@@ -77,7 +78,7 @@ private:
     };
 
     std::vector<Entry> entries_;
-    PacketDispatcher::RegistrationId next_id_ = 1;
+    uint64_t next_id_ = 1;
     size_t register_calls_ = 0;
 };
 

@@ -7,6 +7,7 @@
 #include "util/no_move.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -60,7 +61,7 @@ private:
     // breaks the order would silently corrupt dispatch.
     std::vector<RegistrationEntry> registrations_;
     std::unordered_map<int, CaptureSource> capture_sources_;
-    RegistrationId next_registration_id_ = 1;
+    uint64_t next_registration_id_ = 1;
     // Socket currently being drained; cleared when its last registration is dropped, so
     // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
     const LinkSocket* active_socket_ = nullptr;

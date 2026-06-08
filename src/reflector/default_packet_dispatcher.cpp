@@ -48,14 +48,14 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
 
     // Must append (never insert in the middle) so registrations_ stays sorted by id —
     // DispatchPacket's merge walk depends on it.
-    const auto id = next_registration_id_++;
+    const auto id = static_cast<RegistrationId>(next_registration_id_++);
     registrations_.push_back(RegistrationEntry{
         .id = id,
         .socket = &socket,
         .filter = filter,
         .callback = callback,
     });
-    GetLogger().Debug("Registered packet callback {} for fd {}", id, fd);
+    GetLogger().Debug("Registered packet callback {} for fd {}", static_cast<uint64_t>(id), fd);
     return MakeRegistration(id);
 }
 
@@ -64,7 +64,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         return registration.id == id;
     });
     if (it == registrations_.end()) {
-        GetLogger().Warning("Cannot unregister packet callback {}: not found", id);
+        GetLogger().Warning("Cannot unregister packet callback {}: not found", static_cast<uint64_t>(id));
         return false;
     }
 
@@ -85,7 +85,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         }
     }
 
-    GetLogger().Debug("Unregistered packet callback {}", id);
+    GetLogger().Debug("Unregistered packet callback {}", static_cast<uint64_t>(id));
     return true;
 }
 
@@ -145,7 +145,7 @@ void DefaultPacketDispatcher::DispatchPacket(const LinkSocket& socket, const Pac
     //
     // Side effect to be aware of: a callback that calls Register creates a new entry
     // with a higher id, which this loop will reach and dispatch for the current packet.
-    RegistrationId last_dispatched_id = 0;
+    RegistrationId last_dispatched_id{};
     for (size_t idx = 0; idx < registrations_.size();) {
         auto& entry = registrations_[idx];
         if (entry.id > last_dispatched_id
