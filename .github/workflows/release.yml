@@ -11,33 +11,37 @@ permissions:
   contents: read
 
 jobs:
-  # ci.yml runs on the push to main, so by the time a tag exists CI has already run on this commit.
-  # Look that run up and gate the release on it (wait if the tag was pushed before CI finished).
+  # ci.yml ran on the push to main; tag-version-check.yml runs on this tag push. Gate the release on
+  # both being green for the commit -- poll each, waiting if a tag was pushed before CI finished.
   verify-ci:
-    name: Verify CI passed
+    name: Verify CI + tag check
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       actions: read
     steps:
-      - name: Wait for the CI workflow to pass on this commit
+      - name: Wait for the required workflows to pass on this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sha='${{ github.sha }}'
-          api="repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=1"
-          for _ in $(seq 1 90); do  # 90 x 20s = 30 min, matches timeout-minutes
-            run=$(gh api "$api" --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"')
-            case "${run%%|*}" in
-              completed)
-                if [ "${run##*|}" = success ]; then echo "CI passed on $sha."; exit 0; fi
-                echo "::error::CI concluded '${run##*|}' on $sha"; exit 1 ;;
-              "") echo "No CI run for $sha yet; waiting..." ;;
-              *)  echo "CI '${run%%|*}'; waiting..." ;;
-            esac
-            sleep 20
+          for wf in ci.yml tag-version-check.yml; do
+            ok=
+            for _ in $(seq 1 90); do  # job timeout-minutes is the real ceiling
+              run=$(gh api "repos/${{ github.repository }}/actions/workflows/$wf/runs?head_sha=$sha&per_page=1" \
+                --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"')
+              case "${run%%|*}" in
+                completed)
+                  if [ "${run##*|}" = success ]; then ok=1; break; fi
+                  echo "::error::$wf concluded '${run##*|}' on $sha"; exit 1 ;;
+                "") echo "No $wf run for $sha yet; waiting..." ;;
+                *)  echo "$wf is '${run%%|*}'; waiting..." ;;
+              esac
+              sleep 20
+            done
+            [ -n "$ok" ] || { echo "::error::Timed out waiting for $wf on $sha"; exit 1; }
+            echo "$wf passed on $sha."
           done
-          echo "::error::Timed out waiting for CI on $sha"; exit 1
 
   binaries:
     name: Binary (${{ matrix.variant }})
@@ -109,7 +113,7 @@ jobs:
           cp build/reflector "dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: reflector-${{ matrix.variant }}
           path: dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}
@@ -167,7 +171,7 @@ jobs:
           touch "/tmp/digests/${DIGEST#sha256:}.digest"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -185,7 +189,7 @@ jobs:
 
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -239,7 +243,7 @@ jobs:
 
     steps:
       - name: Download binary artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: dist
           pattern: reflector-*
