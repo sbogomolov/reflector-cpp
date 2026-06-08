@@ -33,7 +33,6 @@ public:
     // Relinquish the descriptor without closing it.
     [[nodiscard]] int Release() noexcept { return std::exchange(fd_, -1); }
 
-    // Close the held descriptor (if any) and adopt `fd`.
     void Reset(int fd = -1) noexcept {
         if (fd_ >= 0) {
             ::close(fd_);

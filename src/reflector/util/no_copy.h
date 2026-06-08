@@ -7,11 +7,10 @@ protected:
     NoCopy() = default;
     ~NoCopy() = default;
 
-    // Disallow copying
     NoCopy(const NoCopy& other) = delete;
     NoCopy& operator=(const NoCopy& other) = delete;
 
-    // Allow moving
+    // Declaring the deleted copies suppresses the implicit moves, so re-default them.
     NoCopy(NoCopy&& other) = default;
     NoCopy& operator=(NoCopy&& other) = default;
 };
