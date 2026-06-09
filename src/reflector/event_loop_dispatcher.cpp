@@ -212,12 +212,13 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
 #endif
 
     // Read is always armed and always has a valid handler (Register requires one), so readability
-    // dispatches unconditionally; write dispatches only when armed (SetEvents refuses to arm write
-    // with no callback). Copy each delegate before invoking (the handler may unregister the fd,
-    // destroying the stored delegate).
+    // dispatches unconditionally; write dispatches only when armed (SetEvents refuses to arm write with
+    // no callback). Invoke the stored delegate directly -- Delegate::operator() loads its two members
+    // before the tail-call, so a handler that unregisters this fd (freeing the node) or registers another
+    // (rehashing callbacks_) can't disturb the call already in flight; the same property DispatchPacket
+    // relies on. The write iterator is still re-resolved below, since the read handler may invalidate it.
     if (readable) {
-        const auto read = it->second.read;
-        read(fd);
+        it->second.read(fd);
     }
     if (writable) {
         // The read handler, which runs only when readable, may have invalidated `it` — most often by tearing
@@ -227,8 +228,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
         // handler, so `it` is untouched and reused without a lookup.
         const auto live = readable ? callbacks_.find(fd) : it;
         if (live != callbacks_.end() && live->second.write_armed) {
-            const auto write = live->second.write;
-            write(fd);
+            live->second.write(fd);
         }
     }
     return true;
@@ -245,50 +245,67 @@ bool EventLoopDispatcher::RegisterTimer(
             static_cast<uint64_t>(id));
         return false;
     }
-    UnregisterTimer(id);  // restart: a re-register under the same id replaces the prior registration
     if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
+        UnregisterTimer(id);  // an invalid (re-)registration leaves the timer stopped, like Start with bad args
         GetLogger().Error("Cannot register timer: non-positive interval or invalid callback");
         return false;
     }
-    timers_.push_back(TimerEntry{
+    // Reuse the existing entry for this id rather than append: an appended entry sits past FireDueTimers'
+    // cursor and, with a real-clock `next`, can be due in the same walk -- firing twice. An active id is a
+    // restart; an id left disabled by an UnregisterTimer earlier this round is reclaimed here.
+    const TimerEntry registration{
         .id = id,
         .interval = interval,
         .next = std::chrono::steady_clock::now() + interval,
         .callback = callback,
-    });
-    GetLogger().Debug("Registered timer {} (interval {}ms); {} active",
-        static_cast<uint64_t>(id), interval.count(), timers_.size());
+    };
+    const auto it = std::ranges::find_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; });
+    if (it != timers_.end()) {
+        *it = registration;
+    } else {
+        timers_.push_back(registration);
+    }
+    GetLogger().Debug("Registered timer {} (interval {}ms); {} active", static_cast<uint64_t>(id),
+        interval.count(), std::ranges::count_if(timers_, [](const TimerEntry& entry) { return entry.enabled; }));
     return true;
 }
 
 void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {
-    if (std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; }) > 0) {
-        GetLogger().Debug("Unregistered timer {}; {} active", static_cast<uint64_t>(id), timers_.size());
+    const auto it = std::ranges::find_if(timers_, [id](const TimerEntry& entry) {
+        return entry.id == id && entry.enabled;  // at most one enabled timer per id
+    });
+    if (it == timers_.end()) {
+        return;
     }
+    if (firing_timers_) {
+        it->enabled = false;  // FireDueTimers is walking; defer the erase to its post-walk sweep
+    } else {
+        timers_.erase(it);  // no walk in progress; erase in place
+    }
+    GetLogger().Debug("Unregistered timer {}; {} active", static_cast<uint64_t>(id),
+        std::ranges::count_if(timers_, [](const TimerEntry& t) { return t.enabled; }));
 }
 
 void EventLoopDispatcher::FireDueTimers(std::chrono::steady_clock::time_point now) {
-    // Walk timers_ live (no snapshot): a callback may RegisterTimer (append, possibly reallocating)
-    // or UnregisterTimer (erase, shifting elements), so after each fire we re-check that our slot
-    // still holds the entry we fired (by id) and restart from the front otherwise — the same merge
-    // walk DispatchPacket uses. Rescheduling a fired timer to now + interval (before invoking) makes
-    // it no longer due, so a restart never re-fires it: that reschedule is the timer equivalent of
-    // DispatchPacket's last_dispatched_id. A timer unregistered by an earlier callback in the round
-    // is simply gone from timers_, so it is correctly not fired (a snapshot would fire it anyway).
-    for (size_t idx = 0; idx < timers_.size();) {
+    // Fire every enabled timer whose deadline has passed, rescheduling it to now + interval first so a
+    // periodic timer is no longer due this round. A callback may UnregisterTimer (marks disabled, skipped
+    // below and swept after the walk) or RegisterTimer (appends, possibly reallocating) -- so index by
+    // position and re-fetch each iteration, never holding an iterator across the callback. Removal is
+    // deferred to the sweep, so the walk never shifts and needs no restart.
+    firing_timers_ = true;
+    for (size_t idx = 0; idx < timers_.size(); ++idx) {
         TimerEntry& entry = timers_[idx];
-        if (entry.next <= now) {
-            const auto id = entry.id;
+        if (entry.enabled && entry.next <= now) {
             entry.next = now + entry.interval;  // forward from now; never += interval (no backlog spin)
-            entry.callback(now);  // may mutate timers_; entry's pointers are loaded before the call
-
-            if (idx >= timers_.size() || timers_[idx].id != id) {
-                idx = 0;
-                continue;
-            }
+            entry.callback(now);  // may mutate timers_; entry's fields are loaded before the call
         }
-        ++idx;
     }
+    firing_timers_ = false;
+    Sweep();
+}
+
+void EventLoopDispatcher::Sweep() noexcept {
+    std::erase_if(timers_, [](const TimerEntry& entry) { return !entry.enabled; });
 }
 
 std::chrono::milliseconds EventLoopDispatcher::NextTimeout(std::chrono::steady_clock::time_point now) const {

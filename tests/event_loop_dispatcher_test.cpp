@@ -140,7 +140,8 @@ struct LoopbackPair : NoCopy {
 };
 
 // Resets its own registration the first time it fires — a callback that unregisters itself
-// mid-poll, which is safe only because PollOnce copies the delegate before invoking it.
+// mid-poll, safe because Delegate::operator() loads its members before the tail-call, so the
+// in-flight invocation survives the entry being erased.
 struct SelfUnregisteringReadable {
     void OnReadable(int) {
         ++count;
@@ -160,6 +161,79 @@ struct StopRequestingReadable {
     void OnReadable(int) {
         ++count;
         *stop_requested = 1;
+    }
+};
+
+struct TimerCounter {
+    int count = 0;
+    std::chrono::steady_clock::time_point last_now{};
+    void Tick(std::chrono::steady_clock::time_point now) { ++count; last_now = now; }
+};
+
+// Fires, then unregisters another timer mid-round (by resetting its handle) — used to prove a
+// timer cancelled by an earlier callback in the same FireDueTimers pass does not itself fire.
+struct TimerUnregisterer {
+    Timer* other = nullptr;
+    int count = 0;
+    void Tick(std::chrono::steady_clock::time_point) {
+        ++count;
+        if (other != nullptr) {
+            other->Stop();
+        }
+    }
+};
+
+// Restarts its own timer the first time it fires — the reentrant restart RegisterTimer must handle
+// without enqueuing a fresh due entry behind the walk's cursor.
+struct TimerReregisterer {
+    Timer* self = nullptr;
+    std::chrono::milliseconds interval{};
+    int count = 0;
+    void Tick(std::chrono::steady_clock::time_point) {
+        ++count;
+        if (count == 1 && self != nullptr) {
+            self->Start(interval, CreateDelegate<&TimerReregisterer::Tick>(this));
+        }
+    }
+};
+
+// Stops, then restarts its own timer the first time it fires. The Stop marks the entry disabled
+// mid-fire, so the Start must reclaim that disabled entry in place (re-enable it) rather than
+// append a duplicate — and the post-walk sweep must spare the reclaimed entry.
+struct TimerStopRestarter {
+    Timer* self = nullptr;
+    std::chrono::milliseconds interval{};
+    int count = 0;
+    void Tick(std::chrono::steady_clock::time_point) {
+        ++count;
+        if (count == 1 && self != nullptr) {
+            self->Stop();
+            self->Start(interval, CreateDelegate<&TimerStopRestarter::Tick>(this));
+        }
+    }
+};
+
+// Registers a batch of fresh fds the first time it fires, forcing callbacks_ to grow (and rehash). Its own
+// fd stays write-armed. This reproduces the re-entrant registration the proxy's accept / EnsureRestListener
+// do from inside a read handler: PollOnce must re-resolve the fd's entry before dispatching its write half,
+// because the rehash invalidated the iterator captured before the read ran (line ~229 of PollOnce).
+struct RehashingReadable {
+    EventLoopDispatcher* dispatcher = nullptr;
+    std::vector<int>* extra_fds = nullptr;        // fds to register (kept open by the caller)
+    std::vector<Dispatcher::Registration>* regs = nullptr;
+    ReadableCounter sink{};  // the registered-batch handler target; lives as long as this struct (never fired)
+    int read_count = 0;
+    void OnReadable(int) {
+        ++read_count;
+        if (read_count > 1 || dispatcher == nullptr) {
+            return;  // register the batch exactly once
+        }
+        for (const int fd : *extra_fds) {
+            auto reg = dispatcher->Register(fd, CreateDelegate<&ReadableCounter::OnReadable>(&sink));
+            if (reg.IsValid()) {
+                regs->push_back(std::move(reg));
+            }
+        }
     }
 };
 
@@ -289,25 +363,6 @@ TEST_F(EventLoopDispatcherTest, RunPollsUntilStopRequested) {
     EXPECT_EQ(counter.count, 1);
 }
 
-struct TimerCounter {
-    int count = 0;
-    std::chrono::steady_clock::time_point last_now{};
-    void Tick(std::chrono::steady_clock::time_point now) { ++count; last_now = now; }
-};
-
-// Fires, then unregisters another timer mid-round (by resetting its handle) — used to prove a
-// timer cancelled by an earlier callback in the same FireDueTimers pass does not itself fire.
-struct TimerUnregisterer {
-    Timer* other = nullptr;
-    int count = 0;
-    void Tick(std::chrono::steady_clock::time_point) {
-        ++count;
-        if (other != nullptr) {
-            other->Stop();
-        }
-    }
-};
-
 TEST_F(EventLoopDispatcherTest, NextTimeoutReturnsCapWhenNoTimers) {
     const auto now = std::chrono::steady_clock::now();
     EXPECT_EQ(dispatcher.NextTimeout(now), std::chrono::milliseconds{1000});
@@ -391,6 +446,61 @@ TEST_F(EventLoopDispatcherTest, CallbackCanUnregisterAnotherDueTimerBeforeItFire
     dispatcher.FireDueTimers(t0 + std::chrono::milliseconds{50});
     EXPECT_EQ(first.count, 1);
     EXPECT_EQ(second.count, 0);  // cancelled mid-round → never fired (a snapshot walk would fire it)
+}
+
+TEST_F(EventLoopDispatcherTest, CallbackRestartingItsTimerMidFireFiresOnce) {
+    TimerReregisterer reregisterer;
+    reregisterer.interval = std::chrono::milliseconds{50};
+    Timer timer{dispatcher};
+    reregisterer.self = &timer;
+    timer.Start(reregisterer.interval, CreateDelegate<&TimerReregisterer::Tick>(&reregisterer));
+
+    // A `now` far past the deadline: the restart sets the new entry's `next` from the real clock, so a
+    // duplicate appended by RegisterTimer is itself <= this `now` and the same walk would fire it again.
+    // A restart must replace the entry in place, not enqueue a due one behind the cursor.
+    dispatcher.FireDueTimers(std::chrono::steady_clock::now() + std::chrono::seconds{10});
+
+    EXPECT_EQ(reregisterer.count, 1);
+}
+
+// A callback stopping its OWN timer must not disturb the walk: a due timer after it still fires in
+// the same round. An in-place erase would shift the next entry into the freed slot and the walk
+// would skip it — the hazard the deferred mark-and-sweep removal exists to prevent.
+TEST_F(EventLoopDispatcherTest, TimersAfterSelfStoppingCallbackStillFireInSameRound) {
+    TimerUnregisterer first;
+    TimerCounter second;
+    Timer first_timer{dispatcher};
+    Timer second_timer{dispatcher};
+    first.other = &first_timer;  // stops ITSELF
+    first_timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerUnregisterer::Tick>(&first));
+    second_timer.Start(std::chrono::milliseconds{50}, CreateDelegate<&TimerCounter::Tick>(&second));
+
+    dispatcher.FireDueTimers(std::chrono::steady_clock::now() + std::chrono::seconds{10});
+
+    EXPECT_EQ(first.count, 1);
+    EXPECT_FALSE(first_timer.IsRunning());
+    EXPECT_EQ(second.count, 1);  // the timer after the self-stopped entry is not skipped
+}
+
+TEST_F(EventLoopDispatcherTest, CallbackStoppingThenRestartingItsTimerMidFireReclaimsIt) {
+    TimerStopRestarter restarter;
+    restarter.interval = std::chrono::milliseconds{50};
+    Timer timer{dispatcher};
+    restarter.self = &timer;
+    timer.Start(restarter.interval, CreateDelegate<&TimerStopRestarter::Tick>(&restarter));
+
+    // Same far-future `now` trick as the restart test above: if the Start after the mid-fire Stop
+    // appended a fresh entry instead of reclaiming the disabled one, the appended entry would be due
+    // in the same walk and fire a second time.
+    const auto far = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+    dispatcher.FireDueTimers(far);
+
+    EXPECT_EQ(restarter.count, 1);
+    EXPECT_TRUE(timer.IsRunning());
+
+    // The post-walk sweep spared the reclaimed (re-enabled) entry: it fires again next round.
+    dispatcher.FireDueTimers(far + std::chrono::seconds{10});
+    EXPECT_EQ(restarter.count, 2);
 }
 
 TEST_F(EventLoopDispatcherTest, SetWriteInterestRejectsUnwatchedFd) {
@@ -499,30 +609,6 @@ TEST_F(EventLoopDispatcherTest, ArmingWriteInterestWithNoHandlerIsRejected) {
     EXPECT_FALSE(dispatcher.SetWriteInterest(pair.client, true));
     EXPECT_TRUE(dispatcher.SetWriteInterest(pair.client, false));
 }
-
-// Registers a batch of fresh fds the first time it fires, forcing callbacks_ to grow (and rehash). Its own
-// fd stays write-armed. This reproduces the re-entrant registration the proxy's accept / EnsureRestListener
-// do from inside a read handler: PollOnce must re-resolve the fd's entry before dispatching its write half,
-// because the rehash invalidated the iterator captured before the read ran (line ~229 of PollOnce).
-struct RehashingReadable {
-    EventLoopDispatcher* dispatcher = nullptr;
-    std::vector<int>* extra_fds = nullptr;        // fds to register (kept open by the caller)
-    std::vector<Dispatcher::Registration>* regs = nullptr;
-    ReadableCounter sink{};  // the registered-batch handler target; lives as long as this struct (never fired)
-    int read_count = 0;
-    void OnReadable(int) {
-        ++read_count;
-        if (read_count > 1 || dispatcher == nullptr) {
-            return;  // register the batch exactly once
-        }
-        for (const int fd : *extra_fds) {
-            auto reg = dispatcher->Register(fd, CreateDelegate<&ReadableCounter::OnReadable>(&sink));
-            if (reg.IsValid()) {
-                regs->push_back(std::move(reg));
-            }
-        }
-    }
-};
 
 // A read handler that, when it fires, registers enough new fds to force a callbacks_ rehash WHILE its own fd
 // stays write-armed; PollOnce must still dispatch the write handler with no use-after-free. This is the line

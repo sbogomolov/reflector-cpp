@@ -45,12 +45,16 @@ private:
         std::chrono::milliseconds interval;
         std::chrono::steady_clock::time_point next;
         OnTimerCallback callback;
+        bool enabled = true;  // UnregisterTimer marks this false; the post-fire sweep erases it
     };
 
     [[nodiscard]] TimerId AllocateTimerId() noexcept override;
     [[nodiscard]] bool RegisterTimer(
         TimerId id, std::chrono::milliseconds interval, const OnTimerCallback& callback) override;
     void UnregisterTimer(TimerId id) noexcept override;
+    // Erases the timers UnregisterTimer marked disabled mid-fire. Run after FireDueTimers' walk --
+    // never during it, where a live erase would shift the vector.
+    void Sweep() noexcept;
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return callbacks_.size(); }
 
@@ -75,6 +79,7 @@ private:
     std::unordered_map<int, FdCallbacks> callbacks_;
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
+    bool firing_timers_ = false;  // true while FireDueTimers walks; UnregisterTimer then defers the erase to the sweep
     UniqueFd event_fd_;
 };
 

@@ -359,8 +359,8 @@ void DialProxy::EvictExpired(std::chrono::steady_clock::time_point now) noexcept
     }
 
     if (connections_.empty() && endpoints_.empty()) {
-        // Nothing left to sweep: stop. Safe self-unregister — the dispatcher's timer merge-walk tolerates a
-        // callback dropping its own timer.
+        // Nothing left to sweep: stop. Safe self-unregister — the dispatcher defers a mid-fire
+        // unregister to its post-walk sweep.
         eviction_timer_.Stop();
     }
 }

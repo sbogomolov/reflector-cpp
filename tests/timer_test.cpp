@@ -98,4 +98,34 @@ TEST(TimerTest, FiringInvokesTheCallback) {
     EXPECT_EQ(counter.count, 1);
 }
 
+// Stops then restarts the timer from inside its own fire: the mid-fire Stop defers the erase to the
+// fake's sweep, and the restart must reclaim the disabled entry in place rather than append.
+struct StopRestarter {
+    Timer* self = nullptr;
+    int count = 0;
+    void Tick(std::chrono::steady_clock::time_point) {
+        ++count;
+        if (count == 1 && self != nullptr) {
+            self->Stop();
+            self->Start(1s, CreateDelegate<&StopRestarter::Tick>(this));
+        }
+    }
+};
+
+TEST(TimerTest, StopThenStartMidFireReclaimsTheTimer) {
+    FakeDispatcher dispatcher;
+    StopRestarter restarter;
+    Timer timer{dispatcher};
+    restarter.self = &timer;
+    timer.Start(1s, CreateDelegate<&StopRestarter::Tick>(&restarter));
+
+    dispatcher.FireTimers(std::chrono::steady_clock::now());
+    EXPECT_EQ(restarter.count, 1);           // the restart did not fire it again in the same round
+    EXPECT_TRUE(timer.IsRunning());
+    EXPECT_EQ(dispatcher.TimerCount(), 1u);  // reclaimed in place; the sweep spared it
+
+    dispatcher.FireTimers(std::chrono::steady_clock::now());
+    EXPECT_EQ(restarter.count, 2);  // still alive the next round
+}
+
 } // namespace reflector

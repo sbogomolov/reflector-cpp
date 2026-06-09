@@ -64,15 +64,14 @@ public:
 
     // Invokes the read callback for `fd`, as the reactor would when `fd` becomes readable. Read is
     // always armed and always present (Register requires it), so this is a no-op only on an unwatched
-    // fd. Copies the callback before invoking (it may unregister the fd or toggle interest), matching
-    // production discipline.
+    // fd. Invokes the stored delegate directly (it may unregister the fd or toggle interest):
+    // Delegate::operator() loads its members before the tail-call, so the call survives a self-erase --
+    // matching production (PollOnce).
     void FireReadable(int fd) {
         const auto it = callbacks_.find(fd);
-        if (it == callbacks_.end()) {
-            return;
+        if (it != callbacks_.end()) {
+            it->second.read(fd);
         }
-        const auto read = it->second.read;
-        read(fd);
     }
 
     // Invokes the write callback for `fd`, as the reactor would when `fd` becomes writable. Unlike
@@ -81,23 +80,28 @@ public:
     // concern, asserted separately via IsWriteArmed.
     void FireWritable(int fd) {
         const auto it = callbacks_.find(fd);
-        if (it == callbacks_.end()) {
-            return;
-        }
-        const auto write = it->second.write;
-        if (write.IsValid()) {
-            write(fd);
+        if (it != callbacks_.end() && it->second.write.IsValid()) {
+            it->second.write(fd);
         }
     }
 
-    // Fires every registered timer once with the simulated fire time `now`, copying each callback
-    // before invoking (a callback may unregister a timer mid-fire), mirroring FireReadable and the
-    // production copy-before-invoke. Tests pass `now` to drive time-based callbacks (e.g. eviction).
+    // Fires every enabled timer once with the simulated fire time `now`. A callback may unregister a
+    // timer (marked disabled, skipped here, swept after) or register one (appended past `count`, so it
+    // first fires NEXT round -- production's fresh `next = now + interval` keeps a mid-fire-registered
+    // timer out of the current walk; the fake has no deadlines, so the bound models it). Index by
+    // position: an append-reallocation can't dangle the walk, and removal is deferred, so entries below
+    // `count` never shift. Tests pass `now` to drive time-based callbacks (e.g. eviction).
     void FireTimers(std::chrono::steady_clock::time_point now) {
-        const auto snapshot = timers_;
-        for (const auto& entry : snapshot) {
-            entry.callback(now);
+        firing_timers_ = true;
+        const auto count = timers_.size();
+        for (size_t idx = 0; idx < count; ++idx) {
+            const TimerEntry& entry = timers_[idx];
+            if (entry.enabled) {
+                entry.callback(now);
+            }
         }
+        firing_timers_ = false;
+        Sweep();
     }
 
     [[nodiscard]] size_t TimerCount() const noexcept { return timers_.size(); }
@@ -117,26 +121,50 @@ private:
         if (static_cast<uint64_t>(id) >= next_timer_id_) {
             return false;
         }
-        UnregisterTimer(id);  // restart: replace any prior registration under this id
         if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
+            UnregisterTimer(id);  // invalid (re-)registration leaves the timer stopped, like Start with bad args
             return false;
+        }
+        for (TimerEntry& entry : timers_) {
+            if (entry.id == id) {  // reuse a restart / re-registered disabled id, never an appended duplicate
+                entry.callback = callback;
+                entry.enabled = true;
+                return true;
+            }
         }
         timers_.push_back(TimerEntry{.id = id, .callback = callback});
         return true;
     }
 
     void UnregisterTimer(TimerId id) noexcept override {
-        std::erase_if(timers_, [id](const TimerEntry& entry) { return entry.id == id; });
+        for (auto it = timers_.begin(); it != timers_.end(); ++it) {
+            if (it->id == id && it->enabled) {  // at most one enabled timer per id
+                if (firing_timers_) {
+                    it->enabled = false;  // FireTimers is walking; defer the erase to its post-walk sweep
+                } else {
+                    timers_.erase(it);  // no walk in progress; erase in place
+                }
+                return;
+            }
+        }
+    }
+
+    // Erases the timers UnregisterTimer marked disabled mid-fire. Runs after FireTimers' walk -- never
+    // during it, where a live erase would shift the vector. Named after production's Sweep.
+    void Sweep() {
+        std::erase_if(timers_, [](const TimerEntry& entry) { return !entry.enabled; });
     }
 
     struct TimerEntry {
         TimerId id;
         OnTimerCallback callback;
+        bool enabled = true;
     };
 
     std::unordered_map<int, FdCallbacks> callbacks_;
     std::vector<TimerEntry> timers_;
     uint64_t next_timer_id_ = 1;
+    bool firing_timers_ = false;
 };
 
 } // namespace reflector
