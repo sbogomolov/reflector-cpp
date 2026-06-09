@@ -1,6 +1,8 @@
 #include "reflector/default_packet_dispatcher.h"
 
+#include "mocks/fake_interface.h"
 #include "reflector/event_loop_dispatcher.h"
+#include "reflector/interface.h"
 #include "reflector/ip_address.h"
 #include "reflector/packet.h"
 #include "reflector/raw_socket.h"
@@ -115,7 +117,8 @@ TEST_F(DefaultPacketDispatcherTest, RegistersCallback) {
 }
 
 TEST_F(DefaultPacketDispatcherTest, RegisterRejectsInvalidCaptureSocket) {
-    auto invalid = RawSocket::ForTesting("invalid", -1);
+    const FakeInterface iface{"invalid", 0, {}};
+    auto invalid = RawSocket::ForTesting(iface, -1);
     PacketCounter counter;
 
     const auto registration = packet_dispatcher.Register(
@@ -541,6 +544,7 @@ class DefaultPacketDispatcherRequiresRootTest : public ::testing::Test {
 protected:
     EventLoopDispatcher dispatcher;
     DefaultPacketDispatcher packet_dispatcher{dispatcher};
+    Interface iface{LoopbackInterface()};  // declared before `socket` (the socket borrows it)
     std::optional<RawSocket> socket;
     UdpSocket listener_socket{IpAddress::Family::V4};
     uint16_t listener_port = 0;
@@ -551,7 +555,7 @@ protected:
             GTEST_SKIP() << "RawSocket on " << LoopbackInterface()
                 << " requires CAP_NET_RAW (Linux) or bpf group / root (macOS)";
         }
-        socket.emplace(LoopbackInterface());
+        socket.emplace(iface);
         ASSERT_TRUE(socket->IsValid());
         listener_port = BindLoopback(listener_socket);
     }

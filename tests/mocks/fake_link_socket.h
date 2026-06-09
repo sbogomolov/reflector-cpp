@@ -1,5 +1,6 @@
 #pragma once
 
+#include "fake_interface.h"
 #include "reflector/ip_address.h"
 #include "reflector/link_socket.h"
 #include "reflector/mac_address.h"
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace reflector {
@@ -17,9 +19,12 @@ namespace reflector {
 // wiring logic run with no real fd or injected frame. Receive() never yields — packets are pushed
 // through a FakePacketDispatcher instead. CanSend is configurable per family; the Send* methods
 // record their arguments (or fail when `fail_send` is set, to drive the send-failure branch).
-// InterfaceIndex is configurable and RefreshAddresses is counted, for tests that drive
-// address-change routing.
+// The fake owns its Interface (a production socket borrows an Application-owned one); tests
+// reach it via `iface` to set addresses or count refreshes, and stamp an index through the ctor.
 struct FakeLinkSocket : LinkSocket {
+    explicit FakeLinkSocket(std::string_view name = "fake0", unsigned index = 0)
+            : iface{name, index} {}
+
     // A recorded send. Multicast/broadcast derive the L2 destination from dst_ip, so dst_mac stays
     // nullopt (we deliberately don't recompute it here); a unicast send carries its explicit dst MAC.
     struct Sent {
@@ -71,8 +76,9 @@ struct FakeLinkSocket : LinkSocket {
     }
 
     [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index; }
-    void RefreshAddresses() noexcept override { ++refresh_count; }
+    [[nodiscard]] const Interface& GetInterface() const noexcept override { return iface; }
 
+    FakeInterface iface;
     bool valid = true;
     int fd = -1;
     bool can_send_v4 = true;
@@ -80,7 +86,6 @@ struct FakeLinkSocket : LinkSocket {
     bool fail_send = false;
     bool fail_join = false;
     unsigned interface_index = 0;
-    unsigned refresh_count = 0;
     std::optional<IpAddress> source_v4 = IpAddress::LoopbackV4();
     std::optional<IpAddress> source_v6 = IpAddress::LoopbackV6();
     std::vector<Sent> sent;                  // every send; dst_mac engaged only for unicast

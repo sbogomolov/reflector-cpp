@@ -1,10 +1,12 @@
 #include "reflector/application.h"
 
 #include "reflector/config.h"
+#include "reflector/interface.h"
 #include "reflector/link_socket.h"
 #include "reflector/mac_address.h"
 #include "mocks/fake_address_monitor.h"
 #include "mocks/fake_dispatcher.h"
+#include "mocks/fake_interface.h"
 #include "mocks/fake_link_socket.h"
 #include "test_helpers.h"
 
@@ -23,20 +25,22 @@
 namespace reflector {
 
 // Exercises Application's wiring entirely against fakes — a fake dispatcher, address monitor, and
-// per-interface socket factory injected via ForTesting — so dedup, fail-fast, and address-refresh
-// routing are covered with no real epoll/netlink/capture sockets and no privilege.
+// per-interface interface/socket factories injected via ForTesting — so dedup, fail-fast, and
+// address-refresh routing are covered with no real epoll/netlink/capture sockets and no privilege.
 class ApplicationTest : public ::testing::Test {
 protected:
     static size_t SocketCount(const Application& app) { return app.SocketCount(); }
     static size_t ReflectorCount(const Application& app) { return app.ReflectorCount(); }
 
-    // Per-interface settings the factory stamps onto a socket when it first creates it. Interfaces
-    // with no entry get the defaults (valid, can send both families, index 0).
+    // Per-interface settings the factories stamp onto the Interface and socket when first
+    // created. Interfaces with no entry get the defaults (valid, can send both families,
+    // auto-assigned index).
     struct SocketConfig {
         bool valid = true;
+        bool interface_valid = true;   // false: the Interface resolves as invalid (index 0)
         bool can_send_v4 = true;
         bool can_send_v6 = true;
-        unsigned interface_index = 0;
+        unsigned interface_index = 0;  // 0 = auto-assign a unique nonzero index
     };
 
     // Sets how the socket for `interface` will behave; must be called before Configure creates it.
@@ -50,6 +54,12 @@ protected:
         return it == created_sockets_.end() ? nullptr : it->second;
     }
 
+    // The fake Interface the factory created for `interface`, or nullptr if it never asked.
+    [[nodiscard]] FakeInterface* Iface(std::string_view interface) {
+        const auto it = created_interfaces_.find(std::string{interface});
+        return it == created_interfaces_.end() ? nullptr : it->second;
+    }
+
     // Builds an Application through the ForTesting seam with a fake dispatcher and address monitor
     // (both recorded for the test to drive/inspect) and the recording socket factory. Set
     // monitor_starts_ and any ConfigureSocket() entries beforehand.
@@ -59,7 +69,8 @@ protected:
         auto monitor = std::make_unique<FakeAddressMonitor>();
         monitor->start_succeeds = monitor_starts_;
         monitor_ = monitor.get();
-        return Application::ForTesting(std::move(dispatcher), std::move(monitor), MakeFactory());
+        return Application::ForTesting(std::move(dispatcher), std::move(monitor),
+            MakeInterfaceFactory(), MakeFactory());
     }
 
     static WolConfig MakeWolConfig(std::string_view name, std::string_view source_if,
@@ -103,24 +114,42 @@ protected:
 
 private:
     Application::SocketFactory MakeFactory() {
-        return [this](std::string_view interface) -> std::unique_ptr<LinkSocket> {
+        return [this](const Interface& interface) -> std::unique_ptr<LinkSocket> {
             ++factory_calls_;
+            const std::string name{interface.Name()};
             auto socket = std::make_unique<FakeLinkSocket>();
-            const auto it = socket_configs_.find(std::string{interface});
+            const auto it = socket_configs_.find(name);
             const SocketConfig config = it == socket_configs_.end() ? SocketConfig{} : it->second;
             socket->valid = config.valid;
             socket->can_send_v4 = config.can_send_v4;
             socket->can_send_v6 = config.can_send_v6;
             socket->interface_index = config.interface_index;
             socket->fd = next_fd_++;
-            created_sockets_.insert_or_assign(std::string{interface}, socket.get());
+            created_sockets_.insert_or_assign(name, socket.get());
             return socket;
+        };
+    }
+
+    Application::InterfaceFactory MakeInterfaceFactory() {
+        return [this](std::string_view name) -> std::unique_ptr<Interface> {
+            const auto it = socket_configs_.find(std::string{name});
+            const SocketConfig config = it == socket_configs_.end() ? SocketConfig{} : it->second;
+            const unsigned index = !config.interface_valid ? 0
+                : config.interface_index != 0               ? config.interface_index
+                                                            : next_interface_index_++;
+            auto iface = std::make_unique<FakeInterface>(name, index);
+            created_interfaces_.insert_or_assign(std::string{name}, iface.get());
+            return iface;
         };
     }
 
     std::unordered_map<std::string, SocketConfig> socket_configs_;
     std::unordered_map<std::string, FakeLinkSocket*> created_sockets_;
+    std::unordered_map<std::string, FakeInterface*> created_interfaces_;
     int next_fd_ = 100;
+    // Far from the explicit indexes tests pick (e.g. 5, 9), so an auto-assigned index never
+    // collides with a FireChange target.
+    unsigned next_interface_index_ = 100;
 };
 
 TEST_F(ApplicationTest, SharesOneSocketPerInterfaceAcrossConfigs) {
@@ -449,8 +478,8 @@ TEST_F(ApplicationTest, RefreshesOnlyTheChangedInterface) {
 
     monitor_->FireChange(5);
 
-    EXPECT_EQ(Socket("src")->refresh_count, 1u);
-    EXPECT_EQ(Socket("dst")->refresh_count, 0u);
+    EXPECT_EQ(Iface("src")->refresh_count, 1u);
+    EXPECT_EQ(Iface("dst")->refresh_count, 0u);
 }
 
 TEST_F(ApplicationTest, RefreshesAllInterfacesOnOverflowSignal) {
@@ -461,8 +490,8 @@ TEST_F(ApplicationTest, RefreshesAllInterfacesOnOverflowSignal) {
 
     monitor_->FireChange(0); // 0 is the "refresh everything" overflow signal
 
-    EXPECT_EQ(Socket("src")->refresh_count, 1u);
-    EXPECT_EQ(Socket("dst")->refresh_count, 1u);
+    EXPECT_EQ(Iface("src")->refresh_count, 1u);
+    EXPECT_EQ(Iface("dst")->refresh_count, 1u);
 }
 
 TEST_F(ApplicationTest, RefreshesNothingForUnknownInterface) {
@@ -471,10 +500,24 @@ TEST_F(ApplicationTest, RefreshesNothingForUnknownInterface) {
     auto app = MakeApp();
     ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
 
-    monitor_->FireChange(7); // no socket is bound to interface index 7
+    monitor_->FireChange(7); // no interface has index 7
 
-    EXPECT_EQ(Socket("src")->refresh_count, 0u);
-    EXPECT_EQ(Socket("dst")->refresh_count, 0u);
+    EXPECT_EQ(Iface("src")->refresh_count, 0u);
+    EXPECT_EQ(Iface("dst")->refresh_count, 0u);
+}
+
+TEST_F(ApplicationTest, FailsConfigureWhenTheInterfaceIsInvalid) {
+    ConfigureSocket("src", {.interface_valid = false});
+    auto app = MakeApp();
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(app.Configure(TestConfigBuilder{}
+            .Add(MakeWolConfig("tv", "src", "dst", {9}))
+            .Build()));
+    });
+
+    // The socket factory never runs for an invalid interface.
+    EXPECT_EQ(factory_calls_, 0) << output;
 }
 
 TEST_F(ApplicationTest, RunDelegatesToTheDispatcher) {

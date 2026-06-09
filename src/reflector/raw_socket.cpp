@@ -160,20 +160,11 @@ constexpr size_t UDP_HEADER_SIZE = 8;
 
 } // namespace
 
-RawSocket::RawSocket(std::string_view interface)
-        : logger_{std::format("RawSocket:{}", interface)}
+RawSocket::RawSocket(const Interface& interface)
+        : logger_{std::format("RawSocket:{}", interface.Name())}
         , interface_{interface} {
-    // Guard before any name lookup: if_nametoindex (and BPF's BIOCSETIF) copy into a fixed
-    // IFNAMSIZ buffer, so an over-long name would be silently truncated and could match the
-    // wrong interface.
-    if (interface_.size() >= IFNAMSIZ) {
-        logger_.Error("Interface name \"{}\" is too long (max {} characters)", interface_, IFNAMSIZ - 1);
-        return;
-    }
-
-    interface_index_ = if_nametoindex(interface_.c_str());
-    if (interface_index_ == 0) {
-        logger_.Error("Cannot resolve interface index: {}", Error::FromErrno());
+    if (!interface_.IsValid()) {
+        logger_.Error("Cannot open capture socket: interface is invalid");
         return;
     }
 
@@ -187,7 +178,7 @@ RawSocket::RawSocket(std::string_view interface)
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
     addr.sll_protocol = htons(ETH_P_ALL);
-    addr.sll_ifindex = static_cast<int>(interface_index_);
+    addr.sll_ifindex = static_cast<int>(interface_.Index());
     if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         Close();
@@ -235,7 +226,8 @@ RawSocket::RawSocket(std::string_view interface)
     }
 
     ifreq ifr{};
-    std::strncpy(ifr.ifr_name, interface_.c_str(), sizeof(ifr.ifr_name) - 1);
+    // ifr is zero-initialized and Interface guarantees Name().size() < IFNAMSIZ.
+    std::memcpy(ifr.ifr_name, interface_.Name().data(), interface_.Name().size());
     if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
         logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
         Close();
@@ -317,12 +309,10 @@ RawSocket::RawSocket(std::string_view interface)
 
     logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_.Get(), blen);
 #endif
-
-    RefreshAddresses();
 }
 
-RawSocket::RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept
-        : logger_{std::format("RawSocket:{}", interface)}
+RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept
+        : logger_{std::format("RawSocket:{}", interface.Name())}
         , interface_{interface}
         , fd_{owned_fd} {
     // Production sizes receive_buffer_ during setup (constant on Linux, BIOCGBLEN on macOS);
@@ -331,11 +321,11 @@ RawSocket::RawSocket(TestingTag, std::string_view interface, int owned_fd) noexc
     receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
 }
 
-RawSocket RawSocket::ForTesting(std::string_view interface, int owned_fd) {
+RawSocket RawSocket::ForTesting(const Interface& interface, int owned_fd) {
     return RawSocket{TestingTag{}, interface, owned_fd};
 }
 
-std::unique_ptr<RawSocket> RawSocket::ForTestingPtr(std::string_view interface, int owned_fd) {
+std::unique_ptr<RawSocket> RawSocket::ForTestingPtr(const Interface& interface, int owned_fd) {
     return std::unique_ptr<RawSocket>(new RawSocket{TestingTag{}, interface, owned_fd});
 }
 
@@ -344,23 +334,11 @@ RawSocket::~RawSocket() noexcept {
 }
 
 bool RawSocket::CanSend(IpAddress::Family family) const noexcept {
-    return (family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6).has_value();
+    return interface_.CanSend(family);
 }
 
 std::optional<IpAddress> RawSocket::SourceAddress(IpAddress::Family family) const noexcept {
-    return family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
-}
-
-void RawSocket::RefreshAddresses() noexcept {
-#if defined(__linux__)
-    addresses_ = ResolveInterfaceAddresses(interface_index_);
-#elif defined(__APPLE__)
-    addresses_ = ResolveInterfaceAddresses(interface_);
-#endif
-    // logger_ is prefixed with the interface name, so this ties name (prefix) and index together.
-    logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}", interface_index_,
-        addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
-        addresses_.v6 ? addresses_.v6->ToString() : "none");
+    return interface_.SourceAddress(family);
 }
 
 bool RawSocket::SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
@@ -383,7 +361,7 @@ bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
 bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     const auto family = dst.addr.AddressFamily();
-    const auto& source = family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
+    const auto source = interface_.SourceAddress(family);
     if (!source) {
         logger_.Error("Cannot send to {}: interface has no source address for that family",
             dst.addr.ToString());
@@ -392,12 +370,12 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
 
     std::array<std::byte, SEND_BUFFER_SIZE> frame{};
 #if defined(__linux__)
-    const size_t length = BuildUdpFrame(dst_mac, addresses_.mac, IpEndpoint{*source, src_port}, dst,
+    const size_t length = BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst,
         payload, ttl, frame);
 #elif defined(__APPLE__)
     const size_t length = link_type_ == LinkType::Loopback
         ? BuildLoopbackUdpFrame(IpEndpoint{*source, src_port}, dst, payload, ttl, frame)
-        : BuildUdpFrame(dst_mac, addresses_.mac, IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
+        : BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
 #endif
     if (length == 0) {
         logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr.ToString(),
@@ -410,7 +388,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     // destination MAC already lives in the frame, so sll_addr/sll_halen stay zero.
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
-    addr.sll_ifindex = static_cast<int>(interface_index_);
+    addr.sll_ifindex = static_cast<int>(interface_.Index());
     const auto sent = sendto(fd_.Get(), frame.data(), length, 0,
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
 #elif defined(__APPLE__)
@@ -439,7 +417,7 @@ bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
     // (default) interface. The group goes in as a sockaddr; ToSockaddr also sets the BSD sockaddr
     // length field that the kernel requires for the embedded address here.
     group_req request{};
-    request.gr_interface = interface_index_;
+    request.gr_interface = interface_.Index();
     group.ToSockaddr(request.gr_group, /*port=*/0);
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
@@ -453,7 +431,7 @@ bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
         return false;
     }
 
-    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_index_);
+    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_.Index());
     return true;
 }
 

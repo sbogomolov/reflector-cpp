@@ -1,6 +1,6 @@
 #pragma once
 
-#include "interface_address.h"
+#include "interface.h"
 #include "link_socket.h"
 #include "logger.h"
 #include "packet.h"
@@ -11,8 +11,6 @@
 #include <memory>
 #include <optional>
 #include <span>
-#include <string>
-#include <string_view>
 #include <vector>
 
 namespace reflector {
@@ -36,7 +34,10 @@ namespace reflector {
 // element addresses (stack, std::optional, node-based map) — std::vector won't do.
 class RawSocket : public LinkSocket, NoMove {
 public:
-    explicit RawSocket(std::string_view interface);
+    // Borrows `interface` (Application-owned, outlives the socket) for its identity and the
+    // source addresses the inject path stamps into frames. An invalid interface yields an
+    // invalid socket.
+    explicit RawSocket(const Interface& interface);
     ~RawSocket() noexcept override;
 
     // Test-only: wrap an arbitrary fd without performing any OS-level capture setup.
@@ -44,34 +45,25 @@ public:
     // so tests can either synthesize Packets via DefaultPacketDispatcher::DispatchPacket directly
     // (when nothing is written to the fd) or drive real frames end-to-end via
     // TestCaptureSocket::WriteFrame.
-    [[nodiscard]] static RawSocket ForTesting(std::string_view interface, int owned_fd);
+    [[nodiscard]] static RawSocket ForTesting(const Interface& interface, int owned_fd);
 
     // unique_ptr counterpart to ForTesting, for owners that hold the (immovable) socket
     // behind a pointer — e.g. Application's injectable capture-socket factory.
-    [[nodiscard]] static std::unique_ptr<RawSocket> ForTestingPtr(std::string_view interface, int owned_fd);
+    [[nodiscard]] static std::unique_ptr<RawSocket> ForTestingPtr(const Interface& interface, int owned_fd);
 
     [[nodiscard]] bool IsValid() const noexcept override { return fd_.IsValid(); }
     [[nodiscard]] int Fd() const noexcept override { return fd_.Get(); }
-    [[nodiscard]] std::string_view Interface() const noexcept { return interface_; }
 
-    // The interface's kernel index, resolved at open (0 for test-only sockets or if the
-    // lookup failed). The address monitor reports changes by index, so Application can map
-    // a changed index back to the socket whose addresses need refreshing.
-    [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index_; }
+    [[nodiscard]] const Interface& GetInterface() const noexcept override { return interface_; }
+    [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_.Index(); }
 
-    // True if the bound interface has a usable source address for `family` (resolved at open
-    // and on RefreshAddresses). The raw egress path and Application's family gating consult
-    // this instead of probing.
+    // True if the interface has a usable source address for `family`. The raw egress path and
+    // the reflectors' family gating consult this instead of probing.
     [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept override;
 
-    // The interface's cached source address for `family` (the one the Send* calls originate from),
+    // The interface's source address for `family` (the one the Send* calls originate from),
     // or nullopt if it has none. IPv6 returns the link-local address.
     [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept override;
-
-    // Re-resolves the interface's source addresses. The address monitor calls this when the
-    // kernel reports an address change on this interface, so a long-running daemon's cached
-    // source addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
-    void RefreshAddresses() noexcept override;
 
     // Injects a UDP datagram out this interface as a raw L2 frame, building the Ethernet/IP/UDP
     // headers and checksums from the interface's cached source MAC/IP and writing the frame to the
@@ -120,7 +112,7 @@ private:
     friend class RawSocketTest;
 
     enum class TestingTag {};
-    RawSocket(TestingTag, std::string_view interface, int owned_fd) noexcept;
+    RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept;
 
     void Close() noexcept;
 
@@ -133,17 +125,12 @@ private:
         std::span<const std::byte> payload, uint8_t ttl) noexcept;
 
     Logger logger_;
-    std::string interface_;
+    const Interface& interface_;
     UniqueFd fd_;
     // Dedicated unbound fds that hold multicast group memberships alive, one per family, opened
     // lazily by JoinMulticastGroup. Separate from fd_ (the capture/inject socket).
     UniqueFd join_fd_v4_;
     UniqueFd join_fd_v6_;
-    unsigned interface_index_ = 0;
-
-    // Source MAC and per-family source IPs of interface_, resolved once at open; the raw egress
-    // path must supply these itself (the kernel UDP stack used to). Empty for test-only sockets.
-    InterfaceAddresses addresses_;
 
     // Linux: holds one frame per recv() into receive_buffer_.
     // macOS: holds a batch of bpf_hdr-prefixed frames per read(); receive_buffer_filled_

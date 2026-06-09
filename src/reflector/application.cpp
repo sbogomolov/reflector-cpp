@@ -26,7 +26,8 @@ Logger& GetLogger() noexcept {
 namespace reflector {
 
 Application::Application()
-        : socket_factory_{[](std::string_view interface) -> std::unique_ptr<LinkSocket> {
+        : interface_factory_{[](std::string_view name) { return std::make_unique<Interface>(name); }}
+        , socket_factory_{[](const Interface& interface) -> std::unique_ptr<LinkSocket> {
               return std::make_unique<RawSocket>(interface);
           }}
         , dispatcher_{std::make_unique<EventLoopDispatcher>()}
@@ -35,16 +36,19 @@ Application::Application()
 }
 
 Application::Application(std::unique_ptr<Dispatcher> dispatcher, std::unique_ptr<AddressMonitor> monitor,
-    SocketFactory socket_factory)
-        : socket_factory_{std::move(socket_factory)}
+    InterfaceFactory interface_factory, SocketFactory socket_factory)
+        : interface_factory_{std::move(interface_factory)}
+        , socket_factory_{std::move(socket_factory)}
         , dispatcher_{std::move(dispatcher)}
         , address_monitor_{std::move(monitor)} {
     StartMonitor();
 }
 
 Application Application::ForTesting(std::unique_ptr<Dispatcher> dispatcher,
-    std::unique_ptr<AddressMonitor> monitor, SocketFactory socket_factory) {
-    return Application{std::move(dispatcher), std::move(monitor), std::move(socket_factory)};
+    std::unique_ptr<AddressMonitor> monitor, InterfaceFactory interface_factory,
+    SocketFactory socket_factory) {
+    return Application{std::move(dispatcher), std::move(monitor), std::move(interface_factory),
+        std::move(socket_factory)};
 }
 
 void Application::StartMonitor() {
@@ -55,12 +59,27 @@ void Application::StartMonitor() {
     }
 }
 
+Interface* Application::GetOrCreateInterface(const std::string& name) {
+    // One Interface per name, shared by the socket and every borrower; created lazily on first
+    // use via the (overridable) factory.
+    auto [entry, inserted] = interfaces_.try_emplace(name);
+    if (inserted) {
+        entry->second = interface_factory_(name);
+    }
+    const auto& iface = entry->second;
+    return (iface && iface->IsValid()) ? iface.get() : nullptr;
+}
+
 LinkSocket* Application::GetOrCreateSocket(const std::string& interface) {
+    auto* iface = GetOrCreateInterface(interface);
+    if (iface == nullptr) {
+        return nullptr;
+    }
     // One socket per interface, shared by every reflector that captures on or sends through
     // it; created lazily on first use via the (overridable) factory.
     auto [entry, inserted] = sockets_.try_emplace(interface);
     if (inserted) {
-        entry->second = socket_factory_(interface);
+        entry->second = socket_factory_(*iface);
     }
     const auto& socket = entry->second;
     return (socket && socket->IsValid()) ? socket.get() : nullptr;
@@ -106,11 +125,11 @@ bool Application::Configure(const Config& config) {
 
 void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
     // index 0 is the monitor's "refresh everything" signal (notification overflow); otherwise
-    // refresh only the socket bound to the changed interface.
-    for (const auto& entry : sockets_) {
-        const auto& socket = entry.second;
-        if (socket && (interface_index == 0 || socket->InterfaceIndex() == interface_index)) {
-            socket->RefreshAddresses();
+    // refresh only the changed interface.
+    for (const auto& entry : interfaces_) {
+        const auto& iface = entry.second;
+        if (iface && (interface_index == 0 || iface->Index() == interface_index)) {
+            iface->Refresh();
         }
     }
 }

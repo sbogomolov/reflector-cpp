@@ -1,5 +1,7 @@
 #include "reflector/raw_socket.h"
 
+#include "mocks/fake_interface.h"
+#include "reflector/interface.h"
 #include "reflector/ip_address.h"
 #include "reflector/mac_address.h"
 #include "reflector/packet.h"
@@ -168,7 +170,10 @@ namespace reflector {
 
 class RawSocketTest : public ::testing::Test {
 protected:
-    RawSocket socket{RawSocket::ForTesting("test", -1)};
+    // Declared before `socket` (the socket borrows it); empty addresses, like a test-only
+    // socket used to resolve.
+    FakeInterface iface{"test", 0, {}};
+    RawSocket socket{RawSocket::ForTesting(iface, -1)};
 
 #if defined(__APPLE__)
     using LinkType = RawSocket::LinkType;
@@ -186,11 +191,11 @@ protected:
         return result;
     }
 
-    // Sets the socket's resolved source addresses directly (the fixture is a friend) so CanSend's
-    // per-family gating is testable without a real interface that happens to have the right mix.
+    // Sets the borrowed interface's source addresses so CanSend's per-family gating is testable
+    // without a real interface that happens to have the right mix.
     void SetSource(std::optional<IpAddress> v4, std::optional<IpAddress> v6) noexcept {
-        socket.addresses_.v4 = std::move(v4);
-        socket.addresses_.v6 = std::move(v6);
+        iface.SetV4(std::move(v4));
+        iface.SetV6(std::move(v6));
     }
 };
 
@@ -554,11 +559,11 @@ TEST_F(RawSocketTest, RejectsLoopbackWithUnsupportedFamily) {
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
 }
 
-TEST_F(RawSocketTest, RejectsTooLongInterfaceName) {
-    const std::string too_long(IFNAMSIZ, 'x');  // IFNAMSIZ chars: one over the usable max
-    CaptureStdout([&] {  // swallow the rejection log; IsValid() is the contract
-        const RawSocket oversized{too_long};
-        EXPECT_FALSE(oversized.IsValid());
+TEST_F(RawSocketTest, RejectsInvalidInterface) {
+    CaptureStdout([&] {  // swallow the rejection logs; IsValid() is the contract
+        const Interface invalid{"nonex0"};
+        const RawSocket socket_on_invalid{invalid};
+        EXPECT_FALSE(socket_on_invalid.IsValid());
     });
 }
 
@@ -684,6 +689,7 @@ TEST(RawSocketReceiveTest, DropsFrameLargerThanReceiveBuffer) {
 
 class RawSocketRequiresRootTest : public ::testing::Test {
 protected:
+    Interface iface{LoopbackInterface()};  // declared before `socket` (the socket borrows it)
     std::optional<RawSocket> socket;
     UdpSocket listener_socket{IpAddress::Family::V4};
     uint16_t listener_port = 0;
@@ -694,7 +700,7 @@ protected:
             GTEST_SKIP() << "RawSocket on " << LoopbackInterface()
                 << " requires CAP_NET_RAW (Linux) or bpf group / root (macOS)";
         }
-        socket.emplace(LoopbackInterface());
+        socket.emplace(iface);
         ASSERT_TRUE(socket->IsValid());
         listener_port = BindLoopback(listener_socket);
     }
@@ -770,7 +776,7 @@ TEST_F(RawSocketRequiresRootTest, ResolvesInterfaceIndexAndAddresses) {
     EXPECT_NE(socket->InterfaceIndex(), 0u);
     // Loopback always has 127.0.0.1, so the v4 source resolves and survives a refresh.
     EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
-    socket->RefreshAddresses();
+    iface.Refresh();
     EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
 }
 
@@ -848,13 +854,13 @@ protected:
         }
     }
 
-    // Re-resolves the injector's addresses until the requested family has a usable source,
+    // Re-resolves the interface's addresses until the requested family has a usable source,
     // waiting out IPv6 DAD (the freshly-assigned address is briefly tentative).
-    static void WaitForSource(RawSocket& injector, IpAddress::Family family) {
+    static void WaitForSource(Interface& iface, IpAddress::Family family) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
-        while (!injector.CanSend(family) && std::chrono::steady_clock::now() < deadline) {
+        while (!iface.CanSend(family) && std::chrono::steady_clock::now() < deadline) {
             ::poll(nullptr, 0, POLL_SLICE_MS);  // brief wait for the address to leave DAD
-            injector.RefreshAddresses();
+            iface.Refresh();
         }
     }
 
@@ -898,10 +904,12 @@ protected:
 };
 
 TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPeer) {
-    RawSocket injector{pair.InjectInterface()};
+    Interface inject_iface{pair.InjectInterface()};
+    RawSocket injector{inject_iface};
     ASSERT_TRUE(injector.IsValid());
     ASSERT_TRUE(injector.CanSend(IpAddress::Family::V4));
-    RawSocket peer{pair.ReceiveInterface()};
+    Interface receive_iface{pair.ReceiveInterface()};
+    RawSocket peer{receive_iface};
     ASSERT_TRUE(peer.IsValid());
 
     const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
@@ -916,9 +924,10 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPee
 }
 
 TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdpSocket) {
-    RawSocket injector{pair.InjectInterface()};
+    Interface inject_iface{pair.InjectInterface()};
+    RawSocket injector{inject_iface};
     ASSERT_TRUE(injector.IsValid());
-    WaitForSource(injector, IpAddress::Family::V6);
+    WaitForSource(inject_iface, IpAddress::Family::V6);
     ASSERT_TRUE(injector.CanSend(IpAddress::Family::V6)) << "no usable IPv6 source after DAD";
 
     // The join needs the peer's link-local to be DAD-complete.
@@ -943,9 +952,10 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
 // (On a veth pair multicast is delivered regardless of membership, so this asserts the join
 // *succeeds*, not that it gates reception — the latter only matters on real NICs.)
 TEST_F(RawSocketInterfacePairRequiresRootTest, JoinsMulticastGroupsIdempotently) {
-    RawSocket socket{pair.InjectInterface()};
+    Interface iface{pair.InjectInterface()};
+    RawSocket socket{iface};
     ASSERT_TRUE(socket.IsValid());
-    WaitForSource(socket, IpAddress::Family::V6);  // wait out DAD on the link-local
+    WaitForSource(iface, IpAddress::Family::V6);  // wait out DAD on the link-local
 
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));

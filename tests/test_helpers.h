@@ -1,6 +1,8 @@
 #pragma once
 
+#include "mocks/fake_interface.h"
 #include "reflector/config.h"
+#include "reflector/interface.h"
 #include "reflector/ip_address.h"
 #include "reflector/logger.h"
 #include "reflector/mac_address.h"
@@ -173,7 +175,8 @@ inline bool HasPacketCapturePrivileges() {
     static const bool cached = [] {
         bool valid = false;
         CaptureStdout([&] {
-            RawSocket probe{LoopbackInterface()};
+            const Interface loopback{LoopbackInterface()};
+            RawSocket probe{loopback};
             valid = probe.IsValid();
         });
         return valid;
@@ -289,9 +292,13 @@ struct FrameBuilder {
 // and the socketpair mimics that. The read end is non-blocking to match production.
 struct TestCaptureSocket {
     int write_fd = -1;
+    // Declared before `socket`: the socket keeps a reference to it for its lifetime. Empty
+    // addresses, matching what a test-only socket used to resolve (nothing).
+    FakeInterface iface;
     RawSocket socket;
 
-    explicit TestCaptureSocket(std::string_view interface = "test") : socket{MakeSocket(interface)} {}
+    explicit TestCaptureSocket(std::string_view interface = "test")
+            : iface{interface, 0, {}}, socket{MakeSocket()} {}
 
     TestCaptureSocket(const TestCaptureSocket&) = delete;
     TestCaptureSocket& operator=(const TestCaptureSocket&) = delete;
@@ -332,20 +339,20 @@ struct TestCaptureSocket {
 #endif
 
 private:
-    RawSocket MakeSocket(std::string_view interface) {
+    RawSocket MakeSocket() {
         int fds[2];
         if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) {
             ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
-            return RawSocket::ForTesting(interface, -1);
+            return RawSocket::ForTesting(iface, -1);
         }
         if (::fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) {
             ADD_FAILURE() << "fcntl(O_NONBLOCK) failed: " << std::strerror(errno);
             ::close(fds[0]);
             ::close(fds[1]);
-            return RawSocket::ForTesting(interface, -1);
+            return RawSocket::ForTesting(iface, -1);
         }
         write_fd = fds[1];
-        return RawSocket::ForTesting(interface, fds[0]);
+        return RawSocket::ForTesting(iface, fds[0]);
     }
 
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {

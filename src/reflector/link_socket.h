@@ -12,11 +12,12 @@
 
 namespace reflector {
 
-// The full duplex surface of a per-interface socket: capture (receive), inject (send), and the
-// interface bookkeeping a long-running daemon needs to route address-change refreshes. RawSocket
-// implements it over real L2 capture/inject; tests substitute one combined fake. The receive and
-// send halves share a single interface rather than being split, because in this codebase one
-// socket always does both directions.
+class Interface;
+
+// The full duplex surface of a per-interface socket: capture (receive), inject (send), and
+// access to the Interface it runs on. RawSocket implements it over real L2 capture/inject;
+// tests substitute one combined fake. The receive and send halves share a single interface
+// rather than being split, because in this codebase one socket always does both directions.
 class LinkSocket {
 public:
     virtual ~LinkSocket() noexcept = default;
@@ -69,20 +70,17 @@ public:
     // (after logging) on failure.
     [[nodiscard]] virtual bool JoinMulticastGroup(const IpAddress& group) noexcept = 0;
 
-    // --- interface bookkeeping: the daemon refreshes cached addresses on change ---
+    // The Interface this socket captures on / injects through. The socket borrows it for its
+    // lifetime; the (Application-owned) interface outlives the socket.
+    [[nodiscard]] virtual const Interface& GetInterface() const noexcept = 0;
 
     // The interface's source address for `family` — the address the Send* calls originate from, and
     // the destination a unicast reply to a relayed datagram of that family is sent to. nullopt if the
     // interface has none (then CanSend(family) is also false). IPv6 returns the link-local address.
     [[nodiscard]] virtual std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept = 0;
 
-    // The interface's kernel index (0 if unknown). The address monitor reports changes by index,
-    // so the owner can map a changed index back to the socket whose addresses need refreshing.
+    // The interface's kernel index (0 if unknown).
     [[nodiscard]] virtual unsigned InterfaceIndex() const noexcept = 0;
-
-    // Re-resolves the interface's source addresses, so a long-running daemon's cached source
-    // addresses don't go stale (e.g. an IPv6 address finishing DAD, or DHCP renewal).
-    virtual void RefreshAddresses() noexcept = 0;
 };
 
 } // namespace reflector

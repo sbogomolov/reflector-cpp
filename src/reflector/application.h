@@ -4,6 +4,7 @@
 #include "config.h"
 #include "default_packet_dispatcher.h"
 #include "dispatcher.h"
+#include "interface.h"
 #include "link_socket.h"
 #include "reflector.h"
 #include "util/no_move.h"
@@ -26,17 +27,21 @@ namespace reflector {
 // so the dedup, failure, and address-refresh paths are exercisable without CAP_NET_RAW.
 class Application : NoMove {
 public:
-    // Creates the socket for an interface. Production opens a real RawSocket; tests inject a fake.
+    // Creates the Interface record for a name. Production resolves a real one; tests inject a fake.
+    using InterfaceFactory = std::function<std::unique_ptr<Interface>(std::string_view name)>;
+    // Creates the socket capturing on `interface`. Production opens a real RawSocket; tests inject
+    // a fake.
     using SocketFactory =
-        std::function<std::unique_ptr<LinkSocket>(std::string_view interface)>;
+        std::function<std::unique_ptr<LinkSocket>(const Interface& interface)>;
 
     Application();
 
-    // Test seam: inject the dispatcher, address monitor, and socket factory instead of building the
-    // production EventLoopDispatcher / DefaultAddressMonitor / RawSocket, so the wiring runs with
-    // fakes and no real sockets.
+    // Test seam: inject the dispatcher, address monitor, and both factories instead of building the
+    // production EventLoopDispatcher / DefaultAddressMonitor / Interface / RawSocket, so the wiring
+    // runs with fakes and no real sockets.
     [[nodiscard]] static Application ForTesting(std::unique_ptr<Dispatcher> dispatcher,
-        std::unique_ptr<AddressMonitor> monitor, SocketFactory socket_factory);
+        std::unique_ptr<AddressMonitor> monitor, InterfaceFactory interface_factory,
+        SocketFactory socket_factory);
 
     // Builds one reflector per WoL, mDNS, and SSDP config, sharing a single socket across configs on the
     // same interface (the packet dispatcher watches that socket's fd once, however many reflectors
@@ -53,7 +58,7 @@ private:
     // (the address monitor must be built from the dispatcher), so it sets these members in its own
     // init list; both constructors then call StartMonitor().
     Application(std::unique_ptr<Dispatcher> dispatcher, std::unique_ptr<AddressMonitor> monitor,
-        SocketFactory socket_factory);
+        InterfaceFactory interface_factory, SocketFactory socket_factory);
 
     // Starts the address monitor, routing changes to OnInterfaceChanged. Logs a warning and
     // continues if it can't start — address refresh is best-effort, not required to run.
@@ -70,22 +75,32 @@ private:
     [[nodiscard]] size_t SocketCount() const noexcept { return sockets_.size(); }
     [[nodiscard]] size_t ReflectorCount() const noexcept { return reflectors_.size(); }
 
+    // Returns the Interface for `name`, creating it via the factory on first use and sharing it
+    // across sockets and reflectors. Null when the interface is invalid (over-long or unknown
+    // name); failures are cached like GetOrCreateSocket's.
+    [[nodiscard]] Interface* GetOrCreateInterface(const std::string& name);
+
     // Returns the socket for `interface`, creating it via the factory on first use and sharing
-    // it across reflectors. Null (after no logging) when the socket is missing or its fd is
-    // invalid; the caller logs with the interface's role (source vs target).
+    // it across reflectors. Null (after no logging) when the interface or the socket is invalid;
+    // the caller logs with the interface's role (source vs target).
     [[nodiscard]] LinkSocket* GetOrCreateSocket(const std::string& interface);
 
-    // Address-monitor callback: re-resolve the source addresses of the socket bound to the
-    // changed interface, or every socket when index == 0 (the monitor's overflow signal).
+    // Address-monitor callback: re-resolve the source addresses of the changed interface, or of
+    // every interface when index == 0 (the monitor's overflow signal).
     void OnInterfaceChanged(unsigned interface_index) noexcept;
 
+    InterfaceFactory interface_factory_;
     SocketFactory socket_factory_;
 
-    // Declaration order is teardown order in reverse. Within the packet pipeline: reflectors drop
-    // their packet-dispatcher registrations first, the packet dispatcher then drops its per-socket
-    // dispatcher registrations, the dispatcher tears down its event queue, and only then the
-    // sockets close their fds. The packet dispatcher caches a raw pointer to each socket, so the
-    // sockets live behind unique_ptr to keep their addresses stable across map rehashing.
+    // Declaration order is teardown order in reverse. Interfaces precede the packet pipeline:
+    // sockets, reflectors, and the DIAL proxy borrow references into them, so they are destroyed
+    // after everything else. Within the packet pipeline: reflectors drop their packet-dispatcher
+    // registrations first, the packet dispatcher then drops its per-socket dispatcher
+    // registrations, the dispatcher tears down its event queue, and only then the sockets close
+    // their fds. The packet dispatcher caches a raw pointer to each socket (and each socket a
+    // reference to its interface), so both maps hold unique_ptr to keep addresses stable across
+    // rehashing.
+    std::unordered_map<std::string, std::unique_ptr<Interface>> interfaces_;
     std::unordered_map<std::string, std::unique_ptr<LinkSocket>> sockets_;
     std::unique_ptr<Dispatcher> dispatcher_;
     DefaultPacketDispatcher packet_dispatcher_{*dispatcher_};
