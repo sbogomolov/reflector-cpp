@@ -36,56 +36,46 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     }
 
     const auto fd = socket.Fd();
-    if (!capture_sources_.contains(fd)) {
+    auto source = capture_sources_.find(fd);
+    if (source == capture_sources_.end()) {
         // First subscriber for this socket: start watching its fd through the Dispatcher.
         auto dispatcher_reg = dispatcher_->Register(fd, CreateDelegate<&DefaultPacketDispatcher::OnReadable>(this));
         if (!dispatcher_reg.IsValid()) {
             GetLogger().Error("Cannot register packet callback: dispatcher registration failed for fd {}", fd);
             return {};
         }
-        capture_sources_.emplace(fd, CaptureSource{.socket = &socket, .dispatcher_reg = std::move(dispatcher_reg)});
+        source = capture_sources_.emplace(
+            fd, CaptureSource{.socket = &socket, .dispatcher_reg = std::move(dispatcher_reg)}).first;
     }
 
-    // Must append (never insert in the middle) so registrations_ stays sorted by id —
-    // DispatchPacket's merge walk depends on it.
+    // Append (never insert mid-vector) so ids stay ascending; the entry's ctor takes a hold on the
+    // capture source's count.
     const auto id = static_cast<RegistrationId>(next_registration_id_++);
-    registrations_.push_back(RegistrationEntry{
-        .id = id,
-        .socket = &socket,
-        .filter = filter,
-        .callback = callback,
-    });
+    registrations_.emplace_back(id, &source->second, callback, filter);
     GetLogger().Debug("Registered packet callback {} for fd {}", static_cast<uint64_t>(id), fd);
     return MakeRegistration(id);
 }
 
 bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
-    const auto it = std::ranges::find_if(registrations_, [id](const auto& registration) {
-        return registration.id == id;
+    const auto it = std::ranges::find_if(registrations_, [id](const auto& r) {
+        return r.id == id && r.enabled;
     });
     if (it == registrations_.end()) {
         GetLogger().Warning("Cannot unregister packet callback {}: not found", static_cast<uint64_t>(id));
         return false;
     }
-
-    const auto* socket = it->socket;
-    registrations_.erase(it);
-
-    const auto socket_still_used = std::ranges::any_of(registrations_, [socket](const auto& r) {
-        return r.socket == socket;
-    });
-    if (!socket_still_used) {
-        // Dropping the CaptureSource resets its Dispatcher::Registration, which removes the
-        // read event for this fd.
-        capture_sources_.erase(socket->Fd());
-        // Tell DrainReadableFd to stop before its next Receive() — the socket no longer has
-        // any registered consumers.
-        if (active_socket_ == socket) {
-            active_socket_ = nullptr;
-        }
-    }
-
     GetLogger().Debug("Unregistered packet callback {}", static_cast<uint64_t>(id));
+    if (dispatching_) {
+        it->enabled = false;  // DrainReadableFd is walking; defer the erase + teardown to its sweep
+        return true;
+    }
+    // No drain in progress: erase in place. The entry's dtor releases its hold on the capture source; if
+    // that was the last, drop the now-unreferenced source.
+    auto* source = it->capture_source;
+    registrations_.erase(it);
+    if (source->active_registrations == 0) {
+        capture_sources_.erase(source->socket->Fd());
+    }
     return true;
 }
 
@@ -99,7 +89,11 @@ void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
 }
 
 void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
-    active_socket_ = &socket;
+    // Bracket the whole drain: a callback's Unregister only marks its entry disabled (DispatchPacket
+    // skips it from here on), and the single sweep below erases the marked entries plus any now-orphaned
+    // capture source. A socket whose last registration is dropped mid-drain just dispatches to nothing
+    // for the rest of the drain, then loses its capture source in the sweep.
+    dispatching_ = true;
 
 #if defined(__APPLE__)
     for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
@@ -120,50 +114,31 @@ void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
         }
 
         DispatchPacket(socket, *packet);
-
-        if (active_socket_ != &socket) {
-            // A callback dropped the last registration for this socket; nothing wants
-            // its frames anymore. Discard any userland-buffered frames so they don't
-            // stall (kqueue won't refire on data that's already in our buffer).
-#if defined(__APPLE__)
-            socket.ClearBuffer();
-#endif
-            break;
-        }
     }
 
-    active_socket_ = nullptr;
+    dispatching_ = false;
+    Sweep();
 }
 
 void DefaultPacketDispatcher::DispatchPacket(const LinkSocket& socket, const Packet& packet) const {
-    // Walk registrations_ live; no snapshot. A callback may call Unregister and shift
-    // elements, so after each dispatch we check that our slot still holds the entry we
-    // just fired; if it doesn't, we restart from the front and let last_dispatched_id
-    // skip anything we already handled. registrations_ is sorted by id (Register
-    // appends with a monotonically increasing id, Unregister preserves order), so the
-    // id filter is both necessary and sufficient to avoid duplicate dispatch.
-    //
-    // Side effect to be aware of: a callback that calls Register creates a new entry
-    // with a higher id, which this loop will reach and dispatch for the current packet.
-    RegistrationId last_dispatched_id{};
-    for (size_t idx = 0; idx < registrations_.size();) {
-        auto& entry = registrations_[idx];
-        if (entry.id > last_dispatched_id
-            && entry.socket == &socket
-            && entry.filter.Matches(packet)) {
-            last_dispatched_id = entry.id;
+    // Forward walk in registration order, skipping disabled entries. A callback may Unregister (marks
+    // disabled -- skipped here, swept after the drain) or Register (appends, possibly reallocating) --
+    // so index by position and re-fetch each iteration, never holding an iterator across the callback.
+    // Removal is deferred to the sweep, so the walk never shifts and needs no restart. A callback that
+    // Registers appends a higher entry this loop still reaches, dispatching it for the current packet.
+    for (size_t idx = 0; idx < registrations_.size(); ++idx) {
+        const auto& entry = registrations_[idx];
+        if (entry.enabled && entry.capture_source->socket == &socket && entry.filter.Matches(packet)) {
             entry.callback(packet);
-
-            // If a callback shifted entries before us, our slot now holds a different id
-            // (or is past the end). Restart from the front; the last_dispatched_id filter
-            // above skips anything we already dispatched.
-            if (idx >= registrations_.size() || registrations_[idx].id != last_dispatched_id) {
-                idx = 0;
-                continue;
-            }
         }
-        ++idx;
     }
+}
+
+void DefaultPacketDispatcher::Sweep() noexcept {
+    // The erased entries' dtors release their capture-source holds; then drop every source left at 0 --
+    // one flat pass over capture_sources_ (a handful of fds), not a per-registration scan.
+    std::erase_if(registrations_, [](const RegistrationEntry& r) { return !r.enabled; });
+    std::erase_if(capture_sources_, [](const auto& entry) { return entry.second.active_registrations == 0; });
 }
 
 } // namespace reflector

@@ -42,7 +42,29 @@ protected:
     size_t RegistrationCount() const {
         return packet_dispatcher.RegistrationCount();
     }
+
+    size_t CaptureSourceCount() const {
+        return packet_dispatcher.capture_sources_.size();
+    }
 };
+
+namespace {
+
+// One minimal Ethernet/IPv4/UDP frame that ParseFrame accepts and PacketFilter{} matches — for
+// tests that drive the real drain path (WriteFrame + PollOnce) and only care that a packet flows.
+std::vector<std::byte> MakeUdpFrame() {
+    const auto payload = MakeBytes({0xab});
+    FrameBuilder f;
+    f.AppendEthernet(*MacAddress::FromString("11:22:33:44:55:66"),
+        *MacAddress::FromString("aa:bb:cc:dd:ee:ff"), IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(), IP_PROTO_UDP,
+        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+    f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+    return f.bytes;
+}
+
+} // namespace
 
 // Registers a second callback the first time it runs, then disables itself so subsequent
 // dispatches don't keep adding more.
@@ -60,6 +82,24 @@ struct RegisteringPacketCounter {
     RawSocket* socket = nullptr;
     PacketCounter* target = nullptr;
     PacketDispatcher::Registration new_registration;
+    int count = 0;
+};
+
+// Resets every registration in `to_reset` (its own included) the first time it fires — a callback
+// tearing down the whole subscriber set mid-drain. Entries before and after the walk's cursor are
+// all disabled in one dispatch; the post-drain sweep erases them and drops the orphaned source.
+struct MassUnregisteringPacketCounter {
+    void OnPacket(const Packet&) {
+        ++count;
+        if (to_reset != nullptr) {
+            for (auto& registration : *to_reset) {
+                registration.Reset();
+            }
+            to_reset = nullptr;
+        }
+    }
+
+    std::vector<PacketDispatcher::Registration>* to_reset = nullptr;
     int count = 0;
 };
 
@@ -247,6 +287,9 @@ TEST_F(DefaultPacketDispatcherTest, UnregisterRemovesCallback) {
     EXPECT_EQ(counter.count, 0);
 }
 
+// Through the real drain path (PollOnce -> DrainReadableFd, dispatching_ set): the first callback
+// resets the second registration mid-dispatch, so Unregister defers — the walk must skip the
+// now-disabled entry for the same packet, and the post-drain sweep erases it.
 TEST_F(DefaultPacketDispatcherTest, SkipsRegistrationUnregisteredDuringDispatch) {
     TestCaptureSocket capture;
     UnregisteringPacketCounter first;
@@ -261,14 +304,18 @@ TEST_F(DefaultPacketDispatcherTest, SkipsRegistrationUnregisteredDuringDispatch)
 
     first.registration_to_reset = &second_registration;
 
-    Dispatch(capture.socket, MakePacket());
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
 
     EXPECT_EQ(first.count, 1);
     EXPECT_TRUE(first.reset_result);
     EXPECT_EQ(second.count, 0);
-    EXPECT_EQ(RegistrationCount(), 1);
+    EXPECT_EQ(RegistrationCount(), 1);   // the post-drain sweep erased the disabled entry
+    EXPECT_EQ(CaptureSourceCount(), 1);  // `first` still pins the socket's capture source
 }
 
+// Same drain path: a callback that Registers mid-dispatch appends an entry the current walk still
+// reaches — the new subscriber sees the packet that was being dispatched when it registered.
 TEST_F(DefaultPacketDispatcherTest, DispatchesToCallbackRegisteredDuringDispatch) {
     TestCaptureSocket capture;
     RegisteringPacketCounter first;
@@ -281,12 +328,126 @@ TEST_F(DefaultPacketDispatcherTest, DispatchesToCallbackRegisteredDuringDispatch
         capture.socket, PacketFilter{}, CreateDelegate<&RegisteringPacketCounter::OnPacket>(&first));
     ASSERT_TRUE(first_registration.IsValid());
 
-    Dispatch(capture.socket, MakePacket());
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
 
     EXPECT_EQ(first.count, 1);
     ASSERT_TRUE(first.new_registration.IsValid());
     EXPECT_EQ(second.count, 1);
     EXPECT_EQ(RegistrationCount(), 2);
+}
+
+// A callback resetting ITSELF must not disturb the walk: the entries after it still fire for the
+// same packet. An in-place erase here would shift the next entry into the freed slot and the walk
+// would skip it — the precise hazard the deferred mark-and-sweep removal exists to prevent.
+TEST_F(DefaultPacketDispatcherTest, EntriesAfterSelfUnregisteringCallbackStillFireForSamePacket) {
+    TestCaptureSocket capture;
+    UnregisteringPacketCounter first;
+    PacketCounter second;
+    PacketCounter third;
+
+    auto first_registration = packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&UnregisteringPacketCounter::OnPacket>(&first));
+    const auto second_registration = packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&second));
+    const auto third_registration = packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&third));
+    ASSERT_TRUE(first_registration.IsValid());
+    ASSERT_TRUE(second_registration.IsValid());
+    ASSERT_TRUE(third_registration.IsValid());
+
+    first.registration_to_reset = &first_registration;  // resets ITSELF
+
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+
+    EXPECT_EQ(first.count, 1);
+    EXPECT_TRUE(first.reset_result);
+    EXPECT_EQ(second.count, 1);  // nobody after the self-unregistered entry is skipped
+    EXPECT_EQ(third.count, 1);
+    EXPECT_EQ(RegistrationCount(), 2);
+}
+
+// A callback resetting the socket's LAST registration mid-drain: the drain continues (the rest of
+// the burst is dispatched to nothing) and the post-drain sweep drops the now-orphaned capture
+// source, unwatching the fd.
+TEST_F(DefaultPacketDispatcherTest, CallbackResettingLastRegistrationMidDrainDropsCaptureSource) {
+    TestCaptureSocket capture;
+    UnregisteringPacketCounter counter;
+    auto registration = packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&UnregisteringPacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+    counter.registration_to_reset = &registration;
+
+    // Both frames are queued before the poll, so one drain covers them: the first dispatch
+    // unregisters the only registration; the second frame must still be drained without incident.
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+
+    EXPECT_EQ(counter.count, 1);
+    EXPECT_TRUE(counter.reset_result);
+    EXPECT_EQ(RegistrationCount(), 0);
+    EXPECT_EQ(CaptureSourceCount(), 0);
+
+    // The capture fd is genuinely unwatched: a fresh frame no longer wakes the reactor.
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_FALSE(dispatcher.PollOnce(std::chrono::milliseconds{0}));
+}
+
+// The capture-source count stays exact while registrations_ grows (move construction into the new
+// buffer) and erases in place (move-assign compaction): the source survives until the last
+// registration is reset, and drops exactly then.
+TEST_F(DefaultPacketDispatcherTest, CaptureSourceDropsExactlyAtLastUnregister) {
+    TestCaptureSocket capture;
+    PacketCounter counter;
+    std::vector<PacketDispatcher::Registration> registrations;
+    constexpr size_t registration_count = 16;  // several vector growths: entries move between buffers
+    for (size_t i = 0; i < registration_count; ++i) {
+        registrations.push_back(packet_dispatcher.Register(
+            capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter)));
+        ASSERT_TRUE(registrations.back().IsValid());
+    }
+    EXPECT_EQ(RegistrationCount(), registration_count);
+    EXPECT_EQ(CaptureSourceCount(), 1);
+
+    for (size_t i = 0; i + 1 < registration_count; ++i) {  // outside any drain: erase in place
+        ASSERT_TRUE(registrations[i].Reset());
+    }
+    EXPECT_EQ(RegistrationCount(), 1);
+    EXPECT_EQ(CaptureSourceCount(), 1);  // one registration still pins the source
+
+    ASSERT_TRUE(registrations.back().Reset());
+    EXPECT_EQ(RegistrationCount(), 0);
+    EXPECT_EQ(CaptureSourceCount(), 0);
+}
+
+// One callback tears down the whole subscriber set mid-drain: entries behind and ahead of the walk's
+// cursor are all disabled in one dispatch (none of the later ones fire), then the sweep erases all of
+// them in one pass and drops the orphaned capture source.
+TEST_F(DefaultPacketDispatcherTest, CallbackResettingAllRegistrationsMidDrainSweepsThemAll) {
+    TestCaptureSocket capture;
+    MassUnregisteringPacketCounter first;
+    PacketCounter others;
+    std::vector<PacketDispatcher::Registration> registrations;
+    registrations.push_back(packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&MassUnregisteringPacketCounter::OnPacket>(&first)));
+    for (size_t i = 0; i < 15; ++i) {
+        registrations.push_back(packet_dispatcher.Register(
+            capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&others)));
+    }
+    for (const auto& registration : registrations) {
+        ASSERT_TRUE(registration.IsValid());
+    }
+    first.to_reset = &registrations;
+
+    ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+
+    EXPECT_EQ(first.count, 1);
+    EXPECT_EQ(others.count, 0);  // every later entry was disabled before the walk reached it
+    EXPECT_EQ(RegistrationCount(), 0);
+    EXPECT_EQ(CaptureSourceCount(), 0);
 }
 
 TEST_F(DefaultPacketDispatcherTest, UnregisterPreservesOtherRegistrationOnSameSocket) {
@@ -451,7 +612,9 @@ TEST_F(DefaultPacketDispatcherRequiresRootTest, PollOnceDispatchesQueuedPacketBu
     EXPECT_EQ(counter.count, packet_count);
 }
 
-TEST_F(DefaultPacketDispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLastRegistration) {
+// The callback resets the socket's last registration on the first packet; the drain continues over
+// the rest of the burst dispatching to nothing, and no later poll fires the dead callback again.
+TEST_F(DefaultPacketDispatcherRequiresRootTest, DrainContinuesHarmlesslyAfterCallbackResetsLastRegistration) {
     UnregisteringPacketCounter counter;
     auto registration = packet_dispatcher.Register(*socket, LoopbackFilter(),
         CreateDelegate<&UnregisteringPacketCounter::OnPacket>(&counter));
@@ -465,6 +628,11 @@ TEST_F(DefaultPacketDispatcherRequiresRootTest, DrainStopsWhenCallbackResetsLast
     ASSERT_TRUE(WaitForCount(counter.count, 1));
     EXPECT_EQ(counter.count, 1);
     EXPECT_FALSE(registration.IsValid());
+
+    // Give the second packet time to surface (same drain or a later poll): the registration is
+    // swept and its capture source dropped, so the count must not move.
+    dispatcher.PollOnce(POLL_SLICE);
+    EXPECT_EQ(counter.count, 1);
 }
 
 } // namespace reflector

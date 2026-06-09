@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace reflector {
@@ -33,19 +34,59 @@ private:
 
     static constexpr size_t MAX_PACKETS_PER_READ_EVENT = 64;
 
-    struct RegistrationEntry {
-        RegistrationId id;
-        LinkSocket* socket;
-        PacketFilter filter;
-        PacketCallback callback;
-    };
-
-    // One per capture socket fd: the socket plus the Dispatcher registration that keeps its
-    // fd watched. Created with the socket's first packet registration and dropped with its
-    // last, so the fd is watched exactly while something wants its frames.
+    // One per capture socket fd: the socket, the Dispatcher registration that keeps its fd watched, and a
+    // count of the live packet registrations on it (kept by RegistrationEntry's ctor/dtor). Created with
+    // the socket's first registration and dropped when the count reaches 0, so the fd is watched exactly
+    // while something wants its frames. Defined before RegistrationEntry, whose ctor/dtor touch the count.
     struct CaptureSource {
         LinkSocket* socket;
         Dispatcher::Registration dispatcher_reg;
+        size_t active_registrations = 0;  // registrations pinned to this socket; 0 -> drop it, no scan
+    };
+
+    // A packet subscription. Move-only: it holds one unit of its CaptureSource's active_registrations --
+    // the ctor takes one, the dtor releases one, and the move ops hand it off (a moved-from entry owns
+    // nothing), so the count stays exact as the vector reallocs and erase shuffles entries. The entry
+    // never erases the source itself; Unregister and the drain sweep do that, where the map is at hand.
+    struct RegistrationEntry {
+        RegistrationEntry(RegistrationId registration_id, CaptureSource* source,
+            const PacketCallback& packet_callback, const PacketFilter& packet_filter)
+                : id{registration_id}, capture_source{source}, callback{packet_callback},
+                  filter{packet_filter} {
+            ++capture_source->active_registrations;
+        }
+        ~RegistrationEntry() noexcept {
+            if (capture_source != nullptr) {
+                --capture_source->active_registrations;
+            }
+        }
+        RegistrationEntry(RegistrationEntry&& other) noexcept
+                : id{other.id}
+                , capture_source{std::exchange(other.capture_source, nullptr)}
+                , callback{std::move(other.callback)}
+                , filter{std::move(other.filter)}
+                , enabled{other.enabled} {}
+        RegistrationEntry& operator=(RegistrationEntry&& other) noexcept {
+            if (this != &other) {
+                if (capture_source != nullptr) {
+                    --capture_source->active_registrations;
+                }
+                id = other.id;
+                capture_source = std::exchange(other.capture_source, nullptr);
+                callback = std::move(other.callback);
+                filter = std::move(other.filter);
+                enabled = other.enabled;
+            }
+            return *this;
+        }
+        RegistrationEntry(const RegistrationEntry&) = delete;
+        RegistrationEntry& operator=(const RegistrationEntry&) = delete;
+
+        RegistrationId id;
+        CaptureSource* capture_source;
+        PacketCallback callback;
+        PacketFilter filter;  // before `enabled` so the bool tucks into the filter's trailing padding
+        bool enabled = true;  // Unregister marks this false; the post-drain sweep erases it
     };
 
     [[nodiscard]] size_t RegistrationCount() const noexcept { return registrations_.size(); }
@@ -54,17 +95,21 @@ private:
     void OnReadable(int fd) noexcept;
     void DrainReadableFd(LinkSocket& socket) noexcept;
     void DispatchPacket(const LinkSocket& socket, const Packet& packet) const;
+    // Erases the registrations Unregister marked disabled (their dtors release the capture-source count),
+    // then drops every capture source left at 0. Runs after DrainReadableFd's drain -- never mid-walk,
+    // where a live erase would shift the vector.
+    void Sweep() noexcept;
 
     Dispatcher* dispatcher_;
-    // Kept sorted by id: Register appends with a monotonically increasing id and Unregister
-    // erases in place. DispatchPacket relies on this for its merge walk; any insertion that
-    // breaks the order would silently corrupt dispatch.
-    std::vector<RegistrationEntry> registrations_;
+    // capture_sources_ is declared before registrations_ so registrations_ is destroyed FIRST: each
+    // entry's dtor releases its CaptureSource's count, so the sources must still be alive.
     std::unordered_map<int, CaptureSource> capture_sources_;
+    // Register appends; Unregister marks disabled and the post-drain sweep erases (preserving order).
+    // DispatchPacket walks this in append order, skipping disabled -- so dispatch stays in registration
+    // order and the walk never needs to restart.
+    std::vector<RegistrationEntry> registrations_;
     uint64_t next_registration_id_ = 1;
-    // Socket currently being drained; cleared when its last registration is dropped, so
-    // DrainReadableFd can bail before the next Receive() on a socket nothing wants.
-    const LinkSocket* active_socket_ = nullptr;
+    bool dispatching_ = false;  // true while DrainReadableFd drains; Unregister then defers the erase to the sweep
 };
 
 } // namespace reflector

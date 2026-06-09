@@ -30,31 +30,33 @@ public:
         return MakeRegistration(id);
     }
 
-    // Dispatches `packet` to every registration whose filter matches, regardless of socket.
+    // Dispatches `packet` to every enabled registration whose filter matches, regardless of socket. A
+    // callback may Register (appends -- index by position so a reallocation can't dangle the walk) or
+    // Unregister (marks disabled: skipped here, swept after), matching production's deferred-removal walk.
     void Deliver(const Packet& packet) {
-        // Iterate a snapshot so a callback that Registers mid-dispatch (appending to entries_, which
-        // may reallocate) can't invalidate the walk; the new entry isn't dispatched for this packet.
-        // NOTE: this is safe only because no callback UNregisters during a Deliver — the snapshot
-        // holds copied callbacks, so a registration removed mid-dispatch would still be invoked here,
-        // with a possibly-dangling target. Production's DispatchPacket walks live to handle removal;
-        // this fake deliberately doesn't, since no test removes a registration mid-Deliver.
-        const auto snapshot = entries_;
-        for (const auto& entry : snapshot) {
-            if (entry.filter.Matches(packet)) {
+        dispatching_ = true;
+        for (size_t idx = 0; idx < entries_.size(); ++idx) {
+            const Entry& entry = entries_[idx];
+            if (entry.enabled && entry.filter.Matches(packet)) {
                 entry.callback(packet);
             }
         }
+        dispatching_ = false;
+        Sweep();
     }
 
     // Dispatches `packet` as if captured on `socket`: only registrations made on that socket whose
     // filter matches. Models the per-socket capture path a bidirectional reflector depends on.
     void Deliver(const LinkSocket& socket, const Packet& packet) {
-        const auto snapshot = entries_;  // see Deliver(packet): append-safe, no removal mid-dispatch
-        for (const auto& entry : snapshot) {
-            if (entry.socket == &socket && entry.filter.Matches(packet)) {
+        dispatching_ = true;
+        for (size_t idx = 0; idx < entries_.size(); ++idx) {
+            const Entry& entry = entries_[idx];
+            if (entry.enabled && entry.socket == &socket && entry.filter.Matches(packet)) {
                 entry.callback(packet);
             }
         }
+        dispatching_ = false;
+        Sweep();
     }
 
     [[nodiscard]] Dispatcher& UnderlyingDispatcher() noexcept override { return dispatcher; }
@@ -66,8 +68,23 @@ public:
 
 private:
     bool Unregister(PacketDispatcher::RegistrationId id) noexcept override {
-        std::erase_if(entries_, [id](const Entry& entry) { return entry.id == id; });
-        return true;
+        for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+            if (it->id == id && it->enabled) {  // at most one enabled entry per id
+                if (dispatching_) {
+                    it->enabled = false;  // a Deliver is walking; defer the erase to its post-walk sweep
+                } else {
+                    entries_.erase(it);  // no walk in progress; erase in place
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Erases the entries Unregister marked disabled mid-Deliver. Runs after Deliver's walk -- never
+    // during it, where a live erase would shift the vector. Named after production's Sweep.
+    void Sweep() {
+        std::erase_if(entries_, [](const Entry& entry) { return !entry.enabled; });
     }
 
     struct Entry {
@@ -75,11 +92,13 @@ private:
         const LinkSocket* socket;
         PacketFilter filter;
         PacketCallback callback;
+        bool enabled = true;
     };
 
     std::vector<Entry> entries_;
     uint64_t next_id_ = 1;
     size_t register_calls_ = 0;
+    bool dispatching_ = false;
 };
 
 } // namespace reflector
