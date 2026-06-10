@@ -22,8 +22,9 @@
 #include <poll.h>
 #include <sys/socket.h>
 
-namespace reflector {
 namespace {
+
+using namespace reflector;
 
 std::vector<std::byte> Bytes(std::string_view text) {
     std::vector<std::byte> out(text.size());
@@ -62,6 +63,10 @@ std::string FindLinkLocalInterfaceName() {
     ::if_freenameindex(names);
     return found;
 }
+
+} // namespace
+
+namespace reflector {
 
 // ---- TcpSocket over real loopback, parameterized over IPv4 / IPv6 ----
 
@@ -329,14 +334,12 @@ TEST_P(TcpSocketFamilyTest, SendBeyondCapAborts) {
     FAIL() << "Send never overflowed the cap";
 }
 
-}  // namespace — the friend fixture below must be the named reflector::TcpSocketTest the friend grant names
-
 // ---- Scatter-gather Send ----
 
 // The AppendUnsent boundary-walk is private; this fixture is TcpSocket's friend — the named
-// `reflector::TcpSocketTest` the friend declaration refers to (a fixture in the file's anonymous namespace
-// would be a different class and get no access) — and exposes the walk for a chosen `already_sent`, since a
-// live socket can't be steered onto an exact chunk seam.
+// `reflector::TcpSocketTest` the friend declaration refers to (an anonymous-namespace fixture
+// would be a different class and get no access) — and exposes the walk for a chosen
+// `already_sent`, since a live socket can't be steered onto an exact chunk seam.
 class TcpSocketTest : public ::testing::Test {
 protected:
     static bool AppendUnsent(StreamBuffer& buf, std::span<const std::span<const std::byte>> chunks,
@@ -344,8 +347,6 @@ protected:
         return TcpSocket::AppendUnsent(buf, chunks, already_sent);
     }
 };
-
-namespace {
 
 // AppendUnsent is the heart of the scatter Send: after a partial sendmsg it buffers the bytes past
 // `already_sent`, walked across the chunk boundary. A live socket can't be made to partial on an exact seam
@@ -702,5 +703,4 @@ TEST_F(TcpSocketRequiresRootTest, LinkLocalConnectCompletesWithEgressScope) {
     EXPECT_TRUE(client->FinishConnect());
 }
 
-} // namespace
 } // namespace reflector

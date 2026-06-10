@@ -27,9 +27,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 // Distinct device endpoints on the (notional) target subnet; only their identity matters here —
 // EnsureListener keys on them; nothing actually connects to these (fake) addresses.
@@ -37,7 +37,145 @@ IpEndpoint Device(uint8_t last_octet, uint16_t port = 8008) {
     return {IpAddress::FromString(std::format("10.0.0.{}", last_octet)).value(), port};
 }
 
+// A loopback "device": a listening TcpSocket the proxy will Connect() to. Its LocalEndpoint is the
+// device endpoint handed to EnsureDiscoveryListener.
+struct FakeDevice {
+    TcpSocket listener;
+    IpEndpoint endpoint;
+
+    static FakeDevice Make() {
+        const FakeInterface loopback;  // defaults: v4 source 127.0.0.1; only read during the call
+        auto listener = TcpSocket::Listen(loopback, IpAddress::Family::V4);
+        EXPECT_TRUE(listener.has_value());
+        const auto endpoint = listener->LocalEndpoint();
+        return FakeDevice{std::move(*listener), endpoint};
+    }
+};
+
+// A raw blocking client socket that connects to the reflector listener at `authority`, so the
+// listener's accept() yields a real client fd. Returned as the connected fd (or -1 on failure); the
+// caller closes it.
+int ConnectRawClient(const IpEndpoint& authority) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    sockaddr_storage storage{};
+    const auto len = authority.ToSockaddr(storage);
+    if (::connect(fd, reinterpret_cast<const sockaddr*>(&storage), len) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+// Block until the non-blocking upstream connect on `fd` settles (writable or error), so a manually-fired
+// writable edge sees the real completed state instead of racing the loopback handshake.
+void WaitConnectComplete(int fd) {
+    pollfd pfd{.fd = fd, .events = POLLOUT, .revents = 0};
+    ASSERT_GT(::poll(&pfd, 1, 5000), 0) << "upstream connect did not settle within 5s";
+}
+
+// Read exactly `want` bytes from the device-side socket as the forwarded request arrives (loopback
+// delivery is asynchronous from the proxy's send, so poll+read in a loop rather than racing one Read).
+std::string ReadExactly(TcpSocket& sock, size_t want) {
+    std::string out;
+    while (out.size() < want) {
+        pollfd pfd{.fd = sock.Fd(), .events = POLLIN, .revents = 0};
+        if (::poll(&pfd, 1, 5000) <= 0) {
+            break;
+        }
+        std::byte buf[256];
+        const auto got = sock.Read(std::span<std::byte>{buf, sizeof(buf)});
+        if (got.status != IoStatus::Ok) {
+            break;
+        }
+        out.append(reinterpret_cast<const char*>(buf), got.bytes);
+    }
+    return out;
+}
+
+// Write all of `data` to a blocking raw fd; returns false if any write short-fails.
+bool WriteAllFd(int fd, std::string_view data) {
+    size_t off = 0;
+    while (off < data.size()) {
+        const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
+        if (n <= 0) {
+            return false;
+        }
+        off += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+// Read exactly `want` bytes from a blocking raw fd (poll+read so loopback delivery latency doesn't race a
+// single read). Returns fewer bytes only on EOF/error/timeout.
+std::string ReadExactlyFd(int fd, size_t want) {
+    std::string out;
+    while (out.size() < want) {
+        pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};
+        if (::poll(&pfd, 1, 5000) <= 0) {
+            break;
+        }
+        char buf[256];
+        const ssize_t n = ::read(fd, buf, sizeof(buf));
+        if (n <= 0) {
+            break;
+        }
+        out.append(buf, static_cast<size_t>(n));
+    }
+    return out;
+}
+
+// A device REST authority on the (notional) device subnet, distinct from a loopback device-listener
+// endpoint: a cross-boundary "http://host:port" the proxy must replace with a reflector authority.
+IpEndpoint DeviceRest(uint8_t last_octet, uint16_t port) {
+    return {IpAddress::FromString(std::format("10.0.0.{}", last_octet)).value(), port};
+}
+
+// Extract the "http://host:port" authority from the FIRST occurrence of `header_name` (e.g.
+// "Application-URL:" / "Location:") in `message`, parsed back into an IpEndpoint — so a test can compare the
+// rewritten authority against the reflector listener rather than string-matching a port it computed by hand.
+// Mirrors the framer's own parse (scheme, then host:port up to '/'/space). nullopt if absent/unparseable.
+std::optional<IpEndpoint> ExtractUrlAuthority(std::string_view message, std::string_view header_name) {
+    const size_t name_at = message.find(header_name);
+    if (name_at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const size_t line_end = message.find("\r\n", name_at);
+    const std::string_view line =
+        message.substr(name_at, (line_end == std::string_view::npos ? message.size() : line_end) - name_at);
+    constexpr std::string_view SCHEME = "http://";
+    const size_t scheme_at = line.find(SCHEME);
+    if (scheme_at == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const size_t auth_start = scheme_at + SCHEME.size();
+    size_t auth_end = line.find_first_of("/ \t", auth_start);
+    if (auth_end == std::string_view::npos) {
+        auth_end = line.size();
+    }
+    const std::string_view authority = line.substr(auth_start, auth_end - auth_start);
+    const size_t colon = authority.rfind(':');
+    if (colon == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto addr = IpAddress::FromString(std::string{authority.substr(0, colon)});
+    if (!addr) {
+        return std::nullopt;
+    }
+    uint16_t port = 0;
+    const std::string_view port_text = authority.substr(colon + 1);
+    if (std::from_chars(port_text.data(), port_text.data() + port_text.size(), port).ec != std::errc{}) {
+        return std::nullopt;
+    }
+    return IpEndpoint{*addr, port};
+}
+
 } // namespace
+
+namespace reflector {
+
 
 // Friend fixture (the project idiom, e.g. RawSocketTest): reaches the internal EnsureRestListener, whose
 // only production funnel is the u2c rewrite.
@@ -339,67 +477,6 @@ TEST_F(DialProxyTest, PromotionRefusedWhenRestCapIsFull) {
 // TcpSocket plays the device upstream; readiness edges are driven by hand through the FakeDispatcher
 // (there is no real reactor here).
 
-namespace {
-
-// A loopback "device": a listening TcpSocket the proxy will Connect() to. Its LocalEndpoint is the
-// device endpoint handed to EnsureDiscoveryListener.
-struct FakeDevice {
-    TcpSocket listener;
-    IpEndpoint endpoint;
-
-    static FakeDevice Make() {
-        const FakeInterface loopback;  // defaults: v4 source 127.0.0.1; only read during the call
-        auto listener = TcpSocket::Listen(loopback, IpAddress::Family::V4);
-        EXPECT_TRUE(listener.has_value());
-        const auto endpoint = listener->LocalEndpoint();
-        return FakeDevice{std::move(*listener), endpoint};
-    }
-};
-
-// A raw blocking client socket that connects to the reflector listener at `authority`, so the
-// listener's accept() yields a real client fd. Returned as the connected fd (or -1 on failure); the
-// caller closes it.
-int ConnectRawClient(const IpEndpoint& authority) {
-    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return -1;
-    }
-    sockaddr_storage storage{};
-    const auto len = authority.ToSockaddr(storage);
-    if (::connect(fd, reinterpret_cast<const sockaddr*>(&storage), len) != 0) {
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-}
-
-// Block until the non-blocking upstream connect on `fd` settles (writable or error), so a manually-fired
-// writable edge sees the real completed state instead of racing the loopback handshake.
-void WaitConnectComplete(int fd) {
-    pollfd pfd{.fd = fd, .events = POLLOUT, .revents = 0};
-    ASSERT_GT(::poll(&pfd, 1, 5000), 0) << "upstream connect did not settle within 5s";
-}
-
-// Read exactly `want` bytes from the device-side socket as the forwarded request arrives (loopback
-// delivery is asynchronous from the proxy's send, so poll+read in a loop rather than racing one Read).
-std::string ReadExactly(TcpSocket& sock, size_t want) {
-    std::string out;
-    while (out.size() < want) {
-        pollfd pfd{.fd = sock.Fd(), .events = POLLIN, .revents = 0};
-        if (::poll(&pfd, 1, 5000) <= 0) {
-            break;
-        }
-        std::byte buf[256];
-        const auto got = sock.Read(std::span<std::byte>{buf, sizeof(buf)});
-        if (got.status != IoStatus::Ok) {
-            break;
-        }
-        out.append(reinterpret_cast<const char*>(buf), got.bytes);
-    }
-    return out;
-}
-
-} // namespace
 
 // 1. Accept mints a Connection and registers both fds; upstream is write-armed (connecting), the
 //    established client is not.
@@ -650,41 +727,6 @@ TEST_F(DialProxyTest, TargetInterfaceWithoutIpv4DropsTheAccept) {
 // rewrite always rewrites a request's Host to the pinned device authority; bodies and non-authority headers
 // forward verbatim. The u2c rewrites are exercised by DialProxyRewriteTest below.
 
-namespace {
-
-// Write all of `data` to a blocking raw fd; returns false if any write short-fails.
-bool WriteAllFd(int fd, std::string_view data) {
-    size_t off = 0;
-    while (off < data.size()) {
-        const ssize_t n = ::write(fd, data.data() + off, data.size() - off);
-        if (n <= 0) {
-            return false;
-        }
-        off += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-// Read exactly `want` bytes from a blocking raw fd (poll+read so loopback delivery latency doesn't race a
-// single read). Returns fewer bytes only on EOF/error/timeout.
-std::string ReadExactlyFd(int fd, size_t want) {
-    std::string out;
-    while (out.size() < want) {
-        pollfd pfd{.fd = fd, .events = POLLIN, .revents = 0};
-        if (::poll(&pfd, 1, 5000) <= 0) {
-            break;
-        }
-        char buf[256];
-        const ssize_t n = ::read(fd, buf, sizeof(buf));
-        if (n <= 0) {
-            break;
-        }
-        out.append(buf, static_cast<size_t>(n));
-    }
-    return out;
-}
-
-} // namespace
 
 // Stands up an Open connection and exposes both ends: the raw client fd (caller writes requests there), the
 // accepted device-side TcpSocket (caller writes responses there), the Connection id, and its client/upstream
@@ -1007,54 +1049,6 @@ TEST_F(DialProxyForwardTest, OverCapHeaderAbortsNotSpun) {
 // --- the real rewrites — c2u Host -> device, u2c Application-URL/Location -> a minted Rest
 // listener (or close-don't-forward on a mint failure), plus the forward-loop coverage gaps. ---
 
-namespace {
-
-// A device REST authority on the (notional) device subnet, distinct from a loopback device-listener
-// endpoint: a cross-boundary "http://host:port" the proxy must replace with a reflector authority.
-IpEndpoint DeviceRest(uint8_t last_octet, uint16_t port) {
-    return {IpAddress::FromString(std::format("10.0.0.{}", last_octet)).value(), port};
-}
-
-// Extract the "http://host:port" authority from the FIRST occurrence of `header_name` (e.g.
-// "Application-URL:" / "Location:") in `message`, parsed back into an IpEndpoint — so a test can compare the
-// rewritten authority against the reflector listener rather than string-matching a port it computed by hand.
-// Mirrors the framer's own parse (scheme, then host:port up to '/'/space). nullopt if absent/unparseable.
-std::optional<IpEndpoint> ExtractUrlAuthority(std::string_view message, std::string_view header_name) {
-    const size_t name_at = message.find(header_name);
-    if (name_at == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const size_t line_end = message.find("\r\n", name_at);
-    const std::string_view line =
-        message.substr(name_at, (line_end == std::string_view::npos ? message.size() : line_end) - name_at);
-    constexpr std::string_view SCHEME = "http://";
-    const size_t scheme_at = line.find(SCHEME);
-    if (scheme_at == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const size_t auth_start = scheme_at + SCHEME.size();
-    size_t auth_end = line.find_first_of("/ \t", auth_start);
-    if (auth_end == std::string_view::npos) {
-        auth_end = line.size();
-    }
-    const std::string_view authority = line.substr(auth_start, auth_end - auth_start);
-    const size_t colon = authority.rfind(':');
-    if (colon == std::string_view::npos) {
-        return std::nullopt;
-    }
-    const auto addr = IpAddress::FromString(std::string{authority.substr(0, colon)});
-    if (!addr) {
-        return std::nullopt;
-    }
-    uint16_t port = 0;
-    const std::string_view port_text = authority.substr(colon + 1);
-    if (std::from_chars(port_text.data(), port_text.data() + port_text.size(), port).ec != std::errc{}) {
-        return std::nullopt;
-    }
-    return IpEndpoint{*addr, port};
-}
-
-} // namespace
 
 class DialProxyRewriteTest : public DialProxyForwardTest {
 protected:

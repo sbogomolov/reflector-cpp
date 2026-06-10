@@ -16,8 +16,6 @@
 #include <string_view>
 #include <vector>
 
-namespace reflector {
-
 namespace {
 constexpr uint16_t SSDP_PORT = 1900;
 
@@ -34,6 +32,8 @@ std::string_view AsText(std::span<const std::byte> bytes) {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 } // namespace
+
+namespace reflector {
 
 class SsdpReflectorTestBase {
 protected:

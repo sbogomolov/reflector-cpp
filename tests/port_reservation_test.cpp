@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 namespace reflector {
-namespace {
 
 TEST(PortReservationTest, CreateReturnsANonZeroPort) {
     const auto reservation = PortReservation::Create(IpAddress::LoopbackV4());
@@ -87,5 +86,4 @@ TEST(PortReservationTest, CreateWorksForIpv6) {
     EXPECT_NE(reservation->Port(), 0);
 }
 
-} // namespace
 } // namespace reflector

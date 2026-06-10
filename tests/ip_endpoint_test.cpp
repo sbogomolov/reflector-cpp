@@ -8,7 +8,6 @@
 #include <sys/socket.h>
 
 namespace reflector {
-namespace {
 
 TEST(IpEndpointTest, EqualityComparesAddrAndPort) {
     const IpEndpoint a{IpAddress::LoopbackV4(), 8080};
@@ -60,5 +59,4 @@ TEST(IpEndpointTest, IsUsableAsHashKey) {
     EXPECT_TRUE(set.contains(IpEndpoint{IpAddress::LoopbackV4(), 80}));
 }
 
-} // namespace
 } // namespace reflector

@@ -14,11 +14,11 @@
 #include <string>
 #include <vector>
 
-namespace reflector {
-
 namespace {
 constexpr uint16_t MDNS_PORT = 5353;
 }
+
+namespace reflector {
 
 class MdnsReflectorTestBase {
 protected:

@@ -25,8 +25,24 @@
 
 namespace {
 
+using namespace reflector;
+
 constexpr auto WAIT_BUDGET = std::chrono::milliseconds{2000};
 constexpr auto POLL_SLICE = std::chrono::milliseconds{100};
+
+// One minimal Ethernet/IPv4/UDP frame that ParseFrame accepts and PacketFilter{} matches — for
+// tests that drive the real drain path (WriteFrame + PollOnce) and only care that a packet flows.
+std::vector<std::byte> MakeUdpFrame() {
+    const auto payload = MakeBytes({0xab});
+    FrameBuilder f;
+    f.AppendEthernet(*MacAddress::FromString("11:22:33:44:55:66"),
+        *MacAddress::FromString("aa:bb:cc:dd:ee:ff"), IPV4_ETHERTYPE);
+    f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(), IP_PROTO_UDP,
+        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
+    f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
+    f.AppendPayload(payload);
+    return f.bytes;
+}
 
 } // namespace
 
@@ -49,24 +65,6 @@ protected:
         return packet_dispatcher.capture_sources_.size();
     }
 };
-
-namespace {
-
-// One minimal Ethernet/IPv4/UDP frame that ParseFrame accepts and PacketFilter{} matches — for
-// tests that drive the real drain path (WriteFrame + PollOnce) and only care that a packet flows.
-std::vector<std::byte> MakeUdpFrame() {
-    const auto payload = MakeBytes({0xab});
-    FrameBuilder f;
-    f.AppendEthernet(*MacAddress::FromString("11:22:33:44:55:66"),
-        *MacAddress::FromString("aa:bb:cc:dd:ee:ff"), IPV4_ETHERTYPE);
-    f.AppendIPv4Header(IpAddress::FromV4Bytes(192, 0, 2, 1), IpAddress::BroadcastV4(), IP_PROTO_UDP,
-        /*total_length=*/static_cast<uint16_t>(20 + 8 + payload.size()));
-    f.AppendUdp(12345, 9, static_cast<uint16_t>(8 + payload.size()));
-    f.AppendPayload(payload);
-    return f.bytes;
-}
-
-} // namespace
 
 // Registers a second callback the first time it runs, then disables itself so subsequent
 // dispatches don't keep adding more.

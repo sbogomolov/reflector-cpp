@@ -9,8 +9,9 @@
 #include <utility>
 #include <vector>
 
-namespace reflector {
 namespace {
+
+using namespace reflector;
 
 std::vector<std::byte> Bytes(std::string_view text) {
     std::vector<std::byte> out(text.size());
@@ -24,6 +25,10 @@ constexpr size_t CAP = 64;
 // Move-assigns through two distinct references so a self-assignment call site doesn't trip -Wself-move
 // while still exercising operator='s `this != &other` guard.
 void MoveAssignInPlace(StreamBuffer& dst, StreamBuffer& src) { dst = std::move(src); }
+
+} // namespace
+
+namespace reflector {
 
 TEST(StreamBufferTest, StartsEmpty) {
     StreamBuffer buf{CAP};
@@ -215,5 +220,4 @@ TEST(StreamBufferTest, SelfMoveAssignmentIsANoOp) {
     EXPECT_EQ(std::to_integer<char>(buf.View()[2]), 'o');
 }
 
-} // namespace
 } // namespace reflector
