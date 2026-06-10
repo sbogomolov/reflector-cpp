@@ -113,7 +113,7 @@ jobs:
           cp build/reflector "dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}"
 
       - name: Upload binary artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: reflector-${{ matrix.variant }}
           path: dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}
@@ -171,7 +171,7 @@ jobs:
           touch "/tmp/digests/${DIGEST#sha256:}.digest"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: digest-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -189,7 +189,7 @@ jobs:
 
     steps:
       - name: Download digests
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-*
@@ -243,7 +243,7 @@ jobs:
 
     steps:
       - name: Download binary artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: reflector-*
