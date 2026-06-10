@@ -75,8 +75,10 @@ protected:
     // A single-family config for GetParam(), with only that family sendable on both sockets.
     MdnsReflector BuildReflector() {
         const bool v4 = GetParam() == IpAddress::Family::V4;
-        source.can_send_v4 = target.can_send_v4 = v4;
-        source.can_send_v6 = target.can_send_v6 = !v4;
+        source.iface.SetHasSource(IpAddress::Family::V4, v4);
+        target.iface.SetHasSource(IpAddress::Family::V4, v4);
+        source.iface.SetHasSource(IpAddress::Family::V6, !v4);
+        target.iface.SetHasSource(IpAddress::Family::V6, !v4);
         return MdnsReflector{packet_dispatcher, source, target,
             MakeConfig(v4 ? AddressFamily::IPv4 : AddressFamily::IPv6)};
     }
@@ -166,9 +168,10 @@ TEST_P(MdnsReflectorPerFamilyTest, DropsQueryFromTargetToSource) {
 TEST_P(MdnsReflectorPerFamilyTest, RequiredFamilyUnavailableOnSourceMakesInvalid) {
     const auto family = GetParam();
     const bool v4 = family == IpAddress::Family::V4;
-    source.can_send_v4 = !v4 ? true : false;
-    source.can_send_v6 = !v4 ? false : true;  // the required family is missing on source
-    target.can_send_v4 = target.can_send_v6 = true;
+    source.iface.SetHasSource(IpAddress::Family::V4, !v4);
+    source.iface.SetHasSource(IpAddress::Family::V6, v4);  // the required family is missing on source
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, true);
 
     const std::string output = CaptureStdout([&] {
         const MdnsReflector reflector{packet_dispatcher, source, target,
@@ -182,9 +185,10 @@ TEST_P(MdnsReflectorPerFamilyTest, RequiredFamilyUnavailableOnSourceMakesInvalid
 TEST_P(MdnsReflectorPerFamilyTest, RequiredFamilyUnavailableOnTargetMakesInvalid) {
     const auto family = GetParam();
     const bool v4 = family == IpAddress::Family::V4;
-    source.can_send_v4 = source.can_send_v6 = true;
-    target.can_send_v4 = !v4 ? true : false;
-    target.can_send_v6 = !v4 ? false : true;  // the required family is missing on target
+    source.iface.SetHasSource(IpAddress::Family::V4, true);
+    source.iface.SetHasSource(IpAddress::Family::V6, true);
+    target.iface.SetHasSource(IpAddress::Family::V4, !v4);
+    target.iface.SetHasSource(IpAddress::Family::V6, v4);  // the required family is missing on target
 
     const MdnsReflector reflector{packet_dispatcher, source, target,
         MakeConfig(v4 ? AddressFamily::IPv4 : AddressFamily::IPv6)};
@@ -232,13 +236,13 @@ TEST_F(MdnsReflectorTest, DualReflectsBothFamilies) {
 }
 
 TEST_F(MdnsReflectorTest, DualInvalidWhenSourceCannotSendAFamily) {
-    source.can_send_v6 = false;  // Dual requires v6 on both
+    source.iface.SetHasSource(IpAddress::Family::V6, false);  // Dual requires v6 on both
     const MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
     EXPECT_FALSE(reflector.IsValid());
 }
 
 TEST_F(MdnsReflectorTest, DualInvalidWhenTargetCannotSendAFamily) {
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
     const MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
     EXPECT_FALSE(reflector.IsValid());
 }
@@ -246,7 +250,7 @@ TEST_F(MdnsReflectorTest, DualInvalidWhenTargetCannotSendAFamily) {
 // Default uses both families but requires only IPv4; with IPv6 unavailable on one side it stays
 // valid over IPv4 alone (the v6 group is neither joined nor registered).
 TEST_F(MdnsReflectorTest, DefaultReflectsAvailableFamilyOnly) {
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
     const MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
 
     EXPECT_TRUE(reflector.IsValid());

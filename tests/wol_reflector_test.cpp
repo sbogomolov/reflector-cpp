@@ -67,8 +67,8 @@ protected:
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildReflector(const WolConfig& config) {
-        target.can_send_v4 = GetParam() == IpAddress::Family::V4;
-        target.can_send_v6 = GetParam() == IpAddress::Family::V6;
+        target.iface.SetHasSource(IpAddress::Family::V4, GetParam() == IpAddress::Family::V4);
+        target.iface.SetHasSource(IpAddress::Family::V6, GetParam() == IpAddress::Family::V6);
         return WolReflector{packet_dispatcher, source, target, config};
     }
 };
@@ -115,8 +115,8 @@ TEST_P(WolReflectorPerFamilyTest, DestructorUnregistersFromPacketDispatcher) {
 // fails setup, and the error names that family.
 TEST_P(WolReflectorPerFamilyTest, RequiredFamilyUnavailableMakesInvalid) {
     const auto family = GetParam();
-    target.can_send_v4 = false;
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V4, false);
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
 
     const std::string output = CaptureStdout([&] {
         const WolReflector reflector{packet_dispatcher, source, target, MakeConfig(family)};
@@ -188,8 +188,8 @@ protected:
     size_t DispatcherRegistrationCount() const { return packet_dispatcher.RegistrationCount(); }
 
     WolReflector BuildV4Reflector(const WolConfig& config) {
-        target.can_send_v4 = true;
-        target.can_send_v6 = false;
+        target.iface.SetHasSource(IpAddress::Family::V4, true);
+        target.iface.SetHasSource(IpAddress::Family::V6, false);
         return WolReflector{packet_dispatcher, source, target, config};
     }
 };
@@ -255,8 +255,8 @@ TEST_F(WolReflectorTest, IgnoresPacketOnUnconfiguredPort) {
 TEST_F(WolReflectorTest, DualModeValidWhenBothFamiliesAvailable) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = AddressFamily::Dual;
-    target.can_send_v4 = true;
-    target.can_send_v6 = true;
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, true);
 
     const WolReflector reflector{packet_dispatcher, source, target, config};
 
@@ -266,8 +266,8 @@ TEST_F(WolReflectorTest, DualModeValidWhenBothFamiliesAvailable) {
 TEST_F(WolReflectorTest, DualModeInvalidWhenAFamilyIsUnavailable) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = AddressFamily::Dual;
-    target.can_send_v4 = true;
-    target.can_send_v6 = false; // Dual requires v6 too
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, false); // Dual requires v6 too
 
     const WolReflector reflector{packet_dispatcher, source, target, config};
 
@@ -323,8 +323,8 @@ TEST_F(WolReflectorTest, ReflectedLogShowsPayloadMacInAnyMacMode) {
 // A v4-only config must drop v6 packets even when the target *can* send v6 — proving it is the
 // config's family selection, not the target's capability, that rejects them.
 TEST_F(WolReflectorTest, IgnoresPacketWithUnsupportedFamily) {
-    target.can_send_v4 = true;
-    target.can_send_v6 = true;
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, true);
     const WolReflector reflector{packet_dispatcher, source, target, MakeConfig(IpAddress::Family::V4)};
     ASSERT_TRUE(reflector.IsValid());
 
@@ -399,8 +399,8 @@ TEST_F(WolReflectorTest, IgnoresBadPrefixWhenMacIsUnspecified) {
 TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6UnavailableInDefault) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = AddressFamily::Default;
-    target.can_send_v4 = true;
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
 
     WolReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());

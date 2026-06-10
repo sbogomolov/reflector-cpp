@@ -333,14 +333,6 @@ RawSocket::~RawSocket() noexcept {
     Close();
 }
 
-bool RawSocket::CanSend(IpAddress::Family family) const noexcept {
-    return interface_.CanSend(family);
-}
-
-std::optional<IpAddress> RawSocket::SourceAddress(IpAddress::Family family) const noexcept {
-    return interface_.SourceAddress(family);
-}
-
 bool RawSocket::SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept {
     assert(!dst.addr.IsMulticast() && !dst.addr.IsBroadcast());  // use the multicast/broadcast variants

@@ -13,6 +13,8 @@
 
 namespace reflector {
 
+class Interface;
+
 // Outcome of a non-blocking read or write.
 enum class IoStatus : uint8_t {
     Ok,         // bytes were moved (IoResult::bytes > 0)
@@ -39,16 +41,22 @@ enum class SendStatus : uint8_t {
 // stores it by value). SIGPIPE-safe.
 class TcpSocket : NoCopy {
 public:
-    // Listening socket bound to `bind` (port 0 = ephemeral; read it back via LocalEndpoint). Bound to a
-    // specific address (not 0.0.0.0/::) so only that subnet can reach it. nullopt on failure.
-    [[nodiscard]] static std::optional<TcpSocket> Listen(const IpEndpoint& bind);
+    // Listening socket bound to `iface`'s source address for `family` (port 0 = ephemeral; read it
+    // back via LocalEndpoint). Deliberately a specific address (not 0.0.0.0/::) so only that subnet
+    // can reach it. `iface` is only read during the call — TcpSocket keeps no reference. nullopt if
+    // the interface has no source address for `family` or on failure.
+    [[nodiscard]] static std::optional<TcpSocket> Listen(const Interface& iface, IpAddress::Family family,
+        uint16_t port = 0);
 
-    // Begin a non-blocking connect from `bind` to `dst`, egress-pinned to interface `ifindex` (0 = no
-    // pin, e.g. loopback). The socket starts CONNECTING; completion is observed on the writable edge via
-    // FinishConnect (a failure also surfaces on the next Read as an error). `ifindex` also scopes a
-    // link-local IPv6 destination. nullopt if the connect can't be initiated.
-    [[nodiscard]] static std::optional<TcpSocket> Connect(const IpEndpoint& dst, const IpEndpoint& bind,
-        unsigned ifindex = 0);
+    // Begin a non-blocking connect to `dst`, originating from `egress_if`'s source address for
+    // dst's family and egress-pinned to that interface (nullptr = no source bind and no pin — the
+    // kernel picks, e.g. loopback; index 0 skips just the pin). The socket starts CONNECTING;
+    // completion is observed on the writable edge via FinishConnect (a failure also surfaces on the
+    // next Read as an error). `egress_if` also scopes a link-local IPv6 destination, and is only
+    // read during the call — TcpSocket keeps no reference. nullopt if the interface has no source
+    // address for dst's family or the connect can't be initiated.
+    [[nodiscard]] static std::optional<TcpSocket> Connect(const IpEndpoint& dst,
+        const Interface* egress_if = nullptr);
 
     // Accept the next pending client (non-blocking) as a new ESTABLISHED socket; nullopt on EAGAIN/error.
     [[nodiscard]] std::optional<TcpSocket> Accept() noexcept;

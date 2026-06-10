@@ -1,15 +1,14 @@
 #include "tcp_socket.h"
 
 #include "error.h"
+#include "interface.h"
 #include "logger.h"
 #include "util/fd_util.h"
 
 #include <array>
 #include <cerrno>
-#include <cstring>
 #include <format>
 #include <utility>
-#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -41,20 +40,17 @@ Logger& GetLogger() noexcept {
     return true;
 }
 
-// Pin egress to interface `ifindex` so the connect leaves via that interface even if a host route would
+// Pin egress to `egress_if` so the connect leaves via that interface even if a host route would
 // otherwise send it elsewhere (SO_BINDTODEVICE on Linux — needs CAP_NET_RAW; IP_BOUND_IF on macOS).
-[[nodiscard]] bool PinEgress(int fd, [[maybe_unused]] int family, unsigned ifindex) noexcept {
+[[nodiscard]] bool PinEgress(int fd, [[maybe_unused]] int family, const Interface& egress_if) noexcept {
 #if defined(__linux__)
-    char name[IF_NAMESIZE];
-    if (if_indextoname(ifindex, name) == nullptr) {
-        GetLogger().Error("Cannot resolve interface index {}: {}", ifindex, Error::FromErrno());
-        return false;
-    }
-    if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name, static_cast<socklen_t>(std::strlen(name))) != 0) {
+    const auto name = egress_if.Name();
+    if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name.data(), static_cast<socklen_t>(name.size())) != 0) {
         GetLogger().Error("Cannot pin egress to interface \"{}\": {}", name, Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
+    const unsigned ifindex = egress_if.Index();
     const int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
     const int optname = family == AF_INET6 ? IPV6_BOUND_IF : IP_BOUND_IF;
     if (::setsockopt(fd, level, optname, &ifindex, sizeof(ifindex)) != 0) {
@@ -125,9 +121,17 @@ void TcpSocket::Close() noexcept {
     }
 }
 
-std::optional<TcpSocket> TcpSocket::Listen(const IpEndpoint& bind) {
-    const int family = bind.addr.IsV6() ? AF_INET6 : AF_INET;
-    const int fd = ::socket(family, SOCK_STREAM, 0);
+std::optional<TcpSocket> TcpSocket::Listen(const Interface& iface, IpAddress::Family family,
+    uint16_t port) {
+    const auto address = iface.SourceAddress(family);
+    if (!address) {
+        GetLogger().Error("Cannot listen on \"{}\": the interface has no {} source address",
+            iface.Name(), family);
+        return std::nullopt;
+    }
+    const IpEndpoint bind{*address, port};
+    const int af = bind.addr.IsV6() ? AF_INET6 : AF_INET;
+    const int fd = ::socket(af, SOCK_STREAM, 0);
     if (fd < 0) {
         GetLogger().Error("Cannot create listening socket: {}", Error::FromErrno());
         return std::nullopt;
@@ -143,7 +147,7 @@ std::optional<TcpSocket> TcpSocket::Listen(const IpEndpoint& bind) {
         return std::nullopt;
     }
     sockaddr_storage addr{};
-    const socklen_t len = bind.ToSockaddr(addr);
+    const socklen_t len = bind.ToSockaddr(addr, iface.Index());
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), len) != 0
         || ::listen(fd, SOMAXCONN) != 0) {
         GetLogger().Error("Cannot bind/listen on {}: {}", bind, Error::FromErrno());
@@ -158,26 +162,42 @@ std::optional<TcpSocket> TcpSocket::Listen(const IpEndpoint& bind) {
     return TcpSocket{fd, *local, std::nullopt};  // a listener has no peer
 }
 
-std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const IpEndpoint& bind, unsigned ifindex) {
-    const int family = dst.addr.IsV6() ? AF_INET6 : AF_INET;
-    const int fd = ::socket(family, SOCK_STREAM, 0);
+std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interface* egress_if) {
+    // The connect originates from the egress interface's source address for dst's family; without
+    // an interface there is no source bind and the kernel picks (e.g. loopback).
+    std::optional<IpEndpoint> bind;
+    if (egress_if != nullptr) {
+        const auto family = dst.addr.AddressFamily();
+        const auto source = egress_if->SourceAddress(family);
+        if (!source) {
+            GetLogger().Error("Cannot connect to {}: interface \"{}\" has no {} source address",
+                dst, egress_if->Name(), family);
+            return std::nullopt;
+        }
+        bind.emplace(*source, 0);
+    }
+    const int af = dst.addr.IsV6() ? AF_INET6 : AF_INET;
+    const int fd = ::socket(af, SOCK_STREAM, 0);
     if (fd < 0) {
         GetLogger().Error("Cannot create connect socket: {}", Error::FromErrno());
         return std::nullopt;
     }
-    if (!ConfigureFd(fd) || (ifindex != 0 && !PinEgress(fd, family, ifindex))) {
+    const unsigned scope_id = egress_if != nullptr ? egress_if->Index() : 0;
+    if (!ConfigureFd(fd) || (scope_id != 0 && !PinEgress(fd, af, *egress_if))) {
         ::close(fd);
         return std::nullopt;
     }
-    sockaddr_storage src{};
-    const socklen_t src_len = bind.ToSockaddr(src, ifindex);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&src), src_len) != 0) {
-        GetLogger().Error("Cannot bind connect source to {}: {}", bind, Error::FromErrno());
-        ::close(fd);
-        return std::nullopt;
+    if (bind) {
+        sockaddr_storage src{};
+        const socklen_t src_len = bind->ToSockaddr(src, scope_id);
+        if (::bind(fd, reinterpret_cast<sockaddr*>(&src), src_len) != 0) {
+            GetLogger().Error("Cannot bind connect source to {}: {}", *bind, Error::FromErrno());
+            ::close(fd);
+            return std::nullopt;
+        }
     }
     sockaddr_storage dest{};
-    const socklen_t dest_len = dst.ToSockaddr(dest, ifindex);
+    const socklen_t dest_len = dst.ToSockaddr(dest, scope_id);
     if (::connect(fd, reinterpret_cast<sockaddr*>(&dest), dest_len) != 0 && errno != EINPROGRESS) {
         GetLogger().Error("Cannot connect to {}: {}", dst, Error::FromErrno());
         ::close(fd);

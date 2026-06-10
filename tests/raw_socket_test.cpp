@@ -444,11 +444,8 @@ TEST_F(RawSocketTest, RejectsIpv6UdpLengthExceedingIpDatagram) {
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
 }
 
-TEST_F(RawSocketTest, Ipv4SourceEnablesIpv4AndRefusesIpv6Send) {
+TEST_F(RawSocketTest, RefusesIpv6SendWithoutIpv6Source) {
     SetSource(IpAddress::FromV4Bytes(192, 0, 2, 1), std::nullopt);
-
-    EXPECT_TRUE(socket.CanSend(IpAddress::Family::V4));
-    EXPECT_FALSE(socket.CanSend(IpAddress::Family::V6));
 
     // No IPv6 source: the send path's family gate refuses before reaching any syscall. (A
     // successful V4 send needs a real raw socket — see the RequiresRoot inject tests below.)
@@ -459,29 +456,13 @@ TEST_F(RawSocketTest, Ipv4SourceEnablesIpv4AndRefusesIpv6Send) {
     });
 }
 
-TEST_F(RawSocketTest, Ipv6SourceEnablesIpv6AndRefusesIpv4Send) {
+TEST_F(RawSocketTest, RefusesIpv4SendWithoutIpv4Source) {
     SetSource(std::nullopt, *IpAddress::FromString("fe80::1"));
-
-    EXPECT_FALSE(socket.CanSend(IpAddress::Family::V4));
-    EXPECT_TRUE(socket.CanSend(IpAddress::Family::V6));
 
     const std::array payload{std::byte{0xde}, std::byte{0xad}};
     CaptureStdout([&] {
         EXPECT_FALSE(socket.SendUdpBroadcastDatagram(9, 9, payload, /*ttl=*/64));
     });
-}
-
-TEST_F(RawSocketTest, SourceAddressReportsConfiguredSourcePerFamily) {
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), std::nullopt);
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), std::nullopt);
-
-    SetSource(IpAddress::FromV4Bytes(192, 0, 2, 7), *IpAddress::FromString("fe80::1"));
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), IpAddress::FromV4Bytes(192, 0, 2, 7));
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), *IpAddress::FromString("fe80::1"));
-
-    SetSource(std::nullopt, std::nullopt);
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V4), std::nullopt);
-    EXPECT_EQ(socket.SourceAddress(IpAddress::Family::V6), std::nullopt);
 }
 
 // A non-multicast group is rejected by the kernel (EINVAL on both platforms) and surfaced as
@@ -773,11 +754,11 @@ TEST_F(RawSocketRequiresRootTest, DrainsBatchedFramesFromOneRead) {
 }
 
 TEST_F(RawSocketRequiresRootTest, ResolvesInterfaceIndexAndAddresses) {
-    EXPECT_NE(socket->InterfaceIndex(), 0u);
+    EXPECT_NE(socket->GetInterface().Index(), 0u);
     // Loopback always has 127.0.0.1, so the v4 source resolves and survives a refresh.
-    EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
+    EXPECT_TRUE(socket->GetInterface().CanSend(IpAddress::Family::V4));
     iface.Refresh();
-    EXPECT_TRUE(socket->CanSend(IpAddress::Family::V4));
+    EXPECT_TRUE(socket->GetInterface().CanSend(IpAddress::Family::V4));
 }
 
 // Injects on the real loopback socket and asserts the kernel accepted the frame for transmission:
@@ -907,7 +888,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPee
     Interface inject_iface{pair.InjectInterface()};
     RawSocket injector{inject_iface};
     ASSERT_TRUE(injector.IsValid());
-    ASSERT_TRUE(injector.CanSend(IpAddress::Family::V4));
+    ASSERT_TRUE(inject_iface.CanSend(IpAddress::Family::V4));
     Interface receive_iface{pair.ReceiveInterface()};
     RawSocket peer{receive_iface};
     ASSERT_TRUE(peer.IsValid());
@@ -928,7 +909,7 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
     RawSocket injector{inject_iface};
     ASSERT_TRUE(injector.IsValid());
     WaitForSource(inject_iface, IpAddress::Family::V6);
-    ASSERT_TRUE(injector.CanSend(IpAddress::Family::V6)) << "no usable IPv6 source after DAD";
+    ASSERT_TRUE(inject_iface.CanSend(IpAddress::Family::V6)) << "no usable IPv6 source after DAD";
 
     // The join needs the peer's link-local to be DAD-complete.
     ASSERT_TRUE(WaitForReceiverLinkLocal()) << "receive interface never got an IPv6 link-local";

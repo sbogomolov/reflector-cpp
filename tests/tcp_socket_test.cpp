@@ -1,7 +1,8 @@
 #include "reflector/tcp_socket.h"
 
+#include "mocks/fake_interface.h"
+#include "reflector/interface.h"
 #include "reflector/ip_address.h"
-#include "reflector/ip_endpoint.h"
 #include "test_helpers.h"
 
 #include <gtest/gtest.h>
@@ -17,7 +18,6 @@
 #include <utility>
 #include <vector>
 #include <fcntl.h>
-#include <net/if.h>
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -45,6 +45,9 @@ void MoveAssignInPlace(TcpSocket& dst, TcpSocket& src) { dst = std::move(src); }
 
 class TcpSocketFamilyTest : public ::testing::TestWithParam<IpAddress::Family> {
 protected:
+    // Defaults to loopback sources for both families, so Listen(iface, GetParam()) binds loopback.
+    FakeInterface iface;
+
     IpAddress Loopback() const {
         return GetParam() == IpAddress::Family::V6 ? IpAddress::LoopbackV6() : IpAddress::LoopbackV4();
     }
@@ -56,12 +59,12 @@ protected:
 
     // Listen / Connect / Accept / FinishConnect on loopback, returning the established client+server.
     std::optional<Pair> EstablishedPair() {
-        auto listener = TcpSocket::Listen({Loopback(), 0});
+        auto listener = TcpSocket::Listen(iface, GetParam());
         if (!listener) {
             return std::nullopt;
         }
         const auto& local = listener->LocalEndpoint();
-        auto client = TcpSocket::Connect(local, {Loopback(), 0});
+        auto client = TcpSocket::Connect(local);
         if (!client || !WaitReadable(listener->Fd())) {
             return std::nullopt;
         }
@@ -78,7 +81,7 @@ INSTANTIATE_TEST_SUITE_P(Families, TcpSocketFamilyTest,
     [](const auto& family_info) { return family_info.param == IpAddress::Family::V6 ? "V6" : "V4"; });
 
 TEST_P(TcpSocketFamilyTest, ListenAssignsAnEphemeralPort) {
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     const auto& local = listener->LocalEndpoint();
     EXPECT_EQ(local.addr, Loopback());
@@ -86,8 +89,29 @@ TEST_P(TcpSocketFamilyTest, ListenAssignsAnEphemeralPort) {
     EXPECT_FALSE(listener->PeerEndpoint().has_value());  // a listener has no connected peer
 }
 
+TEST_P(TcpSocketFamilyTest, ListenBindsTheRequestedPort) {
+    // Find a free port by binding ephemeral first; the probe is closed before the explicit bind,
+    // and SO_REUSEADDR covers the lingering TIME_WAIT state (same pattern as the refused-connect
+    // test below).
+    auto probe = TcpSocket::Listen(iface, GetParam());
+    ASSERT_TRUE(probe.has_value());
+    const uint16_t port = probe->LocalEndpoint().port;
+    probe->Close();
+
+    auto listener = TcpSocket::Listen(iface, GetParam(), port);
+    ASSERT_TRUE(listener.has_value());
+    EXPECT_EQ(listener->LocalEndpoint().port, port);
+}
+
+TEST_P(TcpSocketFamilyTest, ListenWithoutSourceAddressFails) {
+    const FakeInterface empty{"empty0", 0, {}};  // no source address for either family
+    CaptureStdout([&] {  // swallow the expected "no source address" error; nullopt is the contract
+        EXPECT_FALSE(TcpSocket::Listen(empty, GetParam()).has_value());
+    });
+}
+
 TEST_P(TcpSocketFamilyTest, MoveTransfersTheFdAndInvalidatesTheSource) {
-    auto opened = TcpSocket::Listen({Loopback(), 0});
+    auto opened = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(opened.has_value());
     TcpSocket listener = std::move(*opened);
     const int fd = listener.Fd();
@@ -100,11 +124,11 @@ TEST_P(TcpSocketFamilyTest, MoveTransfersTheFdAndInvalidatesTheSource) {
 }
 
 TEST_P(TcpSocketFamilyTest, MoveConstructionTransfersConnectingState) {
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     const auto& local = listener->LocalEndpoint();
 
-    auto client = TcpSocket::Connect(local, {Loopback(), 0});
+    auto client = TcpSocket::Connect(local);
     ASSERT_TRUE(client.has_value());
     ASSERT_TRUE(client->IsConnecting());
 
@@ -115,8 +139,8 @@ TEST_P(TcpSocketFamilyTest, MoveConstructionTransfersConnectingState) {
 }
 
 TEST_P(TcpSocketFamilyTest, MoveAssignmentTransfersFdAndClosesDestination) {
-    auto dst = TcpSocket::Listen({Loopback(), 0});
-    auto src = TcpSocket::Listen({Loopback(), 0});
+    auto dst = TcpSocket::Listen(iface, GetParam());
+    auto src = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(dst.has_value() && src.has_value());
     const int dst_old_fd = dst->Fd();
     const int src_fd = src->Fd();
@@ -131,7 +155,7 @@ TEST_P(TcpSocketFamilyTest, MoveAssignmentTransfersFdAndClosesDestination) {
 }
 
 TEST_P(TcpSocketFamilyTest, SelfMoveAssignmentIsANoOp) {
-    auto sock = TcpSocket::Listen({Loopback(), 0});
+    auto sock = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(sock.has_value());
     const int fd = sock->Fd();
 
@@ -142,11 +166,11 @@ TEST_P(TcpSocketFamilyTest, SelfMoveAssignmentIsANoOp) {
 }
 
 TEST_P(TcpSocketFamilyTest, ConnectStartsConnectingThenFinishConnectEstablishes) {
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     const auto& local = listener->LocalEndpoint();
 
-    auto client = TcpSocket::Connect(local, {Loopback(), 0});
+    auto client = TcpSocket::Connect(local);
     ASSERT_TRUE(client.has_value());
     EXPECT_TRUE(client->IsConnecting());  // the CONNECTING start, asserted directly (not laundered through a helper)
     EXPECT_TRUE(client->WantsWrite());    // connecting wants the writable edge
@@ -195,7 +219,7 @@ TEST_P(TcpSocketFamilyTest, ShutdownSendsFinButKeepsTheFdOpen) {
 }
 
 TEST_P(TcpSocketFamilyTest, ShutdownOnAnUnconnectedSocketIsHarmless) {
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     listener->Shutdown();  // ENOTCONN on a never-connected socket -> best-effort no-op, fd still valid
     EXPECT_TRUE(listener->IsValid());
@@ -531,7 +555,7 @@ TEST_P(TcpSocketFamilyTest, ScatterSendBeyondCapAborts) {
 }
 
 TEST_P(TcpSocketFamilyTest, AcceptWithNoPendingConnectionReturnsNullopt) {
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     EXPECT_FALSE(listener->Accept().has_value());  // EAGAIN on a non-blocking listener — not an error
 }
@@ -550,14 +574,14 @@ TEST_P(TcpSocketFamilyTest, PeerEndpointMatchesTheOtherSidesLocalEndpoint) {
 
 TEST_P(TcpSocketFamilyTest, ConnectToARefusedPortFails) {
     // Bind then close a listener to obtain a loopback port with nothing listening on it.
-    auto listener = TcpSocket::Listen({Loopback(), 0});
+    auto listener = TcpSocket::Listen(iface, GetParam());
     ASSERT_TRUE(listener.has_value());
     const auto dead = listener->LocalEndpoint();
     listener->Close();
 
     // The refusal surfaces either synchronously (Connect -> nullopt, common on loopback) or, if the
     // connect started, on the writable edge as FinishConnect -> Error with connecting_ left set.
-    auto client = TcpSocket::Connect(dead, {Loopback(), 0});
+    auto client = TcpSocket::Connect(dead);
     if (!client) {
         SUCCEED() << "refused synchronously at connect()";
         return;
@@ -595,16 +619,16 @@ protected:
 };
 
 TEST_F(TcpSocketRequiresRootTest, EgressPinnedConnectReachesLoopback) {
-    const unsigned ifindex = if_nametoindex(std::string(LoopbackInterface()).c_str());
-    ASSERT_NE(ifindex, 0u);
+    const Interface loopback{LoopbackInterface()};
+    ASSERT_TRUE(loopback.IsValid());
 
-    auto listener = TcpSocket::Listen({IpAddress::LoopbackV4(), 0});
+    auto listener = TcpSocket::Listen(loopback, IpAddress::Family::V4);
     ASSERT_TRUE(listener.has_value());
     const auto& local = listener->LocalEndpoint();
 
-    // ifindex != 0 exercises PinEgress (SO_BINDTODEVICE / IP_BOUND_IF); pinned to lo, the loopback
-    // connect still completes.
-    auto client = TcpSocket::Connect(local, {IpAddress::LoopbackV4(), 0}, ifindex);
+    // A nonzero-index interface exercises PinEgress (SO_BINDTODEVICE / IP_BOUND_IF); pinned to lo,
+    // the loopback connect still completes.
+    auto client = TcpSocket::Connect(local, &loopback);
     ASSERT_TRUE(client.has_value());
 
     ASSERT_TRUE(WaitReadable(listener->Fd()));

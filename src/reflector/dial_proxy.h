@@ -3,7 +3,6 @@
 #include "dispatcher.h"
 #include "http_message.h"
 #include "ip_endpoint.h"
-#include "link_socket.h"
 #include "logger.h"
 #include "tcp_socket.h"
 #include "timer.h"
@@ -18,6 +17,8 @@
 #include <unordered_map>
 
 namespace reflector {
+
+class Interface;
 
 // The DIAL (DIscovery And Launch) application proxy. A DIAL-capable device (a smart TV) restricts
 // its description/REST endpoints to its own subnet; this proxy mints a per-device TCP listener on the
@@ -69,9 +70,10 @@ public:
     static constexpr size_t MAX_DISCOVERY_LISTENERS = 32;
 
     // Borrows the dispatcher (reached via PacketDispatcher::UnderlyingDispatcher(), as the SSDP eviction
-    // timer does) and the source/target interface sockets it binds/connects from. The sockets and the
+    // timer does) and the source/target interfaces it binds/connects from. The interfaces and the
     // dispatcher must outlive this proxy. DIAL is IPv4-only.
-    DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if, std::string logger_name);
+    DialProxy(Dispatcher& dispatcher, const Interface& source_if, const Interface& target_if,
+        std::string logger_name);
 
     // Find-or-create a Discovery listener for a device's description endpoint; returns the reflector
     // authority (source_if-addr:listener-port) to advertise in the rewritten LOCATION, or nullopt on a
@@ -188,8 +190,8 @@ private:
 
     Logger logger_;  // "DialProxy:{name}:{src}->{tgt}" — passed in by SsdpReflector
     Dispatcher& dispatcher_;
-    LinkSocket& source_if_;
-    LinkSocket& target_if_;
+    const Interface& source_if_;
+    const Interface& target_if_;
 
     // Keyed by the device endpoint via std::hash<IpEndpoint>. Node-stable so a FindEndpointByListenerFd
     // result stays valid across an unrelated mint, and so OnAccept can re-enter EnsureRestListener (which

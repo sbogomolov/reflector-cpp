@@ -4,7 +4,7 @@
 #include "reflector/tcp_socket.h"
 #include "reflector/util/stream_buffer.h"
 #include "mocks/fake_dispatcher.h"
-#include "mocks/fake_link_socket.h"
+#include "mocks/fake_interface.h"
 #include "test_helpers.h"
 
 #include <gtest/gtest.h>
@@ -44,8 +44,8 @@ IpEndpoint Device(uint8_t last_octet, uint16_t port = 8008) {
 class DialProxyTest : public ::testing::Test {
 protected:
     FakeDispatcher dispatcher;
-    FakeLinkSocket source_if;  // source_v4 defaults to 127.0.0.1, so listeners bind loopback
-    FakeLinkSocket target_if;
+    FakeInterface source_if;  // the v4 source defaults to 127.0.0.1, so listeners bind loopback
+    FakeInterface target_if;
 
     DialProxy MakeProxy() { return DialProxy{dispatcher, source_if, target_if, "DialProxy:test"}; }
 
@@ -192,7 +192,7 @@ TEST_F(DialProxyTest, DistinctDevicesGetDistinctListeners) {
 }
 
 TEST_F(DialProxyTest, NulloptSourceAddressYieldsNoListener) {
-    source_if.source_v4 = std::nullopt;  // the source interface has no IPv4 address to bind
+    source_if.SetV4(std::nullopt);  // the source interface has no IPv4 address to bind
     auto proxy = MakeProxy();
 
     const auto authority = proxy.EnsureDiscoveryListener(Device(2));
@@ -285,10 +285,12 @@ TEST_F(DialProxyTest, BindAddressFlowsFromTheSourceInterface) {
     // (127.0.0.2) catches a LoopbackV4-hardcoded mint. Not every platform routes all of 127/8 to lo (macOS
     // assigns only 127.0.0.1), so skip where it can't bind — the docker (Linux) gate still exercises this.
     const auto alt = IpAddress::FromString("127.0.0.2").value();
-    if (!TcpSocket::Listen({alt, 0})) {
+    FakeInterface alt_if;
+    alt_if.SetV4(alt);
+    if (!TcpSocket::Listen(alt_if, IpAddress::Family::V4)) {
         GTEST_SKIP() << "127.0.0.2 is not bindable on this platform";
     }
-    source_if.source_v4 = alt;
+    source_if.SetV4(alt);
     auto proxy = MakeProxy();
 
     const auto authority = proxy.EnsureDiscoveryListener(Device(2));
@@ -332,8 +334,8 @@ TEST_F(DialProxyTest, PromotionRefusedWhenRestCapIsFull) {
 
 // --- accept -> egress-pinned connect -> the unified write handler ---
 //
-// These cases run UNPRIVILEGED: target_if.interface_index stays 0 so Connect adds no egress pin
-// (loopback needs none), and source_if/target_if default source_v4 = 127.0.0.1. A real loopback
+// These cases run UNPRIVILEGED: target_if's index stays 0 so Connect adds no egress pin
+// (loopback needs none), and source_if/target_if default their v4 source to 127.0.0.1. A real loopback
 // TcpSocket plays the device upstream; readiness edges are driven by hand through the FakeDispatcher
 // (there is no real reactor here).
 
@@ -346,7 +348,8 @@ struct FakeDevice {
     IpEndpoint endpoint;
 
     static FakeDevice Make() {
-        auto listener = TcpSocket::Listen({IpAddress::LoopbackV4(), 0});
+        const FakeInterface loopback;  // defaults: v4 source 127.0.0.1; only read during the call
+        auto listener = TcpSocket::Listen(loopback, IpAddress::Family::V4);
         EXPECT_TRUE(listener.has_value());
         const auto endpoint = listener->LocalEndpoint();
         return FakeDevice{std::move(*listener), endpoint};
@@ -535,7 +538,8 @@ TEST_F(DialProxyTest, ConnectFailureTearsDownTheConnection) {
     // Bind a loopback port then drop the listener so the port has nothing listening: the proxy's
     // connect to it is refused, surfacing on the writable edge (FinishConnect -> Error).
     const auto dead_endpoint = [] {
-        auto probe = TcpSocket::Listen({IpAddress::LoopbackV4(), 0});
+        const FakeInterface loopback;
+        auto probe = TcpSocket::Listen(loopback, IpAddress::Family::V4);
         EXPECT_TRUE(probe.has_value());
         return probe->LocalEndpoint();
     }();  // probe closed: the port is now refusing
@@ -631,7 +635,7 @@ TEST_F(DialProxyTest, TargetInterfaceWithoutIpv4DropsTheAccept) {
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
 
-    target_if.source_v4 = std::nullopt;  // the target interface lost its IPv4 address
+    target_if.SetV4(std::nullopt);  // the target interface lost its IPv4 address
     dispatcher.FireReadable(listener_fd);
 
     EXPECT_EQ(ConnectionCount(proxy), 0u);                            // no Connection minted
@@ -1737,7 +1741,7 @@ TEST_F(DialProxyForwardTest, AbortDefersRefcountReleaseUntilReap) {
 // inserts nothing — no endpoint, no registration, and the eviction timer (a later hook) never starts.
 TEST_F(DialProxyTest, ListenFailureLeavesNothingBehind) {
     auto proxy = MakeProxy();
-    source_if.source_v4 = IpAddress::FromString("192.0.2.1");  // TEST-NET-1: not a local addr -> bind fails
+    source_if.SetV4(IpAddress::FromString("192.0.2.1"));  // TEST-NET-1: not a local addr -> bind fails
     const auto dev = Device(80);
 
     const auto authority = proxy.EnsureDiscoveryListener(dev);
@@ -1770,7 +1774,7 @@ TEST_F(DialProxyTest, ListenerRegisterFailureRollsBackTheEndpoint) {
 TEST_F(DialProxyForwardTest, UpstreamConnectStartFailureDropsTheAccept) {
     auto device = FakeDevice::Make();
     auto proxy = MakeProxy();
-    target_if.source_v4 = IpAddress::FromString("192.0.2.1");  // unbindable connect source -> Connect nullopt
+    target_if.SetV4(IpAddress::FromString("192.0.2.1"));  // unbindable connect source -> Connect nullopt
     const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
     ASSERT_TRUE(authority.has_value());  // the listener (source_if) is fine; only the upstream bind fails
     const int listener_fd = ListenerFd(proxy, device.endpoint);

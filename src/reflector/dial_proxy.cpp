@@ -1,5 +1,6 @@
 #include "dial_proxy.h"
 
+#include "interface.h"
 #include "ip_address.h"
 #include "logger.h"
 #include "util/delegate.h"
@@ -14,7 +15,8 @@
 
 namespace reflector {
 
-DialProxy::DialProxy(Dispatcher& dispatcher, LinkSocket& source_if, LinkSocket& target_if, std::string logger_name)
+DialProxy::DialProxy(Dispatcher& dispatcher, const Interface& source_if, const Interface& target_if,
+    std::string logger_name)
         : logger_{std::move(logger_name)}
         , dispatcher_{dispatcher}
         , source_if_{source_if}
@@ -60,15 +62,9 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         return std::nullopt;
     }
 
-    const auto source_address = source_if_.SourceAddress(IpAddress::Family::V4);
-    if (!source_address) {
-        logger_.Error("Cannot proxy {}: source interface has no IPv4 address", device);
-        return std::nullopt;
-    }
-
-    auto listener = TcpSocket::Listen({*source_address, 0});
+    auto listener = TcpSocket::Listen(source_if_, IpAddress::Family::V4);
     if (!listener) {
-        logger_.Error("Cannot proxy {}: failed to open a listener on {}", device, *source_address);
+        logger_.Error("Cannot proxy {}: failed to open a listener", device);  // Listen logged the cause
         return std::nullopt;
     }
     const auto authority = listener->LocalEndpoint();
@@ -277,12 +273,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 
-    const auto bind = target_if_.SourceAddress(IpAddress::Family::V4);
-    if (!bind) {
-        logger_.Error("Dropping accept for {}: target interface has no IPv4 address", ep->device);
-        return;
-    }
-    auto upstream = TcpSocket::Connect(ep->device, {*bind, 0}, target_if_.InterfaceIndex());
+    auto upstream = TcpSocket::Connect(ep->device, &target_if_);
     if (!upstream) {
         logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;

@@ -17,13 +17,17 @@ namespace reflector {
 
 // Combined LinkSocket fake standing in for a per-interface socket on both sides, so reflector and
 // wiring logic run with no real fd or injected frame. Receive() never yields — packets are pushed
-// through a FakePacketDispatcher instead. CanSend is configurable per family; the Send* methods
-// record their arguments (or fail when `fail_send` is set, to drive the send-failure branch).
-// The fake owns its Interface (a production socket borrows an Application-owned one); tests
-// reach it via `iface` to set addresses or count refreshes, and stamp an index through the ctor.
+// through a FakePacketDispatcher instead. The Send* methods record their arguments (or fail when
+// `fail_send` is set, to drive the send-failure branch). The fake owns its Interface (a production
+// socket borrows an Application-owned one); tests reach it via `iface` to set addresses or count
+// refreshes, and stamp an index through the ctor.
 struct FakeLinkSocket : LinkSocket {
     explicit FakeLinkSocket(std::string_view name = "fake0", unsigned index = 0)
             : iface{name, index} {}
+
+    // Borrowing ctor: GetInterface() returns `borrowed_interface` instead of the owned `iface`,
+    // mirroring how a production socket borrows an Application-owned Interface.
+    explicit FakeLinkSocket(const Interface& borrowed_interface) : borrowed{&borrowed_interface} {}
 
     // A recorded send. Multicast/broadcast derive the L2 destination from dst_ip, so dst_mac stays
     // nullopt (we deliberately don't recompute it here); a unicast send carries its explicit dst MAC.
@@ -43,10 +47,6 @@ struct FakeLinkSocket : LinkSocket {
     [[nodiscard]] bool HasBufferedData() const noexcept override { return false; }
     void ClearBuffer() noexcept override {}
 #endif
-
-    [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept override {
-        return family == IpAddress::Family::V4 ? can_send_v4 : can_send_v6;
-    }
 
     [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept override {
@@ -71,23 +71,16 @@ struct FakeLinkSocket : LinkSocket {
         return true;
     }
 
-    [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept override {
-        return family == IpAddress::Family::V4 ? source_v4 : source_v6;
+    [[nodiscard]] const Interface& GetInterface() const noexcept override {
+        return borrowed != nullptr ? *borrowed : iface;
     }
 
-    [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_index; }
-    [[nodiscard]] const Interface& GetInterface() const noexcept override { return iface; }
-
-    FakeInterface iface;
+    FakeInterface iface;  // the owned identity; ignored when `borrowed` is set
+    const Interface* borrowed = nullptr;
     bool valid = true;
     int fd = -1;
-    bool can_send_v4 = true;
-    bool can_send_v6 = true;
     bool fail_send = false;
     bool fail_join = false;
-    unsigned interface_index = 0;
-    std::optional<IpAddress> source_v4 = IpAddress::LoopbackV4();
-    std::optional<IpAddress> source_v6 = IpAddress::LoopbackV6();
     std::vector<Sent> sent;                  // every send; dst_mac engaged only for unicast
     std::vector<IpAddress> joined_groups;
 

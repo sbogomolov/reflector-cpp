@@ -1,5 +1,6 @@
 #include "mdns_reflector.h"
 
+#include "interface.h"
 #include "mdns_message.h"
 #include "util/delegate.h"
 
@@ -42,7 +43,8 @@ void MdnsReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
     // mDNS is bidirectional, so a handled family must be sendable on BOTH interfaces: the target
     // re-emits relayed queries, the source re-emits relayed responses.
     const auto reflectable = [&](IpAddress::Family family) {
-        return source_socket.CanSend(family) && target_socket.CanSend(family);
+        return source_socket.GetInterface().CanSend(family)
+            && target_socket.GetInterface().CanSend(family);
     };
 
     if (config.RequiresIPv4() && !reflectable(IpAddress::Family::V4)) {

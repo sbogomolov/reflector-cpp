@@ -117,13 +117,10 @@ private:
         return [this](const Interface& interface) -> std::unique_ptr<LinkSocket> {
             ++factory_calls_;
             const std::string name{interface.Name()};
-            auto socket = std::make_unique<FakeLinkSocket>();
+            auto socket = std::make_unique<FakeLinkSocket>(interface);
             const auto it = socket_configs_.find(name);
             const SocketConfig config = it == socket_configs_.end() ? SocketConfig{} : it->second;
             socket->valid = config.valid;
-            socket->can_send_v4 = config.can_send_v4;
-            socket->can_send_v6 = config.can_send_v6;
-            socket->interface_index = config.interface_index;
             socket->fd = next_fd_++;
             created_sockets_.insert_or_assign(name, socket.get());
             return socket;
@@ -138,6 +135,8 @@ private:
                 : config.interface_index != 0               ? config.interface_index
                                                             : next_interface_index_++;
             auto iface = std::make_unique<FakeInterface>(name, index);
+            iface->SetHasSource(IpAddress::Family::V4, config.can_send_v4);
+            iface->SetHasSource(IpAddress::Family::V6, config.can_send_v6);
             created_interfaces_.insert_or_assign(std::string{name}, iface.get());
             return iface;
         };

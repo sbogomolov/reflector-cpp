@@ -42,15 +42,11 @@ public:
 
     // --- send side: a reflector emits reflected datagrams through this ---
 
-    // True if this socket can originate a datagram of `family` (e.g. the bound interface has a
-    // source address of that family). Gate the Send* calls on it.
-    [[nodiscard]] virtual bool CanSend(IpAddress::Family family) const noexcept = 0;
-
     // Sends a UDP datagram to an explicit unicast L2 destination `dst_mac` — the egress path does no
     // ARP/ND, so the caller supplies the peer's MAC (e.g. an SSDP searcher whose frame we captured).
     // Originates from this interface's own source address; `dst.addr` must be unicast. Returns false
-    // (after logging) on failure; the result is unspecified when !CanSend(dst.addr.AddressFamily()),
-    // so gate with CanSend first.
+    // (after logging) on failure; the result is unspecified when the interface has no source address
+    // of the datagram's family, so gate with GetInterface().CanSend(family) first.
     [[nodiscard]] virtual bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
@@ -70,17 +66,10 @@ public:
     // (after logging) on failure.
     [[nodiscard]] virtual bool JoinMulticastGroup(const IpAddress& group) noexcept = 0;
 
-    // The Interface this socket captures on / injects through. The socket borrows it for its
-    // lifetime; the (Application-owned) interface outlives the socket.
+    // The Interface this socket captures on / injects through — its source addresses are what the
+    // Send* calls originate from. The socket borrows it for its lifetime; the (Application-owned)
+    // interface outlives the socket.
     [[nodiscard]] virtual const Interface& GetInterface() const noexcept = 0;
-
-    // The interface's source address for `family` — the address the Send* calls originate from, and
-    // the destination a unicast reply to a relayed datagram of that family is sent to. nullopt if the
-    // interface has none (then CanSend(family) is also false). IPv6 returns the link-local address.
-    [[nodiscard]] virtual std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept = 0;
-
-    // The interface's kernel index (0 if unknown).
-    [[nodiscard]] virtual unsigned InterfaceIndex() const noexcept = 0;
 };
 
 } // namespace reflector

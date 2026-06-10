@@ -1,4 +1,6 @@
 #include "wol_reflector.h"
+
+#include "interface.h"
 #include "util/delegate.h"
 
 #include <cstring>
@@ -36,19 +38,20 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
 }
 
 void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket, const WolConfig& config) {
-    if (config.RequiresIPv4() && !target_socket_.CanSend(IpAddress::Family::V4)) {
+    const auto& target_interface = target_socket_.GetInterface();
+    if (config.RequiresIPv4() && !target_interface.CanSend(IpAddress::Family::V4)) {
         logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv4",
             config.name, config.target_if);
         return;
     }
-    if (config.RequiresIPv6() && !target_socket_.CanSend(IpAddress::Family::V6)) {
+    if (config.RequiresIPv6() && !target_interface.CanSend(IpAddress::Family::V6)) {
         logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv6",
             config.name, config.target_if);
         return;
     }
 
-    reflects_v4_ = config.UsesIPv4() && target_socket_.CanSend(IpAddress::Family::V4);
-    reflects_v6_ = config.UsesIPv6() && target_socket_.CanSend(IpAddress::Family::V6);
+    reflects_v4_ = config.UsesIPv4() && target_interface.CanSend(IpAddress::Family::V4);
+    reflects_v6_ = config.UsesIPv6() && target_interface.CanSend(IpAddress::Family::V6);
 
     target_mac_ = config.mac;
     std::fill_n(expected_magic_packet_.begin(), PREFIX_SIZE, std::byte{0xff});

@@ -20,6 +20,15 @@ public:
     void SetV4(std::optional<IpAddress> v4) noexcept { addresses_.v4 = std::move(v4); }
     void SetV6(std::optional<IpAddress> v6) noexcept { addresses_.v6 = std::move(v6); }
 
+    // Capability shorthand: a present (loopback) or absent source address for `family`.
+    void SetHasSource(IpAddress::Family family, bool has) noexcept {
+        if (family == IpAddress::Family::V4) {
+            addresses_.v4 = has ? std::optional{IpAddress::LoopbackV4()} : std::nullopt;
+        } else {
+            addresses_.v6 = has ? std::optional{IpAddress::LoopbackV6()} : std::nullopt;
+        }
+    }
+
     void Refresh() noexcept override { ++refresh_count; }
 
     unsigned refresh_count = 0;

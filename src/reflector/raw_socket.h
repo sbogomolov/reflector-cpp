@@ -55,15 +55,6 @@ public:
     [[nodiscard]] int Fd() const noexcept override { return fd_.Get(); }
 
     [[nodiscard]] const Interface& GetInterface() const noexcept override { return interface_; }
-    [[nodiscard]] unsigned InterfaceIndex() const noexcept override { return interface_.Index(); }
-
-    // True if the interface has a usable source address for `family`. The raw egress path and
-    // the reflectors' family gating consult this instead of probing.
-    [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept override;
-
-    // The interface's source address for `family` (the one the Send* calls originate from),
-    // or nullopt if it has none. IPv6 returns the link-local address.
-    [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept override;
 
     // Injects a UDP datagram out this interface as a raw L2 frame, building the Ethernet/IP/UDP
     // headers and checksums from the interface's cached source MAC/IP and writing the frame to the

@@ -116,8 +116,10 @@ protected:
 
     SsdpReflector BuildReflector() {
         const bool v4 = GetParam() == IpAddress::Family::V4;
-        source.can_send_v4 = target.can_send_v4 = v4;
-        source.can_send_v6 = target.can_send_v6 = !v4;
+        source.iface.SetHasSource(IpAddress::Family::V4, v4);
+        target.iface.SetHasSource(IpAddress::Family::V4, v4);
+        source.iface.SetHasSource(IpAddress::Family::V6, !v4);
+        target.iface.SetHasSource(IpAddress::Family::V6, !v4);
         return SsdpReflector{packet_dispatcher, source, target,
             MakeConfig(v4 ? AddressFamily::IPv4 : AddressFamily::IPv6)};
     }
@@ -211,9 +213,10 @@ TEST_P(SsdpReflectorPerFamilyTest, DropsSearchFromTargetToSource) {
 TEST_P(SsdpReflectorPerFamilyTest, RequiredFamilyUnavailableOnSourceMakesInvalid) {
     const auto family = GetParam();
     const bool v4 = family == IpAddress::Family::V4;
-    source.can_send_v4 = !v4 ? true : false;
-    source.can_send_v6 = !v4 ? false : true;  // the required family is missing on source
-    target.can_send_v4 = target.can_send_v6 = true;
+    source.iface.SetHasSource(IpAddress::Family::V4, !v4);
+    source.iface.SetHasSource(IpAddress::Family::V6, v4);  // the required family is missing on source
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, true);
 
     const std::string output = CaptureStdout([&] {
         const SsdpReflector reflector{packet_dispatcher, source, target,
@@ -227,9 +230,10 @@ TEST_P(SsdpReflectorPerFamilyTest, RequiredFamilyUnavailableOnSourceMakesInvalid
 TEST_P(SsdpReflectorPerFamilyTest, RequiredFamilyUnavailableOnTargetMakesInvalid) {
     const auto family = GetParam();
     const bool v4 = family == IpAddress::Family::V4;
-    source.can_send_v4 = source.can_send_v6 = true;
-    target.can_send_v4 = !v4 ? true : false;
-    target.can_send_v6 = !v4 ? false : true;  // the required family is missing on target
+    source.iface.SetHasSource(IpAddress::Family::V4, true);
+    source.iface.SetHasSource(IpAddress::Family::V6, true);
+    target.iface.SetHasSource(IpAddress::Family::V4, !v4);
+    target.iface.SetHasSource(IpAddress::Family::V6, v4);  // the required family is missing on target
 
     const SsdpReflector reflector{packet_dispatcher, source, target,
         MakeConfig(v4 ? AddressFamily::IPv4 : AddressFamily::IPv6)};
@@ -278,13 +282,13 @@ TEST_F(SsdpReflectorTest, DualReflectsBothFamilies) {
 }
 
 TEST_F(SsdpReflectorTest, DualInvalidWhenSourceCannotSendAFamily) {
-    source.can_send_v6 = false;  // Dual requires v6 on both
+    source.iface.SetHasSource(IpAddress::Family::V6, false);  // Dual requires v6 on both
     const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
     EXPECT_FALSE(reflector.IsValid());
 }
 
 TEST_F(SsdpReflectorTest, DualInvalidWhenTargetCannotSendAFamily) {
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
     const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
     EXPECT_FALSE(reflector.IsValid());
 }
@@ -292,7 +296,7 @@ TEST_F(SsdpReflectorTest, DualInvalidWhenTargetCannotSendAFamily) {
 // Default uses both families but requires only IPv4; with IPv6 unavailable on one side it stays
 // valid over IPv4 alone (the v6 groups are neither joined nor registered).
 TEST_F(SsdpReflectorTest, DefaultReflectsAvailableFamilyOnly) {
-    target.can_send_v6 = false;
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
     const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
 
     EXPECT_TRUE(reflector.IsValid());
@@ -431,7 +435,7 @@ TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
     const size_t base = RegistrationCount();
-    target.source_v4 = std::nullopt;  // e.g. the interface's v4 address vanished after construction
+    target.iface.SetV4(std::nullopt);  // e.g. the interface's v4 address vanished after construction
 
     const std::string output = CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
@@ -472,7 +476,7 @@ TEST_F(SsdpReflectorTest, ReflectsUnicastResponseBackToSearcher) {
     Packet reply{
         .header = PacketHeader{
             .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},  // the responding device
-            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},  // our target_if address
+            .dest = {*target.iface.SourceAddress(IpAddress::Family::V4), reserved_port},  // our target_if address
             .ttl = 4,
             .source_mac = *MacAddress::FromString("aa:bb:cc:dd:ee:01"),
         },
@@ -504,7 +508,7 @@ TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingResponseFails) {
     Packet reply{
         .header = PacketHeader{
             .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
-            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},
+            .dest = {*target.iface.SourceAddress(IpAddress::Family::V4), reserved_port},
             .ttl = 4,
         },
         .payload = response,
@@ -528,7 +532,7 @@ TEST_F(SsdpReflectorTest, IgnoresUnicastResponseWithNoMatchingSession) {
     Packet reply{
         .header = PacketHeader{
             .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
-            .dest = {*target.SourceAddress(IpAddress::Family::V4), 55555},
+            .dest = {*target.iface.SourceAddress(IpAddress::Family::V4), 55555},
             .ttl = 4,
         },
         .payload = response,
@@ -715,7 +719,7 @@ TEST_F(SsdpReflectorTest, DialRewritesUnicastResponseLocationWhenEnabled) {
     Packet reply{
         .header = PacketHeader{
             .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
-            .dest = {*target.SourceAddress(IpAddress::Family::V4), reserved_port},
+            .dest = {*target.iface.SourceAddress(IpAddress::Family::V4), reserved_port},
             .ttl = 4,
         },
         .payload = response,
@@ -797,7 +801,7 @@ TEST_F(SsdpReflectorTest, DialListenerBindsOnSourceInterfaceNotTarget) {
     // A distinct, non-loopback target_if address: if the proxy mistakenly bound its listener on target_if it
     // would fail to bind and forward the LOCATION unchanged. A successful loopback rewrite proves the listener
     // binds on source_if (device on target_if, client on source_if).
-    target.source_v4 = IpAddress::FromV4Bytes(10, 9, 9, 9);
+    target.iface.SetV4(IpAddress::FromV4Bytes(10, 9, 9, 9));
     SsdpReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());
 
@@ -815,7 +819,7 @@ TEST_F(SsdpReflectorTest, DialForwardsLocationUnchangedWhenListenerMintFails) {
     config.dial = true;
     SsdpReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());
-    source.source_v4 = std::nullopt;  // no source_if V4 address -> EnsureDiscoveryListener cannot bind a listener
+    source.iface.SetV4(std::nullopt);  // no source_if V4 address -> EnsureDiscoveryListener cannot bind a listener
 
     const auto advertisement = MakeDialAdvertisement();
     const std::string output = CaptureStdout([&] {

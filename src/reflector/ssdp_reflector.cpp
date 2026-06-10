@@ -1,5 +1,6 @@
 #include "ssdp_reflector.h"
 
+#include "interface.h"
 #include "port_reservation.h"
 #include "ssdp_message.h"
 #include "util/delegate.h"
@@ -49,7 +50,8 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
     // SSDP is bidirectional, so a handled family must be sendable on BOTH interfaces: the target
     // re-emits reflected searches, the source re-emits reflected advertisements.
     const auto reflectable = [&](IpAddress::Family family) {
-        return source_socket.CanSend(family) && target_socket.CanSend(family);
+        return source_socket.GetInterface().CanSend(family)
+            && target_socket.GetInterface().CanSend(family);
     };
 
     if (config.RequiresIPv4() && !reflectable(IpAddress::Family::V4)) {
@@ -82,7 +84,8 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
     // is reflectable here, so the proxy always has a source_if V4 address to bind its listeners on. The
     // device speaks DIAL on target_if and the client reaches it on source_if (LOCATION rewrite direction).
     if (config.dial) {
-        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket, target_socket,
+        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket.GetInterface(),
+            target_socket.GetInterface(),
             std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
     }
 
@@ -185,13 +188,14 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
             packet.header.source, sessions_.size());
         return std::nullopt;
     }
-    const auto our_address = target_socket_.SourceAddress(family);
+    const auto& target_interface = target_socket_.GetInterface();
+    const auto our_address = target_interface.SourceAddress(family);
     if (!our_address) {
         logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
             packet.header.source, family);
         return std::nullopt;
     }
-    auto reservation = PortReservation::Create(*our_address, target_socket_.InterfaceIndex());
+    auto reservation = PortReservation::Create(*our_address, target_interface.Index());
     if (!reservation) {
         return std::nullopt;  // Create logged the cause
     }
