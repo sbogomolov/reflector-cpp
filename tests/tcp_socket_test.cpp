@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 #include <fcntl.h>
+#include <net/if.h>
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -40,6 +41,27 @@ bool WaitWritable(int fd) { return WaitFor(fd, POLLOUT); }
 // Move-assigns through two distinct references so a self-assignment call site (`MoveAssignInPlace(s, s)`)
 // doesn't trip -Wself-move while still exercising operator='s `this != &other` guard.
 void MoveAssignInPlace(TcpSocket& dst, TcpSocket& src) { dst = std::move(src); }
+
+// The name of a host interface whose IPv6 source resolves to a link-local address, or empty when
+// none exists (the link-local tests then skip). macOS lo0 always carries fe80::1; in the docker
+// gate the container's eth0 carries one.
+std::string FindLinkLocalInterfaceName() {
+    auto* names = ::if_nameindex();
+    if (names == nullptr) {
+        return {};
+    }
+    std::string found;
+    for (auto* entry = names; entry->if_index != 0 && entry->if_name != nullptr; ++entry) {
+        const Interface candidate{entry->if_name};
+        const auto v6 = candidate.SourceAddress(IpAddress::Family::V6);
+        if (candidate.IsValid() && v6 && v6->IsLinkLocal()) {
+            found = entry->if_name;
+            break;
+        }
+    }
+    ::if_freenameindex(names);
+    return found;
+}
 
 // ---- TcpSocket over real loopback, parameterized over IPv4 / IPv6 ----
 
@@ -631,6 +653,48 @@ TEST_F(TcpSocketRequiresRootTest, EgressPinnedConnectReachesLoopback) {
     auto client = TcpSocket::Connect(local, &loopback);
     ASSERT_TRUE(client.has_value());
 
+    ASSERT_TRUE(WaitReadable(listener->Fd()));
+    auto server = listener->Accept();
+    ASSERT_TRUE(server.has_value());
+    ASSERT_TRUE(WaitWritable(client->Fd()));
+    EXPECT_TRUE(client->FinishConnect());
+}
+
+// ---- link-local IPv6: the scope-id pass-through ----
+
+// Binding a link-local source needs the interface index as the sockaddr scope id — the kernel
+// refuses the bind without it — so this fails if Listen drops the scope. Needs no privilege
+// (the address is already assigned); skipped only when no interface carries a link-local source.
+TEST(TcpSocketLinkLocalTest, ListenScopesTheLinkLocalBind) {
+    const auto name = FindLinkLocalInterfaceName();
+    if (name.empty()) {
+        GTEST_SKIP() << "no interface with a link-local IPv6 source";
+    }
+    const Interface iface{name};
+    ASSERT_TRUE(iface.IsValid());
+
+    auto listener = TcpSocket::Listen(iface, IpAddress::Family::V6);
+    ASSERT_TRUE(listener.has_value());
+    EXPECT_EQ(listener->LocalEndpoint().addr, *iface.SourceAddress(IpAddress::Family::V6));
+    EXPECT_NE(listener->LocalEndpoint().port, 0);
+}
+
+// The full link-local round trip: Connect scopes both the source bind and the link-local
+// destination with the egress interface's index. Root-gated because the nonzero index also
+// triggers the egress pin (SO_BINDTODEVICE needs CAP_NET_RAW on Linux).
+TEST_F(TcpSocketRequiresRootTest, LinkLocalConnectCompletesWithEgressScope) {
+    const auto name = FindLinkLocalInterfaceName();
+    if (name.empty()) {
+        GTEST_SKIP() << "no interface with a link-local IPv6 source";
+    }
+    const Interface iface{name};
+    ASSERT_TRUE(iface.IsValid());
+
+    auto listener = TcpSocket::Listen(iface, IpAddress::Family::V6);
+    ASSERT_TRUE(listener.has_value());
+
+    auto client = TcpSocket::Connect(listener->LocalEndpoint(), &iface);
+    ASSERT_TRUE(client.has_value());
     ASSERT_TRUE(WaitReadable(listener->Fd()));
     auto server = listener->Accept();
     ASSERT_TRUE(server.has_value());

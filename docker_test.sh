@@ -29,4 +29,9 @@ target="test-${variant}"
 image="reflector:${target}"
 
 docker build --target "${target}" -t "${image}" .
-docker run --rm --cap-add=NET_ADMIN "${image}" "$@"
+# IPv6 is disabled by default in containers on a v4-only docker network (a per-interface sysctl,
+# settable only through the endpoint driver option); enabling it gives eth0 a link-local address,
+# so the link-local scope-id tests run instead of skipping.
+docker run --rm --cap-add=NET_ADMIN \
+    --network name=bridge,driver-opt=com.docker.network.endpoint.sysctls=net.ipv6.conf.IFNAME.disable_ipv6=0 \
+    "${image}" "$@"
