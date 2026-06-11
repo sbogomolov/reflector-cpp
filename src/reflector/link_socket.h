@@ -4,6 +4,7 @@
 #include "ip_endpoint.h"
 #include "mac_address.h"
 #include "packet.h"
+#include "util/registration.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -20,6 +21,10 @@ class Interface;
 // rather than being split, because in this codebase one socket always does both directions.
 class LinkSocket {
 public:
+    // RAII handle for one group membership (keyed by the group). Resetting/destroying it drops one
+    // join of that group; the socket leaves the group only when its last membership goes.
+    using MulticastMembership = reflector::Registration<LinkSocket, IpAddress>;
+
     virtual ~LinkSocket() noexcept = default;
 
     // --- receive side: the packet dispatcher watches this fd and drains it ---
@@ -61,15 +66,29 @@ public:
         uint16_t src_port, std::span<const std::byte> payload, uint8_t ttl) noexcept = 0;
 
     // Joins multicast `group` so this socket's interface receives that group's traffic (programs
-    // the kernel/NIC multicast filter — "gate 2"). Idempotent: re-joining a group already joined
-    // on this socket succeeds without effect. `group` must be a multicast address. Returns false
-    // (after logging) on failure.
-    [[nodiscard]] virtual bool JoinMulticastGroup(const IpAddress& group) noexcept = 0;
+    // the kernel/NIC multicast filter — "gate 2"), returning an RAII membership; dropping it leaves
+    // the group once no membership remains. Refcounted: joining a group already joined on this
+    // socket just adds a membership without a second kernel join. `group` must be a multicast
+    // address. An invalid membership (IsValid() == false, after logging) signals join failure.
+    [[nodiscard]] virtual MulticastMembership JoinMulticastGroup(const IpAddress& group) noexcept = 0;
 
     // The Interface this socket captures on / injects through — its source addresses are what the
     // Send* calls originate from. The socket borrows it for its lifetime; the (Application-owned)
     // interface outlives the socket.
     [[nodiscard]] virtual const Interface& GetInterface() const noexcept = 0;
+
+protected:
+    // Mints a membership for `group` owned by this socket; the join must already have happened.
+    [[nodiscard]] MulticastMembership MakeMembership(const IpAddress& group) noexcept {
+        return MulticastMembership{this, group};
+    }
+
+private:
+    friend MulticastMembership;
+
+    // Drops one membership of `group` (MulticastMembership::Reset calls this): leaves the group in
+    // the kernel only when the last membership goes. Returns false for a group with no membership.
+    virtual bool Unregister(const IpAddress& group) noexcept = 0;
 };
 
 } // namespace reflector

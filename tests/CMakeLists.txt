@@ -21,6 +21,7 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_message_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_reflector_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/port_reservation_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/registration_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ssdp_message_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ssdp_reflector_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/default_packet_dispatcher_test.cpp

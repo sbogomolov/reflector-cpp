@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +18,14 @@
 #include <vector>
 
 namespace {
+using namespace reflector;
 constexpr uint16_t SSDP_PORT = 1900;
+
+// A sorted copy, so group-set assertions don't depend on join/leave ordering.
+std::vector<IpAddress> Sorted(std::vector<IpAddress> groups) {
+    std::ranges::sort(groups);
+    return groups;
+}
 
 std::vector<std::byte> Bytes(std::string_view text) {
     std::vector<std::byte> out;
@@ -144,6 +152,35 @@ TEST_P(SsdpReflectorPerFamilyTest, JoinsEveryGroupOnBothSockets) {
 
     EXPECT_EQ(source.joined_groups, Groups());
     EXPECT_EQ(target.joined_groups, Groups());
+}
+
+// The reflector holds every group membership for its lifetime (the groups stay joined) and leaves
+// exactly the groups it joined when destroyed — a regression guard against dropping the membership
+// tokens at setup.
+TEST_P(SsdpReflectorPerFamilyTest, HoldsGroupsWhileAliveAndLeavesOnDestruction) {
+    {
+        const auto reflector = BuildReflector();
+        ASSERT_TRUE(reflector.IsValid());
+        EXPECT_TRUE(source.left_groups.empty()) << "groups must stay joined while the reflector lives";
+        EXPECT_TRUE(target.left_groups.empty());
+    }
+    EXPECT_EQ(Sorted(source.left_groups), Sorted(Groups()));
+    EXPECT_EQ(Sorted(target.left_groups), Sorted(Groups()));
+}
+
+// A join failure on one interface invalidates the reflector AND auto-leaves the membership already
+// taken on the other interface — the RAII-token guarantee that no group is left dangling-joined.
+TEST_P(SsdpReflectorPerFamilyTest, PartialJoinFailureLeavesTheOtherInterfacesGroup) {
+    source.fail_join = true;  // source join fails; SetUpGroup joins target first, then rolls back
+
+    const std::string output = CaptureStdout([&] {
+        const auto reflector = BuildReflector();
+        EXPECT_FALSE(reflector.IsValid());
+    });
+
+    EXPECT_TRUE(source.joined_groups.empty());          // source never took a membership
+    EXPECT_FALSE(target.joined_groups.empty());         // target joined the first group before rollback
+    EXPECT_EQ(target.left_groups, target.joined_groups);  // and every membership it took was auto-left
 }
 
 TEST_P(SsdpReflectorPerFamilyTest, ReflectsSearchFromSourceToTargetOnEveryGroup) {

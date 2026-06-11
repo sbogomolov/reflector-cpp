@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -15,7 +16,14 @@
 #include <vector>
 
 namespace {
+using namespace reflector;
 constexpr uint16_t MDNS_PORT = 5353;
+
+// A sorted copy, so group-set assertions don't depend on join/leave ordering.
+std::vector<IpAddress> Sorted(std::vector<IpAddress> groups) {
+    std::ranges::sort(groups);
+    return groups;
+}
 }
 
 namespace reflector {
@@ -104,6 +112,35 @@ TEST_P(MdnsReflectorPerFamilyTest, JoinsGroupOnBothSockets) {
     const auto group = IpAddress::MdnsGroupFor(GetParam());
     EXPECT_EQ(source.joined_groups, std::vector<IpAddress>{group});
     EXPECT_EQ(target.joined_groups, std::vector<IpAddress>{group});
+}
+
+// The reflector holds its group memberships for its lifetime (the groups stay joined) and leaves
+// exactly the groups it joined when destroyed — a regression guard against dropping the membership
+// tokens at setup.
+TEST_P(MdnsReflectorPerFamilyTest, HoldsGroupsWhileAliveAndLeavesOnDestruction) {
+    {
+        const auto reflector = BuildReflector();
+        ASSERT_TRUE(reflector.IsValid());
+        EXPECT_TRUE(source.left_groups.empty()) << "groups must stay joined while the reflector lives";
+        EXPECT_TRUE(target.left_groups.empty());
+    }
+    EXPECT_EQ(Sorted(source.left_groups), Sorted(source.joined_groups));
+    EXPECT_EQ(Sorted(target.left_groups), Sorted(target.joined_groups));
+}
+
+// A join failure on one interface invalidates the reflector AND auto-leaves the membership already
+// taken on the other interface — the RAII-token guarantee that no group is left dangling-joined.
+TEST_P(MdnsReflectorPerFamilyTest, PartialJoinFailureLeavesTheOtherInterfacesGroup) {
+    source.fail_join = true;  // source join fails; SetUpFamily joins target first, then rolls back
+
+    const std::string output = CaptureStdout([&] {
+        const auto reflector = BuildReflector();
+        EXPECT_FALSE(reflector.IsValid());
+    });
+
+    EXPECT_TRUE(source.joined_groups.empty());          // source never took a membership
+    EXPECT_FALSE(target.joined_groups.empty());         // target did join before the rollback
+    EXPECT_EQ(target.left_groups, target.joined_groups);  // and that membership was auto-left
 }
 
 TEST_P(MdnsReflectorPerFamilyTest, RelaysQueryFromSourceToTarget) {

@@ -393,14 +393,24 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     return true;
 }
 
-bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
+LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
+    const auto family = group.AddressFamily();
+    auto& memberships = group_memberships_.Get(family);
+
+    // Already joined on this socket: a second join is just another membership, no kernel call.
+    if (const auto it = memberships.find(group); it != memberships.end()) {
+        ++it->second;
+        return MakeMembership(group);
+    }
+
     const bool v6 = group.IsV6();
-    auto& join_fd = v6 ? join_fd_v6_ : join_fd_v4_;
-    if (!join_fd.IsValid()) {
+    auto& join_fd = join_fds_.Get(family);
+    const bool opened_now = !join_fd.IsValid();
+    if (opened_now) {
         join_fd.Reset(socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
         if (!join_fd.IsValid()) {
             logger_.Error("Cannot open multicast-join socket for {}: {}", group.ToString(), Error::FromErrno());
-            return false;
+            return {};
         }
     }
 
@@ -414,16 +424,57 @@ bool RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(join_fd.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
-        // Already a member (same group + interface on this fd) — idempotent success, not an error.
-        if (errno == EADDRINUSE) {
-            logger_.Debug("Already joined multicast group {}", group.ToString());
-            return true;
-        }
         logger_.Error("Cannot join multicast group {}: {}", group.ToString(), Error::FromErrno());
-        return false;
+        if (opened_now) {
+            join_fd.Reset();  // the fd we just opened holds no membership; drop it
+        }
+        return {};
     }
 
+    memberships.emplace(group, 1);
     logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_.Index());
+    return MakeMembership(group);
+}
+
+bool RawSocket::Unregister(const IpAddress& group) noexcept {
+    const auto family = group.AddressFamily();
+    auto& memberships = group_memberships_.Get(family);
+    const auto it = memberships.find(group);
+    if (it == memberships.end()) {
+        return false;  // no membership for this group (a valid token never reaches here)
+    }
+    if (--it->second > 0) {
+        return true;  // other memberships keep the group joined
+    }
+    memberships.erase(it);
+
+    auto& join_fd = join_fds_.Get(family);
+    if (!join_fd.IsValid()) {
+        // Invariant: a live membership keeps its family's join fd open (it's closed only here, once
+        // the family's last group leaves). An invalid fd with a membership still outstanding is a
+        // bug in this bookkeeping, not a runtime condition.
+        logger_.Error("Cannot leave multicast group {}: its join fd is already closed", group.ToString());
+        return true;
+    }
+
+    group_req request{};
+    request.gr_interface = interface_.Index();
+    group.ToSockaddr(request.gr_group, /*port=*/0);
+    const int level = group.IsV6() ? IPPROTO_IPV6 : IPPROTO_IP;
+    // Teardown-tolerant: when an interface loses its address the kernel drops the membership for
+    // us, so a later leave fails with the group already gone — the intended end state (not joined)
+    // is reached either way, so this is Debug, not Error.
+    if (setsockopt(join_fd.Get(), level, MCAST_LEAVE_GROUP, &request, sizeof(request)) != 0) {
+        logger_.Debug("Leave of multicast group {} did not apply: {}", group.ToString(), Error::FromErrno());
+    } else {
+        logger_.Debug("Left multicast group {}", group.ToString());
+    }
+
+    // The family's last group is gone, so free its join fd instead of carrying it for the socket's
+    // life.
+    if (memberships.empty()) {
+        join_fd.Reset();
+    }
     return true;
 }
 
@@ -443,8 +494,12 @@ void RawSocket::Close() noexcept {
         logger_.Debug("Closing socket");
         fd_.Reset();
     }
-    join_fd_v4_.Reset();
-    join_fd_v6_.Reset();
+    // Drop the join fds and their membership bookkeeping together, so the "fd open iff the family
+    // has a joined group" invariant still holds after Close (both sides empty).
+    join_fds_.V4().Reset();
+    join_fds_.V6().Reset();
+    group_memberships_.V4().clear();
+    group_memberships_.V6().clear();
 #if defined(__APPLE__)
     ClearBuffer();
 #endif

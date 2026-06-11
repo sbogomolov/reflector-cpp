@@ -97,12 +97,17 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
 
 bool SsdpReflector::SetUpGroup(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const IpAddress& group, const SsdpConfig& config) {
-    // Program gate 2 so each interface actually receives the group's multicast.
-    if (!source_socket.JoinMulticastGroup(group) || !target_socket.JoinMulticastGroup(group)) {
+    // Program gate 2 so each interface actually receives the group's multicast. A failed join on
+    // one interface drops the membership already taken on the other when its token leaves scope.
+    auto source_membership = source_socket.JoinMulticastGroup(group);
+    auto target_membership = target_socket.JoinMulticastGroup(group);
+    if (!source_membership.IsValid() || !target_membership.IsValid()) {
         logger_.Error("Cannot create ssdp reflector \"{}\": cannot join {} on both interfaces",
             config.name, group);
         return false;
     }
+    memberships_.push_back(std::move(source_membership));
+    memberships_.push_back(std::move(target_membership));
 
     // source -> target: reflect searches, unfiltered (any client on source may search).
     auto source_registration = packet_dispatcher.Register(source_socket,

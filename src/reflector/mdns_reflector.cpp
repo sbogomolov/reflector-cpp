@@ -78,12 +78,17 @@ bool MdnsReflector::SetUpFamily(PacketDispatcher& packet_dispatcher, LinkSocket&
     LinkSocket& target_socket, IpAddress::Family family, const MdnsConfig& config) {
     const auto group = IpAddress::MdnsGroupFor(family);
 
-    // Program gate 2 so each interface actually receives the group's multicast.
-    if (!source_socket.JoinMulticastGroup(group) || !target_socket.JoinMulticastGroup(group)) {
+    // Program gate 2 so each interface actually receives the group's multicast. A failed join on
+    // one interface drops the membership already taken on the other when its token leaves scope.
+    auto source_membership = source_socket.JoinMulticastGroup(group);
+    auto target_membership = target_socket.JoinMulticastGroup(group);
+    if (!source_membership.IsValid() || !target_membership.IsValid()) {
         logger_.Error("Cannot create mdns reflector \"{}\": cannot join {} on both interfaces",
             config.name, group);
         return false;
     }
+    memberships_.push_back(std::move(source_membership));
+    memberships_.push_back(std::move(target_membership));
 
     // source -> target: relay queries, unfiltered (any client on source may ask).
     auto source_registration = packet_dispatcher.Register(source_socket,

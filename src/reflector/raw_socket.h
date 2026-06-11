@@ -4,6 +4,7 @@
 #include "link_socket.h"
 #include "logger.h"
 #include "packet.h"
+#include "util/address_family_pair.h"
 #include "util/no_move.h"
 #include "util/unique_fd.h"
 
@@ -11,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace reflector {
@@ -73,8 +75,8 @@ public:
     // Joins `group` on a dedicated, unbound join-only fd (AF_INET / AF_INET6 per family) so the
     // kernel delivers that group to this interface's capture path. The fd is held for the socket's
     // lifetime to keep the membership alive; one is opened lazily per family. Idempotent — a
-    // re-join of an already-joined group is swallowed (EADDRINUSE) and reported as success.
-    [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group) noexcept override;
+    // re-join of an already-joined group adds a membership without a second kernel join.
+    [[nodiscard]] MulticastMembership JoinMulticastGroup(const IpAddress& group) noexcept override;
 
     // Returns the next parsed UDP datagram. The returned Packet's payload spans into the
     // socket's internal buffer and is valid until the next Receive() call on this socket.
@@ -101,11 +103,16 @@ public:
 
 private:
     friend class RawSocketTest;
+    friend class RawSocketInterfacePairRequiresRootTest;  // inspects the membership refcounts + join fds
 
     enum class TestingTag {};
     RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept;
 
     void Close() noexcept;
+
+    // Drops one membership of `group`: leaves the group in the kernel when its last membership
+    // goes, and closes the family's join fd once no group of that family remains joined.
+    bool Unregister(const IpAddress& group) noexcept override;
 
     [[nodiscard]] std::optional<Packet> ParseFrame(std::span<const std::byte> frame) noexcept;
 
@@ -118,10 +125,14 @@ private:
     Logger logger_;
     const Interface& interface_;
     UniqueFd fd_;
-    // Dedicated unbound fds that hold multicast group memberships alive, one per family, opened
-    // lazily by JoinMulticastGroup. Separate from fd_ (the capture/inject socket).
-    UniqueFd join_fd_v4_;
-    UniqueFd join_fd_v6_;
+    // Per family: a dedicated unbound fd that holds that family's multicast memberships alive
+    // (opened lazily on the first join, closed once the family has no joined group left), and the
+    // active membership count per joined group. The first join of a group programs the kernel
+    // filter, the last leave clears it; a group shared by several reflectors on this (shared)
+    // socket is one kernel membership refcounted here. join_fds_ are separate from fd_ (the
+    // capture/inject socket).
+    AddressFamilyPair<UniqueFd> join_fds_;
+    AddressFamilyPair<std::unordered_map<IpAddress, size_t>> group_memberships_;
 
     // Linux: holds one frame per recv() into receive_buffer_.
     // macOS: holds a batch of bpf_hdr-prefixed frames per read(); receive_buffer_filled_

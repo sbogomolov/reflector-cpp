@@ -197,6 +197,11 @@ protected:
         iface.SetV4(std::move(v4));
         iface.SetV6(std::move(v6));
     }
+
+    // The fixture is RawSocket's friend, so the per-family join fd state is reachable here.
+    [[nodiscard]] bool JoinFdValid(IpAddress::Family family) const noexcept {
+        return socket.join_fds_.Get(family).IsValid();
+    }
 };
 
 TEST_F(RawSocketTest, ParsesEthernetIpv4Udp) {
@@ -471,10 +476,14 @@ TEST_F(RawSocketTest, RefusesIpv4SendWithoutIpv4Source) {
 // on this fd-less test socket isn't deterministic — interface index 0 falls back to the host's
 // default interface — so it isn't asserted here.)
 TEST_F(RawSocketTest, JoinMulticastGroupRejectsNonMulticastAddress) {
-    CaptureStdout([&] {  // swallow the expected error logs; the bool is the contract
-        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV4()));
-        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV6()));
+    CaptureStdout([&] {  // swallow the expected error logs; an invalid membership is the contract
+        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV4()).IsValid());
+        EXPECT_FALSE(socket.JoinMulticastGroup(IpAddress::LoopbackV6()).IsValid());
     });
+    // The fd opened for the rejected join is closed again — no leaked descriptor (ASan can't see
+    // an fd leak, so assert it directly).
+    EXPECT_FALSE(JoinFdValid(IpAddress::Family::V4));
+    EXPECT_FALSE(JoinFdValid(IpAddress::Family::V6));
 }
 
 #if defined(__APPLE__)
@@ -882,6 +891,18 @@ protected:
         }
         return false;
     }
+
+    // The fixture is RawSocket's friend, so the membership refcount and join-fd state are reachable
+    // here (the TEST_F body, a derived class, would not inherit the friendship).
+    static size_t MembershipCount(const RawSocket& socket, const IpAddress& group) {
+        const auto& memberships = socket.group_memberships_.Get(group.AddressFamily());
+        const auto it = memberships.find(group);
+        return it == memberships.end() ? 0 : it->second;
+    }
+    static bool JoinFdValid(const RawSocket& socket, IpAddress::Family family) {
+        return socket.join_fds_.Get(family).IsValid();
+    }
+    static void CloseSocket(RawSocket& socket) { socket.Close(); }
 };
 
 TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPeer) {
@@ -928,20 +949,78 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
 }
 
 // Joins the mDNS groups on a real multicast-capable interface: both families succeed, and a
-// repeat join of the same group is idempotent (the kernel's EADDRINUSE is swallowed). The inject
-// interface carries both an IPv4 and an IPv6 link-local address, so it can join either family.
-// (On a veth pair multicast is delivered regardless of membership, so this asserts the join
-// *succeeds*, not that it gates reception — the latter only matters on real NICs.)
+// repeat join of the same group hands back another valid membership. The inject interface carries
+// both an IPv4 and an IPv6 link-local address, so it can join either family. (On a veth pair
+// multicast is delivered regardless of membership, so this asserts the join *succeeds*, not that
+// it gates reception — the latter only matters on real NICs.)
 TEST_F(RawSocketInterfacePairRequiresRootTest, JoinsMulticastGroupsIdempotently) {
     Interface iface{pair.InjectInterface()};
     RawSocket socket{iface};
     ASSERT_TRUE(socket.IsValid());
     WaitForSource(iface, IpAddress::Family::V6);  // wait out DAD on the link-local
 
-    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
-    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
-    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()));
-    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()));
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()).IsValid());
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()).IsValid());
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()).IsValid());
+    EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()).IsValid());
+}
+
+// The refcount + fd lifecycle: two memberships of a group keep one kernel join; the group is left
+// only when the last membership drops, and the family's join fd is closed once it has no group.
+TEST_F(RawSocketInterfacePairRequiresRootTest, RefcountsMembershipsAndFreesTheFamilyFd) {
+    Interface iface{pair.InjectInterface()};
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+    WaitForSource(iface, IpAddress::Family::V6);
+
+    const auto v4 = IpAddress::MdnsGroupV4();
+    auto first_v4 = socket.JoinMulticastGroup(v4);
+    auto v6 = socket.JoinMulticastGroup(IpAddress::MdnsGroupV6());
+    ASSERT_TRUE(first_v4.IsValid());
+    ASSERT_TRUE(v6.IsValid());
+    EXPECT_EQ(MembershipCount(socket, v4), 1u);  // first join records refcount 1
+
+    auto second_v4 = socket.JoinMulticastGroup(v4);  // same group again -> refcount 2, one kernel join
+    ASSERT_TRUE(second_v4.IsValid());
+    EXPECT_EQ(MembershipCount(socket, v4), 2u);
+    EXPECT_TRUE(JoinFdValid(socket, IpAddress::Family::V4));
+
+    second_v4.Reset();  // one of two -> still joined, fd kept
+    EXPECT_EQ(MembershipCount(socket, v4), 1u);
+    EXPECT_TRUE(JoinFdValid(socket, IpAddress::Family::V4));
+
+    first_v4.Reset();  // last v4 -> left, and the v4 fd freed (no v4 group remains)
+    EXPECT_EQ(MembershipCount(socket, v4), 0u);
+    EXPECT_FALSE(JoinFdValid(socket, IpAddress::Family::V4));
+    EXPECT_TRUE(JoinFdValid(socket, IpAddress::Family::V6));  // v6 membership still held, its fd stays
+}
+
+// Close() drops the join fds and their membership bookkeeping together, keeping the "fd open iff
+// the family has a joined group" invariant (both sides empty afterward). Stale tokens left over a
+// closed socket reset harmlessly (Unregister finds no membership).
+TEST_F(RawSocketInterfacePairRequiresRootTest, CloseClearsMembershipsAndJoinFds) {
+    Interface iface{pair.InjectInterface()};
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+    WaitForSource(iface, IpAddress::Family::V6);
+
+    const auto v4 = IpAddress::MdnsGroupV4();
+    const auto v6 = IpAddress::MdnsGroupV6();
+    auto v4_membership = socket.JoinMulticastGroup(v4);
+    auto v6_membership = socket.JoinMulticastGroup(v6);
+    ASSERT_TRUE(v4_membership.IsValid());
+    ASSERT_TRUE(v6_membership.IsValid());
+
+    CloseSocket(socket);  // the fixture is a friend, so it can reach the private Close()
+
+    EXPECT_EQ(MembershipCount(socket, v4), 0u);
+    EXPECT_EQ(MembershipCount(socket, v6), 0u);
+    EXPECT_FALSE(JoinFdValid(socket, IpAddress::Family::V4));
+    EXPECT_FALSE(JoinFdValid(socket, IpAddress::Family::V6));
+
+    v4_membership.Reset();  // stale over the closed socket: no membership found, no crash
+    v6_membership.Reset();
+    EXPECT_EQ(MembershipCount(socket, v4), 0u);
 }
 
 } // namespace reflector

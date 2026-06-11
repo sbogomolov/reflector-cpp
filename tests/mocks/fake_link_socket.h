@@ -63,12 +63,12 @@ struct FakeLinkSocket : LinkSocket {
         return RecordSend(IpAddress::BroadcastV4(), std::nullopt, dst_port, src_port, payload, ttl);
     }
 
-    [[nodiscard]] bool JoinMulticastGroup(const IpAddress& group) noexcept override {
+    [[nodiscard]] MulticastMembership JoinMulticastGroup(const IpAddress& group) noexcept override {
         if (fail_join) {
-            return false;
+            return {};
         }
         joined_groups.push_back(group);
-        return true;
+        return MakeMembership(group);
     }
 
     [[nodiscard]] const Interface& GetInterface() const noexcept override {
@@ -82,9 +82,16 @@ struct FakeLinkSocket : LinkSocket {
     bool fail_send = false;
     bool fail_join = false;
     std::vector<Sent> sent;                  // every send; dst_mac engaged only for unicast
-    std::vector<IpAddress> joined_groups;
+    std::vector<IpAddress> joined_groups;    // every join, in order (append-only)
+    std::vector<IpAddress> left_groups;      // every membership drop, in order (append-only)
 
 private:
+    // Records a membership drop (a MulticastMembership reset/destroyed).
+    bool Unregister(const IpAddress& group) noexcept override {
+        left_groups.push_back(group);
+        return true;
+    }
+
     // All three Send* overloads funnel here; dst_mac is engaged only for an explicit unicast
     // destination (multicast/broadcast pass nullopt).
     [[nodiscard]] bool RecordSend(const IpAddress& dst_ip, std::optional<MacAddress> dst_mac, uint16_t dst_port,
