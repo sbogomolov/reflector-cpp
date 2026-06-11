@@ -23,8 +23,11 @@ class Reflector : NoMove {
 public:
     virtual ~Reflector() noexcept = default;
 
-    // A reflector is valid once it has registered at least one capture callback.
-    [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
+    // True once construction succeeded (the subclass set it at the end of a successful init). A
+    // flag rather than "has registrations", because a reflector may legitimately hold no
+    // registrations at a given moment — e.g. all its families lost their addresses — yet stay
+    // valid, bringing them back when the addresses return.
+    [[nodiscard]] bool IsValid() const noexcept { return valid_; }
 
     // Called (by Application) after an interface's addresses may have changed, so the reflector can
     // react to a family gaining or losing its source address — log a capability transition, and
@@ -37,6 +40,8 @@ protected:
     explicit Reflector(std::string logger_name) : logger_{std::move(logger_name)} {}
 
     Logger logger_;
+    // Set by the subclass at the end of a successful construction (see IsValid).
+    bool valid_ = false;
     std::vector<PacketDispatcher::Registration> registrations_;
     // Multicast group memberships this reflector holds (mDNS/SSDP join their groups; WoL joins
     // none). Dropping a membership leaves the group; destroying the reflector leaves them all.

@@ -296,6 +296,106 @@ TEST_F(MdnsReflectorTest, DefaultReflectsAvailableFamilyOnly) {
     EXPECT_EQ(target.joined_groups, std::vector<IpAddress>{IpAddress::MdnsGroupV4()});
 }
 
+// A family that isn't reflectable at construction comes up once both interfaces can send it: on the
+// next interface change the group is joined and captures registered on both sockets, and its
+// traffic relays.
+TEST_F(MdnsReflectorTest, OptionalFamilyComesUpWhenItBecomesReflectable) {
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 not reflectable at startup
+    MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);  // v4 only
+
+    target.iface.SetHasSource(IpAddress::Family::V6, true);  // a v6 address appears
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), 4);  // v6 now registered on both sockets too
+    EXPECT_NE(std::ranges::find(source.joined_groups, IpAddress::MdnsGroupV6()), source.joined_groups.end());
+    EXPECT_NE(std::ranges::find(target.joined_groups, IpAddress::MdnsGroupV6()), target.joined_groups.end());
+
+    packet_dispatcher.Deliver(source, MakePacket(MakeQuery(), IpAddress::Family::V6));
+    ASSERT_EQ(target.sent.size(), 1u);  // a v6 query now relays source -> target
+    EXPECT_EQ(target.sent.front().dst_ip, IpAddress::MdnsGroupV6());
+}
+
+// A reflected family is torn down when it stops being reflectable: the group is left, both captures
+// unregistered, and its traffic no longer relays.
+TEST_F(MdnsReflectorTest, FamilyIsTornDownWhenItStopsBeingReflectable) {
+    MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 4);  // both families up
+
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 lost on the target
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), 2);  // v6 captures dropped
+    EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::MdnsGroupV6()), source.left_groups.end());
+    EXPECT_NE(std::ranges::find(target.left_groups, IpAddress::MdnsGroupV6()), target.left_groups.end());
+
+    packet_dispatcher.Deliver(source, MakePacket(MakeQuery(), IpAddress::Family::V6));
+    EXPECT_TRUE(target.sent.empty());  // no registration -> no relay
+}
+
+// A required family lost at runtime is torn down (with an Error notice) and brought back when its
+// address returns. The reflector stays valid throughout (validity is decided at construction).
+TEST_F(MdnsReflectorTest, RequiredFamilyTornDownAndRecovered) {
+    MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);
+
+    target.iface.SetHasSource(IpAddress::Family::V4, false);  // the required v4 vanishes
+    const std::string lost = CaptureStdout([&] { reflector.OnInterfaceChanged(); });
+    EXPECT_EQ(RegistrationCount(), 0);
+    EXPECT_TRUE(reflector.IsValid());  // still valid: validity is fixed at construction, not by teardown
+    EXPECT_NE(std::ranges::find(target.left_groups, IpAddress::MdnsGroupV4()), target.left_groups.end());
+    EXPECT_NE(lost.find(std::format("Cannot reflect {} packets", IpAddress::Family::V4)),
+        std::string::npos) << lost;
+
+    target.iface.SetHasSource(IpAddress::Family::V4, true);  // and returns
+    reflector.OnInterfaceChanged();
+    EXPECT_EQ(RegistrationCount(), 2);  // brought back up
+
+    packet_dispatcher.Deliver(source, MakePacket(MakeQuery(), IpAddress::Family::V4));
+    ASSERT_EQ(target.sent.size(), 1u);
+}
+
+// An interface change that doesn't flip any family's reflectability is a no-op: SyncFamily's
+// already-in-desired-state guard means no group is re-joined and no capture re-registered.
+TEST_F(MdnsReflectorTest, RepeatInterfaceChangeWithoutCapabilityChangeIsANoOp) {
+    MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    const auto joins_before = source.joined_groups.size();
+    const auto count_before = RegistrationCount();
+
+    reflector.OnInterfaceChanged();
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), count_before);          // no duplicate registrations
+    EXPECT_EQ(source.joined_groups.size(), joins_before);  // no duplicate joins
+    EXPECT_TRUE(source.left_groups.empty());               // and nothing torn down
+}
+
+// A transient bring-up failure when a family becomes reflectable (e.g. a join momentarily fails)
+// leaves the family down without partial setup, keeps the reflector valid, and is retried — and
+// succeeds — on the next interface change once the condition clears.
+TEST_F(MdnsReflectorTest, TransientBringUpFailureLeavesFamilyDownThenRetries) {
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 down at construction
+    MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);  // v4 only
+
+    source.fail_join = true;                                  // v6's bring-up will fail to join
+    target.iface.SetHasSource(IpAddress::Family::V6, true);   // v6 becomes reflectable
+    const std::string output = CaptureStdout([&] { reflector.OnInterfaceChanged(); });
+
+    EXPECT_EQ(RegistrationCount(), 2);   // bring-up failed -> v6 stays down, nothing half-set-up
+    EXPECT_TRUE(reflector.IsValid());    // still valid
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;  // the join failure was logged
+
+    source.fail_join = false;            // the transient condition clears
+    reflector.OnInterfaceChanged();      // retried on the next change
+    EXPECT_EQ(RegistrationCount(), 4);   // v6 now up
+}
+
 TEST_F(MdnsReflectorTest, MacFilterRelaysOnlyTheConfiguredDevice) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");

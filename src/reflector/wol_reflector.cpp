@@ -22,8 +22,7 @@ WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& sour
     LinkSocket& target_socket, const WolConfig& config)
         : Reflector{LoggerName(config)}
         , target_socket_{target_socket}
-        , target_capability_{target_socket.GetInterface(), "target", logger_,
-              FamilyCapability::PolicyOf(config)} {
+        , target_capability_{target_socket.GetInterface(), logger_, FamilyCapability::PolicyOf(config)} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -72,6 +71,7 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
         registrations_.push_back(std::move(registration));
     }
 
+    valid_ = true;
     logger_.Info("Created wol reflector (IPv4: {}, IPv6: {})",
         target_capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
         target_capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled");

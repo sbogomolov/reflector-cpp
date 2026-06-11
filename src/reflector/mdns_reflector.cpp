@@ -1,6 +1,5 @@
 #include "mdns_reflector.h"
 
-#include "interface.h"
 #include "mdns_message.h"
 #include "util/delegate.h"
 
@@ -22,12 +21,16 @@ MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
     LinkSocket& target_socket, const MdnsConfig& config)
         : Reflector{LoggerName(config)}
         , source_socket_{source_socket}
-        , target_socket_{target_socket} {
+        , target_socket_{target_socket}
+        , packet_dispatcher_{packet_dispatcher}
+        , config_mac_{config.mac}
+        , capability_{source_socket.GetInterface(), target_socket.GetInterface(), logger_,
+              FamilyCapability::PolicyOf(config)} {
     if (!ValidateConfig(config)) {
         return;
     }
 
-    Initialize(packet_dispatcher, source_socket, target_socket, config);
+    Initialize(config);
 }
 
 bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
@@ -38,79 +41,95 @@ bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
     return true;
 }
 
-void MdnsReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-    LinkSocket& target_socket, const MdnsConfig& config) {
-    // mDNS is bidirectional, so a handled family must be sendable on BOTH interfaces: the target
-    // re-emits relayed queries, the source re-emits relayed responses.
-    const auto reflectable = [&](IpAddress::Family family) {
-        return source_socket.GetInterface().CanSend(family)
-            && target_socket.GetInterface().CanSend(family);
-    };
-
-    if (config.RequiresIPv4() && !reflectable(IpAddress::Family::V4)) {
+void MdnsReflector::Initialize(const MdnsConfig& config) {
+    // mDNS is bidirectional, so a handled family must be sendable on BOTH interfaces (capability_
+    // tracks the AND): the target re-emits relayed queries, the source re-emits relayed responses.
+    // A required family must already be reflectable; an optional one comes up later if it ever is.
+    if (config.RequiresIPv4() && !capability_.CanSend(IpAddress::Family::V4)) {
         logger_.Error("Cannot create mdns reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
-    if (config.RequiresIPv6() && !reflectable(IpAddress::Family::V6)) {
+    if (config.RequiresIPv6() && !capability_.CanSend(IpAddress::Family::V6)) {
         logger_.Error("Cannot create mdns reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
 
     for (const auto family : {IpAddress::Family::V4, IpAddress::Family::V6}) {
-        const bool uses = family == IpAddress::Family::V4 ? config.UsesIPv4() : config.UsesIPv6();
-        if (!uses || !reflectable(family)) {
-            continue;  // a family the config merely "uses" but can't reflect is silently skipped
-        }
-        if (!SetUpFamily(packet_dispatcher, source_socket, target_socket, family, config)) {
-            registrations_.clear();
+        if (capability_.CanSend(family) && !BringUpFamily(family)) {
+            families_.V4() = {};  // a setup failure tears down anything brought up so far
+            families_.V6() = {};
             return;
         }
     }
 
+    valid_ = true;
     logger_.Info("Created mdns reflector (IPv4: {}, IPv6: {})",
-        config.UsesIPv4() && reflectable(IpAddress::Family::V4) ? "enabled" : "disabled",
-        config.UsesIPv6() && reflectable(IpAddress::Family::V6) ? "enabled" : "disabled");
+        capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
+        capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled");
 }
 
-bool MdnsReflector::SetUpFamily(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-    LinkSocket& target_socket, IpAddress::Family family, const MdnsConfig& config) {
+bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
     const auto group = IpAddress::MdnsGroupFor(family);
 
-    // Program gate 2 so each interface actually receives the group's multicast. A failed join on
-    // one interface drops the membership already taken on the other when its token leaves scope.
-    auto source_membership = source_socket.JoinMulticastGroup(group);
-    auto target_membership = target_socket.JoinMulticastGroup(group);
+    // Program gate 2 so each interface actually receives the group's multicast. A failed join or
+    // registration drops every token taken here when it leaves scope (auto-leave / auto-unregister),
+    // so nothing is half-set-up; the family's setup is only populated on full success.
+    auto source_membership = source_socket_.JoinMulticastGroup(group);
+    auto target_membership = target_socket_.JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
-        logger_.Error("Cannot create mdns reflector \"{}\": cannot join {} on both interfaces",
-            config.name, group);
+        logger_.Error("Cannot reflect mdns {}: cannot join the group on both interfaces", group);
         return false;
     }
-    memberships_.push_back(std::move(source_membership));
-    memberships_.push_back(std::move(target_membership));
 
     // source -> target: relay queries, unfiltered (any client on source may ask).
-    auto source_registration = packet_dispatcher.Register(source_socket,
+    auto source_registration = packet_dispatcher_.Register(source_socket_,
         PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT},
         CreateDelegate<&MdnsReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
-        logger_.Error("Cannot create mdns reflector \"{}\": registration failed for {} (source)", config.name, group);
+        logger_.Error("Cannot reflect mdns {}: registration failed (source)", group);
         return false;
     }
-    registrations_.push_back(std::move(source_registration));
 
     // target -> source: relay responses, optionally only from the configured device's MAC.
-    auto target_registration = packet_dispatcher.Register(target_socket,
-        PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT, .source_mac = config.mac},
+    auto target_registration = packet_dispatcher_.Register(target_socket_,
+        PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT, .source_mac = config_mac_},
         CreateDelegate<&MdnsReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
-        logger_.Error("Cannot create mdns reflector \"{}\": registration failed for {} (target)", config.name, group);
+        logger_.Error("Cannot reflect mdns {}: registration failed (target)", group);
         return false;
     }
-    registrations_.push_back(std::move(target_registration));
 
+    auto& setup = families_.Get(family);
+    setup.memberships.push_back(std::move(source_membership));
+    setup.memberships.push_back(std::move(target_membership));
+    setup.registrations.push_back(std::move(source_registration));
+    setup.registrations.push_back(std::move(target_registration));
     return true;
+}
+
+void MdnsReflector::SyncFamily(IpAddress::Family family) noexcept {
+    const bool want = capability_.CanSend(family);
+    auto& setup = families_.Get(family);
+    if (want == setup.IsUp()) {
+        return;  // already in the desired state
+    }
+    if (want) {
+        // A transient bring-up failure (logged) leaves the family down; the next change retries.
+        if (!BringUpFamily(family)) {
+            setup = {};
+        }
+    } else {
+        setup = {};  // tear down: RAII leaves the group and unregisters both captures
+    }
+}
+
+void MdnsReflector::OnInterfaceChanged() noexcept {
+    capability_.Observe();  // log each family's reflectability transition
+    using enum IpAddress::Family;
+    SyncFamily(V4);
+    SyncFamily(V6);
 }
 
 void MdnsReflector::OnSourcePacket(const Packet& packet) noexcept {

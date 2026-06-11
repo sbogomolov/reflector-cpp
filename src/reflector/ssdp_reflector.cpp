@@ -89,6 +89,7 @@ void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& 
             std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
     }
 
+    valid_ = true;
     logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",
         config.UsesIPv4() && reflectable(IpAddress::Family::V4) ? "enabled" : "disabled",
         config.UsesIPv6() && reflectable(IpAddress::Family::V6) ? "enabled" : "disabled",
