@@ -21,7 +21,9 @@ std::string LoggerName(const WolConfig& config) {
 WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const WolConfig& config)
         : Reflector{LoggerName(config)}
-        , target_socket_{target_socket} {
+        , target_socket_{target_socket}
+        , target_capability_{target_socket.GetInterface(), "target", logger_,
+              FamilyCapability::PolicyOf(config)} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -50,9 +52,6 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
         return;
     }
 
-    reflects_v4_ = config.UsesIPv4() && target_interface.CanSend(IpAddress::Family::V4);
-    reflects_v6_ = config.UsesIPv6() && target_interface.CanSend(IpAddress::Family::V6);
-
     target_mac_ = config.mac;
     std::fill_n(expected_magic_packet_.begin(), PREFIX_SIZE, std::byte{0xff});
     if (target_mac_) {
@@ -74,8 +73,8 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
     }
 
     logger_.Info("Created wol reflector (IPv4: {}, IPv6: {})",
-        reflects_v4_ ? "enabled" : "disabled",
-        reflects_v6_ ? "enabled" : "disabled");
+        target_capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
+        target_capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled");
 }
 
 // The 6x 0xFF prefix + 16x target-MAC sequence must begin at payload offset 0. The AMD
@@ -134,17 +133,17 @@ void WolReflector::BuildExpectedMagicPacket(MacAddress mac) noexcept {
     }
 }
 
-bool WolReflector::ReflectsFamily(IpAddress::Family family) const noexcept {
-    return family == IpAddress::Family::V4 ? reflects_v4_ : reflects_v6_;
-}
-
 void WolReflector::OnPacket(const Packet& packet) noexcept {
+    // Report any capability change since the last packet (one-shot per flip, so a lost address
+    // never logs per packet).
+    target_capability_.Observe();
+
     if (!IsMagicPacket(packet.payload)) {
         return;
     }
 
     const auto family = packet.header.source.addr.AddressFamily();
-    if (!ReflectsFamily(family)) {
+    if (!target_capability_.CanSend(family)) {
         logger_.Debug("Ignoring wol packet from {}: {} not handled",
             packet.header.source, family);
         return;

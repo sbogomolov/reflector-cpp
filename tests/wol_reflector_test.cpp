@@ -415,4 +415,97 @@ TEST_F(WolReflectorTest, SilentlyDropsV6PacketsWhenV6UnavailableInDefault) {
         << "v6 packet on a v6-unavailable Default reflector should not log at ERROR level: " << output;
 }
 
+// The creation log's per-family enabled/disabled flags come from target_capability_.CanSend()
+// (config uses the family AND the target can send it). A Default reflector on a v4-only target
+// is enabled for v4 and disabled for v6.
+TEST_F(WolReflectorTest, CreationLogReflectsPerFamilyCapability) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = AddressFamily::Default;  // uses both families, requires only v4
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
+
+    const std::string output = CaptureStdout([&] {
+        const WolReflector reflector{packet_dispatcher, source, target, config};
+        EXPECT_TRUE(reflector.IsValid());
+    });
+
+    EXPECT_NE(output.find("IPv4: enabled"), std::string::npos) << output;
+    EXPECT_NE(output.find("IPv6: disabled"), std::string::npos) << output;
+}
+
+// Capability is read live, not snapshotted: a v6 address appearing after construction (e.g. DAD
+// completing, DHCPv6 landing) starts v6 reflection — announced by one Info notice — without
+// re-creating the reflector.
+TEST_F(WolReflectorTest, StartsReflectingWhenAMissingFamilyGainsAnAddress) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = AddressFamily::Default;
+    target.iface.SetHasSource(IpAddress::Family::V6, false);
+
+    WolReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto payload = MakeMagicPacket(*config.mac);
+    target.iface.SetHasSource(IpAddress::Family::V6, true);  // the address arrived after startup
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
+    });
+
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_EQ(target.sent.front().dst_ip, IpAddress::AllNodesLinkLocalV6());
+    EXPECT_NE(output.find(std::format("Starting {} reflection", IpAddress::Family::V6)),
+        std::string::npos) << output;
+}
+
+// Losing a merely-used family stops reflection with a single Info notice: repeated traffic
+// neither repeats the notice nor logs at ERROR.
+TEST_F(WolReflectorTest, LosingAnOptionalFamilyLogsInfoOnce) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = AddressFamily::Default;
+
+    WolReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto payload = MakeMagicPacket(*config.mac);
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // the v6 address vanished
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
+    });
+
+    EXPECT_TRUE(target.sent.empty());
+    const auto notice = std::format("Stopping {} reflection", IpAddress::Family::V6);
+    EXPECT_NE(output.find(notice), std::string::npos) << output;
+    EXPECT_EQ(output.find(notice), output.rfind(notice)) << "the notice must be one-shot: " << output;
+    EXPECT_EQ(output.find("ERROR"), std::string::npos) << output;
+}
+
+// Losing a REQUIRED family logs a single Error — not one per dropped packet — and reflection
+// resumes (with the Info notice) once the address returns.
+TEST_F(WolReflectorTest, LosingARequiredFamilyLogsErrorOnceAndRecovers) {
+    const auto config = MakeConfig(IpAddress::Family::V4);
+    WolReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto payload = MakeMagicPacket(*config.mac);
+    target.iface.SetHasSource(IpAddress::Family::V4, false);  // e.g. a DHCP renewal in flight
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+    });
+
+    EXPECT_TRUE(target.sent.empty());
+    const auto error = std::format("Cannot reflect {} packets", IpAddress::Family::V4);
+    EXPECT_NE(output.find(error), std::string::npos) << output;
+    EXPECT_EQ(output.find(error), output.rfind(error)) << "the error must be one-shot: " << output;
+
+    target.iface.SetHasSource(IpAddress::Family::V4, true);
+    const std::string recovered = CaptureStdout([&] {
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+    });
+
+    ASSERT_EQ(target.sent.size(), 1u);
+    EXPECT_NE(recovered.find(std::format("Starting {} reflection", IpAddress::Family::V4)),
+        std::string::npos) << recovered;
+}
+
 } // namespace reflector

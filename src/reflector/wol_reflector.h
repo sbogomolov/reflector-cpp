@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config.h"
+#include "family_capability.h"
 #include "link_socket.h"
 #include "mac_address.h"
 #include "packet_dispatcher.h"
@@ -33,14 +34,13 @@ private:
     [[nodiscard]] bool HasMagicPacketPrefix(std::span<const std::byte> payload) noexcept;
     [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
     void OnPacket(const Packet& packet) noexcept;
-    [[nodiscard]] bool ReflectsFamily(IpAddress::Family family) const noexcept;
 
     LinkSocket& target_socket_;
-    // Families this reflector actually re-emits: the config uses the family and target_socket_
-    // can originate it. A family the config merely *uses* (Default uses both, requires only v4)
-    // but the target can't send is left false, so OnPacket drops it instead of failing every send.
-    bool reflects_v4_ = false;
-    bool reflects_v6_ = false;
+    // The target interface's per-family send capability, gated by the config's family policy.
+    // Read live per packet, so an address change takes effect without re-creating the reflector
+    // (a merely-used family is dropped quietly while the target can't send it); transition
+    // notices fire one-shot via Observe().
+    FamilyCapability target_capability_;
     std::optional<MacAddress> target_mac_;
     // Always contains the magic-packet prefix. In fixed-MAC mode it also contains the
     // repeated target MAC; in any-MAC mode only the prefix bytes are used.

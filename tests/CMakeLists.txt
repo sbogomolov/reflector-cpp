@@ -1,5 +1,6 @@
 add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/default_address_monitor_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/address_family_pair_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/application_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/checksum_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_test.cpp
@@ -7,6 +8,7 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/dial_proxy_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/event_loop_dispatcher_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/family_capability_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timer_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_builder_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/http_message_test.cpp
