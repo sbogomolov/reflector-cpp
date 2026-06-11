@@ -26,6 +26,13 @@ public:
     // A reflector is valid once it has registered at least one capture callback.
     [[nodiscard]] bool IsValid() const noexcept { return !registrations_.empty(); }
 
+    // Called (by Application) after an interface's addresses may have changed, so the reflector can
+    // react to a family gaining or losing its source address — log a capability transition, and
+    // join/leave the family's groups. Default no-op (a reflector that gates only at construction
+    // needs nothing); the reflector reads live interface state, so one call after the refresh is
+    // enough, regardless of which interface changed.
+    virtual void OnInterfaceChanged() noexcept {}
+
 protected:
     explicit Reflector(std::string logger_name) : logger_{std::move(logger_name)} {}
 

@@ -133,11 +133,11 @@ void WolReflector::BuildExpectedMagicPacket(MacAddress mac) noexcept {
     }
 }
 
-void WolReflector::OnPacket(const Packet& packet) noexcept {
-    // Report any capability change since the last packet (one-shot per flip, so a lost address
-    // never logs per packet).
+void WolReflector::OnInterfaceChanged() noexcept {
     target_capability_.Observe();
+}
 
+void WolReflector::OnPacket(const Packet& packet) noexcept {
     if (!IsMagicPacket(packet.payload)) {
         return;
     }

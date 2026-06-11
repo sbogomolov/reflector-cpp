@@ -481,6 +481,24 @@ TEST_F(ApplicationTest, RefreshesOnlyTheChangedInterface) {
     EXPECT_EQ(Iface("dst")->refresh_count, 0u);
 }
 
+// After refreshing interfaces, Application notifies every reflector so it can react to the change.
+// Verified end-to-end: a WoL reflector whose target gains a v6 address logs the capability notice
+// only once the monitor fires (its Observe runs in OnInterfaceChanged, not on packet traffic).
+TEST_F(ApplicationTest, NotifiesReflectorsWhenAnInterfaceChanges) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.can_send_v6 = false, .interface_index = 9});  // dst has no v6 at startup
+    auto app = MakeApp();
+    auto wol = MakeWolConfig("tv", "src", "dst", {9});
+    wol.address_family = AddressFamily::Default;  // uses both families, requires only v4
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(wol).Build()));
+
+    Iface("dst")->SetHasSource(IpAddress::Family::V6, true);  // a v6 address appears on the target
+    const std::string output = CaptureStdout([&] { monitor_->FireChange(9); });
+
+    EXPECT_NE(output.find(std::format("Starting {} reflection", IpAddress::Family::V6)),
+        std::string::npos) << output;
+}
+
 TEST_F(ApplicationTest, RefreshesAllInterfacesOnOverflowSignal) {
     ConfigureSocket("src", {.interface_index = 5});
     ConfigureSocket("dst", {.interface_index = 9});

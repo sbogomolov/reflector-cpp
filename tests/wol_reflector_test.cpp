@@ -434,8 +434,8 @@ TEST_F(WolReflectorTest, CreationLogReflectsPerFamilyCapability) {
 }
 
 // Capability is read live, not snapshotted: a v6 address appearing after construction (e.g. DAD
-// completing, DHCPv6 landing) starts v6 reflection — announced by one Info notice — without
-// re-creating the reflector.
+// completing, DHCPv6 landing) starts v6 reflection without re-creating the reflector, and the next
+// v6 packet is reflected. (The one-shot Info notice is covered by the FamilyCapability tests.)
 TEST_F(WolReflectorTest, StartsReflectingWhenAMissingFamilyGainsAnAddress) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = AddressFamily::Default;
@@ -443,21 +443,19 @@ TEST_F(WolReflectorTest, StartsReflectingWhenAMissingFamilyGainsAnAddress) {
 
     WolReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());
+    EXPECT_FALSE(reflector.ReflectsFamily(IpAddress::Family::V6));  // not reflected before the address
+
+    target.iface.SetHasSource(IpAddress::Family::V6, true);         // the address arrived after startup
+    EXPECT_TRUE(reflector.ReflectsFamily(IpAddress::Family::V6));   // now reflected (capability is live)
 
     const auto payload = MakeMagicPacket(*config.mac);
-    target.iface.SetHasSource(IpAddress::Family::V6, true);  // the address arrived after startup
-    const std::string output = CaptureStdout([&] {
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
-    });
-
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
     ASSERT_EQ(target.sent.size(), 1u);
     EXPECT_EQ(target.sent.front().dst_ip, IpAddress::AllNodesLinkLocalV6());
-    EXPECT_NE(output.find(std::format("Starting {} reflection", IpAddress::Family::V6)),
-        std::string::npos) << output;
 }
 
-// Losing a merely-used family stops reflection with a single Info notice: repeated traffic
-// neither repeats the notice nor logs at ERROR.
+// Losing a merely-used family stops reflection with a single Info notice: a repeated
+// OnInterfaceChanged neither repeats the notice nor logs at ERROR, and the family's packets drop.
 TEST_F(WolReflectorTest, LosingAnOptionalFamilyLogsInfoOnce) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.address_family = AddressFamily::Default;
@@ -465,47 +463,68 @@ TEST_F(WolReflectorTest, LosingAnOptionalFamilyLogsInfoOnce) {
     WolReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());
 
-    const auto payload = MakeMagicPacket(*config.mac);
     target.iface.SetHasSource(IpAddress::Family::V6, false);  // the v6 address vanished
     const std::string output = CaptureStdout([&] {
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
+        reflector.OnInterfaceChanged();
+        reflector.OnInterfaceChanged();  // a second notification must not repeat the notice
     });
 
+    const auto payload = MakeMagicPacket(*config.mac);
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
     EXPECT_TRUE(target.sent.empty());
+
     const auto notice = std::format("Stopping {} reflection", IpAddress::Family::V6);
     EXPECT_NE(output.find(notice), std::string::npos) << output;
     EXPECT_EQ(output.find(notice), output.rfind(notice)) << "the notice must be one-shot: " << output;
     EXPECT_EQ(output.find("ERROR"), std::string::npos) << output;
 }
 
-// Losing a REQUIRED family logs a single Error — not one per dropped packet — and reflection
-// resumes (with the Info notice) once the address returns.
+// Losing a REQUIRED family logs a single Error — not one per notification — and reflection resumes
+// (with the Info notice) once the address returns.
 TEST_F(WolReflectorTest, LosingARequiredFamilyLogsErrorOnceAndRecovers) {
     const auto config = MakeConfig(IpAddress::Family::V4);
     WolReflector reflector{packet_dispatcher, source, target, config};
     ASSERT_TRUE(reflector.IsValid());
 
-    const auto payload = MakeMagicPacket(*config.mac);
     target.iface.SetHasSource(IpAddress::Family::V4, false);  // e.g. a DHCP renewal in flight
     const std::string output = CaptureStdout([&] {
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+        reflector.OnInterfaceChanged();
+        reflector.OnInterfaceChanged();
     });
 
+    const auto payload = MakeMagicPacket(*config.mac);
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
     EXPECT_TRUE(target.sent.empty());
+
     const auto error = std::format("Cannot reflect {} packets", IpAddress::Family::V4);
     EXPECT_NE(output.find(error), std::string::npos) << output;
     EXPECT_EQ(output.find(error), output.rfind(error)) << "the error must be one-shot: " << output;
+    EXPECT_FALSE(reflector.ReflectsFamily(IpAddress::Family::V4));  // not reflected while the address is gone
 
     target.iface.SetHasSource(IpAddress::Family::V4, true);
-    const std::string recovered = CaptureStdout([&] {
-        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+    EXPECT_TRUE(reflector.ReflectsFamily(IpAddress::Family::V4));   // reflection restored once it returns
+
+    packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV4(), 9));
+    ASSERT_EQ(target.sent.size(), 1u);
+}
+
+// Transition notices are event-driven (OnInterfaceChanged), not lazy on traffic: a capability
+// change with no OnInterfaceChanged logs nothing, yet gating stays live so the packet still drops.
+TEST_F(WolReflectorTest, DoesNotNoticeCapabilityChangeFromPacketTrafficAlone) {
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.address_family = AddressFamily::Default;
+
+    WolReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 vanishes; no OnInterfaceChanged
+    const auto payload = MakeMagicPacket(*config.mac);
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(MakePacket(payload, IpAddress::LoopbackV6(), 9));
     });
 
-    ASSERT_EQ(target.sent.size(), 1u);
-    EXPECT_NE(recovered.find(std::format("Starting {} reflection", IpAddress::Family::V4)),
-        std::string::npos) << recovered;
+    EXPECT_TRUE(target.sent.empty());  // gating reads live capability — the v6 packet still drops
+    EXPECT_EQ(output.find("Stopping"), std::string::npos) << output;  // but no notice without the callback
 }
 
 } // namespace reflector

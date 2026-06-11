@@ -21,6 +21,16 @@ public:
     WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const WolConfig& config);
 
+    // Re-reads the target interface's capability, logging a one-shot transition notice. WoL's
+    // captures are port-based (not per-group), so gating stays live per packet — nothing to join.
+    void OnInterfaceChanged() noexcept override;
+
+    // True if this reflector currently reflects `family`: the config uses it AND the target
+    // interface can send it. Read live, so it tracks the target's address changes.
+    [[nodiscard]] bool ReflectsFamily(IpAddress::Family family) const noexcept {
+        return target_capability_.CanSend(family);
+    }
+
 private:
     static constexpr size_t PREFIX_SIZE = 6;
     static constexpr size_t MAC_SIZE = 6;

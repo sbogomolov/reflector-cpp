@@ -132,6 +132,13 @@ void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
             iface->Refresh();
         }
     }
+
+    // The fresh addresses are now visible. Let every reflector react (re-gate families, join/leave
+    // groups, log transitions) — each reads live interface state and no-ops if nothing relevant to
+    // it changed, so a single broadcast after the refresh is enough.
+    for (const auto& reflector : reflectors_) {
+        reflector->OnInterfaceChanged();
+    }
 }
 
 void Application::Run(const volatile std::sig_atomic_t& stop_requested) {
