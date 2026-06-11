@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "dial_proxy.h"
+#include "dynamic_family_reflector.h"
 #include "ip_address.h"
 #include "ip_endpoint.h"
 #include "link_socket.h"
@@ -9,7 +10,6 @@
 #include "packet.h"
 #include "packet_dispatcher.h"
 #include "port_reservation.h"
-#include "reflector.h"
 #include "ssdp_message.h"
 #include "timer.h"
 
@@ -28,8 +28,10 @@ namespace reflector {
 // directionally: M-SEARCH searches source->target, NOTIFY advertisements target->source. The
 // target->source direction can be restricted to one device by its frame source MAC (config.mac).
 // Both sockets must outlive this reflector. A unicast M-SEARCH 200 OK is reflected back to the
-// searcher via a per-search reserved-port session.
-class SsdpReflector : public Reflector {
+// searcher via a per-search reserved-port session. A family is reflected only while BOTH interfaces
+// can send it; its group joins and captures come up / go down as addresses change
+// (DynamicFamilyReflector).
+class SsdpReflector : public DynamicFamilyReflector {
 public:
     SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const SsdpConfig& config);
@@ -53,12 +55,13 @@ private:
     };
 
     [[nodiscard]] bool ValidateConfig(const SsdpConfig& config);
-    void Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-        LinkSocket& target_socket, const SsdpConfig& config);
-    // Joins one SSDP `group` on both sockets and registers both directions for it. Returns false
-    // (after logging) if a join or registration fails.
-    [[nodiscard]] bool SetUpGroup(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-        LinkSocket& target_socket, const IpAddress& group, const SsdpConfig& config);
+    void Initialize(const SsdpConfig& config);
+    // Joins every SSDP group of `family` (IPv4 has one, IPv6 has two) on both sockets and registers
+    // both directions for each.
+    [[nodiscard]] bool BringUpFamily(IpAddress::Family family) override;
+    // Joins one SSDP `group` on both sockets and registers both directions, into `setup`. Returns
+    // false (after logging, nothing pushed) if a join or registration fails.
+    [[nodiscard]] bool SetUpGroup(const IpAddress& group, FamilySetup& setup);
 
     void OnSourcePacket(const Packet& packet) noexcept;  // source->target: reflect searches
     void OnTargetPacket(const Packet& packet) noexcept;  // target->source: reflect advertisements

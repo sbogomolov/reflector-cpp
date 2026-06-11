@@ -342,6 +342,103 @@ TEST_F(SsdpReflectorTest, DefaultReflectsAvailableFamilyOnly) {
     EXPECT_EQ(target.joined_groups, std::vector<IpAddress>{IpAddress::SsdpGroupV4()});
 }
 
+// An optional family not reflectable at construction comes up once both interfaces can send it: on
+// the next interface change ALL its groups (IPv6 has two) are joined and captured, and traffic
+// flows. Mirrors mDNS but exercises SSDP's multi-group BringUpFamily.
+TEST_F(SsdpReflectorTest, OptionalFamilyComesUpWhenItBecomesReflectable) {
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 not reflectable at startup
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);  // v4 only (one group, both directions)
+
+    target.iface.SetHasSource(IpAddress::Family::V6, true);  // a v6 address appears
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), 6);  // + v6's two groups x both directions
+    for (const auto& group : IpAddress::SsdpGroupsFor(IpAddress::Family::V6)) {
+        EXPECT_NE(std::ranges::find(source.joined_groups, group), source.joined_groups.end());
+        EXPECT_NE(std::ranges::find(target.joined_groups, group), target.joined_groups.end());
+    }
+
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV6LinkLocal()));
+    EXPECT_FALSE(target.sent.empty());  // a v6 search now reflects source -> target
+}
+
+// All of a family's groups are torn down when it stops being reflectable: every group left, all its
+// captures unregistered, and its traffic no longer reflects.
+TEST_F(SsdpReflectorTest, FamilyIsTornDownWhenItStopsBeingReflectable) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 6);  // v4 (1 group) + v6 (2 groups), both directions
+
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 lost on the target
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), 2);  // v6's four captures dropped
+    for (const auto& group : IpAddress::SsdpGroupsFor(IpAddress::Family::V6)) {
+        EXPECT_NE(std::ranges::find(target.left_groups, group), target.left_groups.end());
+    }
+
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV6LinkLocal()));
+    EXPECT_TRUE(target.sent.empty());  // no registration -> no reflection
+}
+
+// A required family lost at runtime is torn down (with an Error notice) and brought back when its
+// address returns. The reflector stays valid throughout (validity is decided at construction).
+TEST_F(SsdpReflectorTest, RequiredFamilyTornDownAndRecovered) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);
+
+    target.iface.SetHasSource(IpAddress::Family::V4, false);  // the required v4 vanishes
+    const std::string lost = CaptureStdout([&] { reflector.OnInterfaceChanged(); });
+    EXPECT_EQ(RegistrationCount(), 0);
+    EXPECT_TRUE(reflector.IsValid());  // still valid: validity is fixed at construction
+    EXPECT_NE(std::ranges::find(target.left_groups, IpAddress::SsdpGroupV4()), target.left_groups.end());
+    EXPECT_NE(lost.find(std::format("Cannot reflect {} packets", IpAddress::Family::V4)),
+        std::string::npos) << lost;
+
+    target.iface.SetHasSource(IpAddress::Family::V4, true);  // and returns
+    reflector.OnInterfaceChanged();
+    EXPECT_EQ(RegistrationCount(), 2);  // brought back up
+}
+
+// Multi-group construction rollback: when a LATER group of a family fails to register, the family's
+// already-set-up earlier groups are rolled back (BringUpFamily resets the setup) before the
+// reflector reports invalid. (IPv6 has two groups; fail the second's first registration.)
+TEST_F(SsdpReflectorTest, FailureOnALaterGroupRollsBackTheWholeFamily) {
+    packet_dispatcher.fail_register_on_call = 3;  // group 1 (calls 1-2) succeeds; group 2's first reg (3) fails
+
+    const std::string output = CaptureStdout([&] {
+        const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv6)};
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(RegistrationCount(), 0);  // the first group's captures were rolled back too
+    });
+
+    EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::SsdpGroupV6LinkLocal()),
+        source.left_groups.end());
+}
+
+// The DIAL proxy is independent of family setup: tearing the v4 family down and bringing it back up
+// (an interface change) leaves the proxy intact, so DIAL LOCATION rewriting still works afterward.
+TEST_F(SsdpReflectorTest, DialProxySurvivesAFamilyTeardown) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    target.iface.SetHasSource(IpAddress::Family::V4, false);  // v4 family torn down
+    reflector.OnInterfaceChanged();
+    target.iface.SetHasSource(IpAddress::Family::V4, true);   // and brought back up
+    reflector.OnInterfaceChanged();
+
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_EQ(text.find(DIAL_DEVICE_AUTHORITY), std::string_view::npos) << text;  // still rewritten
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;
+}
+
 TEST_F(SsdpReflectorTest, MacFilterReflectsOnlyTheConfiguredDevice) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");

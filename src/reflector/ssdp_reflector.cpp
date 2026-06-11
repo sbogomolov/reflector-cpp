@@ -24,7 +24,8 @@ std::string LoggerName(const SsdpConfig& config) {
 
 SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const SsdpConfig& config)
-        : Reflector{LoggerName(config)}
+        : DynamicFamilyReflector{LoggerName(config), source_socket.GetInterface(),
+              target_socket.GetInterface(), FamilyCapability::PolicyOf(config)}
         , source_socket_{source_socket}
         , target_socket_{target_socket}
         , packet_dispatcher_{packet_dispatcher}
@@ -34,7 +35,7 @@ SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
         return;
     }
 
-    Initialize(packet_dispatcher, source_socket, target_socket, config);
+    Initialize(config);
 }
 
 bool SsdpReflector::ValidateConfig(const SsdpConfig& config) {
@@ -45,91 +46,87 @@ bool SsdpReflector::ValidateConfig(const SsdpConfig& config) {
     return true;
 }
 
-void SsdpReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-    LinkSocket& target_socket, const SsdpConfig& config) {
-    // SSDP is bidirectional, so a handled family must be sendable on BOTH interfaces: the target
-    // re-emits reflected searches, the source re-emits reflected advertisements.
-    const auto reflectable = [&](IpAddress::Family family) {
-        return source_socket.GetInterface().CanSend(family)
-            && target_socket.GetInterface().CanSend(family);
-    };
-
-    if (config.RequiresIPv4() && !reflectable(IpAddress::Family::V4)) {
+void SsdpReflector::Initialize(const SsdpConfig& config) {
+    // SSDP is bidirectional, so a handled family must be sendable on BOTH interfaces (capability_
+    // tracks the AND): the target re-emits reflected searches, the source re-emits advertisements.
+    // A required family must already be reflectable; an optional one comes up later if it ever is.
+    if (config.RequiresIPv4() && !capability_.CanSend(IpAddress::Family::V4)) {
         logger_.Error("Cannot create ssdp reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
-    if (config.RequiresIPv6() && !reflectable(IpAddress::Family::V6)) {
+    if (config.RequiresIPv6() && !capability_.CanSend(IpAddress::Family::V6)) {
         logger_.Error("Cannot create ssdp reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
 
-    for (const auto family : {IpAddress::Family::V4, IpAddress::Family::V6}) {
-        const bool uses = family == IpAddress::Family::V4 ? config.UsesIPv4() : config.UsesIPv6();
-        if (!uses || !reflectable(family)) {
-            continue;  // a family the config merely "uses" but can't reflect is silently skipped
-        }
-        // SSDP has more than one group per family (IPv6: link-local + site-local); join and register
-        // each one.
-        for (const auto& group : IpAddress::SsdpGroupsFor(family)) {
-            if (!SetUpGroup(packet_dispatcher, source_socket, target_socket, group, config)) {
-                registrations_.clear();
-                return;
-            }
-        }
+    if (!BringUpReflectableFamilies()) {
+        return;
     }
 
     // config.Verify guarantees dial implies an IPv4 family, and the RequiresIPv4 gate above guarantees V4
     // is reflectable here, so the proxy always has a source_if V4 address to bind its listeners on. The
     // device speaks DIAL on target_if and the client reaches it on source_if (LOCATION rewrite direction).
     if (config.dial) {
-        dial_proxy_.emplace(packet_dispatcher.UnderlyingDispatcher(), source_socket.GetInterface(),
-            target_socket.GetInterface(),
+        dial_proxy_.emplace(packet_dispatcher_.UnderlyingDispatcher(), source_socket_.GetInterface(),
+            target_socket_.GetInterface(),
             std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
     }
 
     valid_ = true;
     logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",
-        config.UsesIPv4() && reflectable(IpAddress::Family::V4) ? "enabled" : "disabled",
-        config.UsesIPv6() && reflectable(IpAddress::Family::V6) ? "enabled" : "disabled",
+        capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
+        capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled",
         config.dial ? "enabled" : "disabled");
 }
 
-bool SsdpReflector::SetUpGroup(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
-    LinkSocket& target_socket, const IpAddress& group, const SsdpConfig& config) {
-    // Program gate 2 so each interface actually receives the group's multicast. A failed join on
-    // one interface drops the membership already taken on the other when its token leaves scope.
-    auto source_membership = source_socket.JoinMulticastGroup(group);
-    auto target_membership = target_socket.JoinMulticastGroup(group);
+bool SsdpReflector::BringUpFamily(IpAddress::Family family) {
+    // SSDP has more than one group per family (IPv6: link-local + site-local); each is set up into
+    // the family's setup. A failure rolls the whole family back (RAII leaves/unregisters the rest).
+    auto& setup = families_.Get(family);
+    for (const auto& group : IpAddress::SsdpGroupsFor(family)) {
+        if (!SetUpGroup(group, setup)) {
+            setup = {};
+            return false;
+        }
+    }
+    return true;
+}
+
+bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
+    // Program gate 2 so each interface actually receives the group's multicast. A failed join or
+    // registration drops every token taken here when it leaves scope; setup is populated only on
+    // full success.
+    auto source_membership = source_socket_.JoinMulticastGroup(group);
+    auto target_membership = target_socket_.JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": cannot join {} on both interfaces",
-            config.name, group);
+        logger_.Error("Cannot reflect ssdp {}: cannot join the group on both interfaces", group);
         return false;
     }
-    memberships_.push_back(std::move(source_membership));
-    memberships_.push_back(std::move(target_membership));
 
     // source -> target: reflect searches, unfiltered (any client on source may search).
-    auto source_registration = packet_dispatcher.Register(source_socket,
+    auto source_registration = packet_dispatcher_.Register(source_socket_,
         PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT},
         CreateDelegate<&SsdpReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": registration failed for {} (source)", config.name, group);
+        logger_.Error("Cannot reflect ssdp {}: registration failed (source)", group);
         return false;
     }
-    registrations_.push_back(std::move(source_registration));
 
     // target -> source: reflect advertisements, optionally only from the configured device's MAC.
-    auto target_registration = packet_dispatcher.Register(target_socket,
-        PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT, .source_mac = config.mac},
+    auto target_registration = packet_dispatcher_.Register(target_socket_,
+        PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT, .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": registration failed for {} (target)", config.name, group);
+        logger_.Error("Cannot reflect ssdp {}: registration failed (target)", group);
         return false;
     }
-    registrations_.push_back(std::move(target_registration));
 
+    setup.memberships.push_back(std::move(source_membership));
+    setup.memberships.push_back(std::move(target_membership));
+    setup.registrations.push_back(std::move(source_registration));
+    setup.registrations.push_back(std::move(target_registration));
     return true;
 }
 

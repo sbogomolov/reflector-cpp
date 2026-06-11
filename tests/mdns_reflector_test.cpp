@@ -396,6 +396,20 @@ TEST_F(MdnsReflectorTest, TransientBringUpFailureLeavesFamilyDownThenRetries) {
     EXPECT_EQ(RegistrationCount(), 4);   // v6 now up
 }
 
+// Cross-family construction rollback: with both families reflectable, a failure bringing up the
+// SECOND family tears down the FIRST (already up) before the reflector reports invalid.
+TEST_F(MdnsReflectorTest, FailureBringingUpSecondFamilyRollsBackTheFirst) {
+    packet_dispatcher.fail_register_on_call = 3;  // v4 (calls 1-2) succeeds; v6's first registration (3) fails
+
+    const std::string output = CaptureStdout([&] {
+        const MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(RegistrationCount(), 0);  // the already-up v4 family was torn down too
+    });
+
+    EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::MdnsGroupV4()), source.left_groups.end());
+}
+
 TEST_F(MdnsReflectorTest, MacFilterRelaysOnlyTheConfiguredDevice) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");

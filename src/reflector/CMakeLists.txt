@@ -4,6 +4,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/checksum.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dial_proxy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/dynamic_family_reflector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/event_loop_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/family_capability.cpp

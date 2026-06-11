@@ -19,13 +19,12 @@ std::string LoggerName(const MdnsConfig& config) {
 
 MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const MdnsConfig& config)
-        : Reflector{LoggerName(config)}
+        : DynamicFamilyReflector{LoggerName(config), source_socket.GetInterface(),
+              target_socket.GetInterface(), FamilyCapability::PolicyOf(config)}
         , source_socket_{source_socket}
         , target_socket_{target_socket}
         , packet_dispatcher_{packet_dispatcher}
-        , config_mac_{config.mac}
-        , capability_{source_socket.GetInterface(), target_socket.GetInterface(), logger_,
-              FamilyCapability::PolicyOf(config)} {
+        , config_mac_{config.mac} {
     if (!ValidateConfig(config)) {
         return;
     }
@@ -56,12 +55,8 @@ void MdnsReflector::Initialize(const MdnsConfig& config) {
         return;
     }
 
-    for (const auto family : {IpAddress::Family::V4, IpAddress::Family::V6}) {
-        if (capability_.CanSend(family) && !BringUpFamily(family)) {
-            families_.V4() = {};  // a setup failure tears down anything brought up so far
-            families_.V6() = {};
-            return;
-        }
+    if (!BringUpReflectableFamilies()) {
+        return;
     }
 
     valid_ = true;
@@ -107,29 +102,6 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
     setup.registrations.push_back(std::move(source_registration));
     setup.registrations.push_back(std::move(target_registration));
     return true;
-}
-
-void MdnsReflector::SyncFamily(IpAddress::Family family) noexcept {
-    const bool want = capability_.CanSend(family);
-    auto& setup = families_.Get(family);
-    if (want == setup.IsUp()) {
-        return;  // already in the desired state
-    }
-    if (want) {
-        // A transient bring-up failure (logged) leaves the family down; the next change retries.
-        if (!BringUpFamily(family)) {
-            setup = {};
-        }
-    } else {
-        setup = {};  // tear down: RAII leaves the group and unregisters both captures
-    }
-}
-
-void MdnsReflector::OnInterfaceChanged() noexcept {
-    capability_.Observe();  // log each family's reflectability transition
-    using enum IpAddress::Family;
-    SyncFamily(V4);
-    SyncFamily(V6);
 }
 
 void MdnsReflector::OnSourcePacket(const Packet& packet) noexcept {
