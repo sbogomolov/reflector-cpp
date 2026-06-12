@@ -376,7 +376,11 @@ TEST_CASES = [
     TestCase(
         name="ignores_ssdp_wrong_port",
         send_port=SSDP_WRONG_PORT,
-        receive_port=SSDP_PORT,
+        # Listen on the SEND port, not 1900: the reflector reflects to the captured dest port verbatim
+        # (ssdp_reflector.cpp, SendUdpMulticastDatagram(packet.header.dest, ...)), so a regression that
+        # dispatched this 1901 datagram would re-emit it to the group on 1901 — invisible to a 1900-bound
+        # receiver. Binding the send port keeps the "not reflected" assertion able to observe a misforward.
+        receive_port=SSDP_WRONG_PORT,
         expect_mac=None,
         timeout_seconds=1.5,
         send_payload_hex=SSDP_MSEARCH_HEX,
@@ -930,11 +934,29 @@ class DockerDial(DockerE2E):
         print(f"dial: every request's Host was rewritten to the device, and every upstream connection came "
               f"from the reflector's target_if address {refl_target_ip}", flush=True)
 
+    def _force_upstream_egress_ambiguity(self) -> None:
+        # Make the upstream egress pin load-bearing. The device is single-homed on the target net, so the
+        # reflector's connect reaches it via target_if by routing alone, and SO_BINDTODEVICE (TcpSocket
+        # PinEgress) would be untestable — assert_device_verdicts' "peer == reflector target_if address"
+        # passes even if the pin were dropped. Plant a more-specific host route to the device via the WRONG
+        # interface (source_if): an unpinned connect now follows it, ARPs the device on the source segment
+        # (where it does not live) and fails, so the whole DIAL flow breaks. Only the egress pin — which
+        # constrains the route lookup to target_if — still reaches the device, so PASS now requires it.
+        device_ip = self.container_ip(self.device_container, self.target_network)
+        docker([
+            "run", "--rm", "--privileged", "--network", f"container:{self.reflector_container}",
+            self.args.helper_image, "ip", "route", "add", f"{device_ip}/32", "dev", REFLECTOR_SOURCE_IFNAME,
+        ])
+
     def run(self) -> None:
         print(f"\n=== {self.dial.name} ===", flush=True)
         self.setup_networks()
         self.start_reflector()
         self.start_device()      # must be serving before the client searches
+        if not self.dial.unreachable:
+            # The unreachable case asserts a PROMPT connect failure; a decoy route would change the
+            # failure mode (ARP timeout vs refused), so only arm the ambiguity where we assert success.
+            self._force_upstream_egress_ambiguity()
         self.run_client()
         self.wait_for_client()        # client-side verdict: rewrites (or, for unreachable, the expected fail)
         if self.dial.unreachable:
