@@ -33,8 +33,8 @@ public:
     [[nodiscard]] MacAddress Mac() const noexcept { return addresses_.mac; }
 
     // The source address for `family` — what sends and binds on this interface originate from.
-    // nullopt if the interface has none (then CanSend(family) is also false). IPv6 returns the
-    // link-local address.
+    // nullopt if the interface has none (then CanSend(family) is also false). IPv6 prefers the
+    // link-local address, falling back to ULA then GUA.
     [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept;
     [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept;
 

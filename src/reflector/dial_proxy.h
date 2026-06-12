@@ -66,7 +66,7 @@ public:
     static constexpr size_t MAX_REST_LISTENERS = 24;
     // Distinct device description endpoints, minted from the rewritten LOCATION. One per device — but the
     // description port is dynamic (changes on power-cycle), so a reboot briefly doubles a device's listener
-    // until the short grace reaps it; sized equal to REST to absorb that churn.
+    // until the short grace reaps it; sized above REST to absorb that doubling churn.
     static constexpr size_t MAX_DISCOVERY_LISTENERS = 32;
 
     // Borrows the dispatcher (reached via PacketDispatcher::UnderlyingDispatcher(), as the SSDP eviction

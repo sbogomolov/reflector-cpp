@@ -41,10 +41,10 @@ Logger& GetLogger() noexcept {
 constexpr size_t MAC_SIZE = MacAddress::ByteArray{}.size();
 
 // Preference rank of an IPv6 source address: lower is better. We prefer a link-local source
-// because everything we currently send is link-local-scoped multicast (ff02::), then ULA, then
-// GUA (which matter for the future site/global-scoped SSDP ff05:: path), and finally anything
-// else (loopback ::1, etc.) as a last resort — so an interface that has only an unusual address
-// still resolves something rather than nothing.
+// because most of what we send is link-local-scoped multicast (ff02::), then ULA, then GUA (which
+// serve the site/global-scoped SSDP ff05:: path), and finally anything else (loopback ::1, etc.)
+// as a last resort — so an interface that has only an unusual address still resolves something
+// rather than nothing.
 int Ipv6Rank(const IpAddress& address) noexcept {
     if (address.IsLinkLocal()) {
         return 0;

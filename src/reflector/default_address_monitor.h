@@ -56,8 +56,9 @@ private:
         std::vector<unsigned>& changed) const noexcept;
 
     Dispatcher* dispatcher_;
-    // Invalid (default-constructed) until Start() or the testing constructor binds it. Always
-    // valid by the time the fd is watched, so OnReadable can call it.
+    // Invalid (default-constructed) until Start() binds it (the testing constructor leaves it
+    // unbound, so tests must call Start() too). Always valid by the time the fd is watched —
+    // Watch() runs only inside Start(), after the bind — so OnReadable can call it.
     OnInterfaceChanged on_change_;
     Dispatcher::Registration registration_;
     UniqueFd fd_;

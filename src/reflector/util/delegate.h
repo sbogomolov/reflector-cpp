@@ -83,9 +83,9 @@ public:
         return stub_(object_, std::forward<CallArgs>(args)...);
     }
 
-    // Default-constructed delegates are invalid: they bind nothing, and calling operator() on one
-    // is undefined — it does not check, to keep the call branch-free on hot paths. Guard with
-    // IsValid() when a delegate may not have been assigned a target.
+    // Default-constructed delegates are invalid: they bind nothing. operator() has no release-time
+    // guard branch (to keep hot-path calls branch-free) — a debug-only assert catches a null target,
+    // and in release the call is undefined. Guard with IsValid() when a delegate may not have a target.
     Delegate() noexcept = default;
     Delegate(void* object, StubT stub) : object_{object}, stub_{stub} {}
 

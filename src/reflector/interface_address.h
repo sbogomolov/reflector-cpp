@@ -15,7 +15,7 @@ namespace reflector {
 struct InterfaceAddresses {
     MacAddress mac{};             // all-zero when the interface has none (e.g. loopback)
     std::optional<IpAddress> v4;
-    std::optional<IpAddress> v6;  // the interface's IPv6 link-local (fe80::) address, if any
+    std::optional<IpAddress> v6;  // best-ranked IPv6 source (prefers link-local fe80::, else ULA/GUA), if any
 };
 
 namespace detail {

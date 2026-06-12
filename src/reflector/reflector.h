@@ -1,6 +1,5 @@
 #pragma once
 
-#include "link_socket.h"
 #include "logger.h"
 #include "packet_dispatcher.h"
 #include "util/no_move.h"
@@ -43,9 +42,6 @@ protected:
     // Set by the subclass at the end of a successful construction (see IsValid).
     bool valid_ = false;
     std::vector<PacketDispatcher::Registration> registrations_;
-    // Multicast group memberships this reflector holds (mDNS/SSDP join their groups; WoL joins
-    // none). Dropping a membership leaves the group; destroying the reflector leaves them all.
-    std::vector<LinkSocket::MulticastMembership> memberships_;
 };
 
 } // namespace reflector
