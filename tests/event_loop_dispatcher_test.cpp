@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <vector>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -653,6 +654,16 @@ TEST_F(EventLoopDispatcherTest, WriteDispatchSurvivesARehashTriggeredByItsOwnRea
     // quiet and the loop can reach the write dispatch (level-triggered, the readable edge would otherwise
     // re-fire every poll). Bounded.
     ASSERT_TRUE(pair.PushByteToClient());
+    // Block until the byte has actually reached pair.client's recv buffer before pumping. pair.client is
+    // writable from the start, so every PollOnce below returns the always-ready write event immediately and
+    // never blocks; the loopback byte, by contrast, is delivered asynchronously by a kernel network thread
+    // that activates the read filter only once it runs. Without this wait the busy-spin can exhaust all 400
+    // iterations before that thread is scheduled (read then never fires) -- the race that flakes on a loaded,
+    // core-starved CI host. poll() blocking here yields the core so delivery runs; once POLLIN is observed the
+    // recv buffer is non-empty, so the read filter is active and the pump loop dispatches read promptly.
+    pollfd readable{.fd = pair.client, .events = POLLIN, .revents = 0};
+    ASSERT_EQ(::poll(&readable, 1, 5000), 1);
+    ASSERT_TRUE((readable.revents & POLLIN) != 0);
     bool drained = false;
     for (int poll = 0; poll < 400 && (reader.read_count == 0 || writer.count == 0); ++poll) {
         dispatcher.PollOnce(std::chrono::milliseconds{1000});
