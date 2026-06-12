@@ -167,7 +167,8 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
     std::memset(&storage, 0, sizeof(storage));
 
     switch (family_) {
-    case Family::V4: {
+    using enum Family;
+    case V4: {
         auto* v4 = reinterpret_cast<sockaddr_in*>(&storage);
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
@@ -180,7 +181,7 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
 #endif
         return sizeof(sockaddr_in);
     }
-    case Family::V6: {
+    case V6: {
         auto* v6 = reinterpret_cast<sockaddr_in6*>(&storage);
         v6->sin6_family = AF_INET6;
         v6->sin6_port = htons(port);
@@ -200,11 +201,12 @@ std::string IpAddress::ToString() const {
     int address_family = 0;
     size_t buffer_size = 0;
     switch (family_) {
-    case Family::V4:
+    using enum Family;
+    case V4:
         address_family = AF_INET;
         buffer_size = INET_ADDRSTRLEN;
         break;
-    case Family::V6:
+    case V6:
         address_family = AF_INET6;
         buffer_size = INET6_ADDRSTRLEN;
         break;

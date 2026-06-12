@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 #include <sys/socket.h>
 
@@ -103,7 +104,7 @@ template <>
 struct std::hash<reflector::IpAddress>
 {
     size_t operator()(const reflector::IpAddress& address) const noexcept {
-        size_t result = std::hash<uint8_t>{}(static_cast<uint8_t>(address.AddressFamily()));
+        size_t result = std::hash<uint8_t>{}(std::to_underlying(address.AddressFamily()));
         for (const auto byte : address.Bytes()) {
             result = result * 31 + std::to_integer<size_t>(byte);
         }

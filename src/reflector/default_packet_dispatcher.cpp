@@ -52,7 +52,7 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     // capture source's count.
     const auto id = static_cast<RegistrationId>(next_registration_id_++);
     registrations_.emplace_back(id, &source->second, callback, filter);
-    GetLogger().Debug("Registered packet callback {} for fd {}", static_cast<uint64_t>(id), fd);
+    GetLogger().Debug("Registered packet callback {} for fd {}", std::to_underlying(id), fd);
     return MakeRegistration(id);
 }
 
@@ -61,10 +61,10 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         return r.id == id && r.enabled;
     });
     if (it == registrations_.end()) {
-        GetLogger().Warning("Cannot unregister packet callback {}: not found", static_cast<uint64_t>(id));
+        GetLogger().Warning("Cannot unregister packet callback {}: not found", std::to_underlying(id));
         return false;
     }
-    GetLogger().Debug("Unregistered packet callback {}", static_cast<uint64_t>(id));
+    GetLogger().Debug("Unregistered packet callback {}", std::to_underlying(id));
     if (dispatching_) {
         it->enabled = false;  // DrainReadableFd is walking; defer the erase + teardown to its sweep
         return true;

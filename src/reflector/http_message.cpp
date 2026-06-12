@@ -156,20 +156,21 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
     bool stop = false;
     while (pos < input.size() && !stop) {
         switch (phase_) {
-        case Phase::Header:
+        using enum Phase;
+        case Header:
             stop = true;  // the next message starts here — one message per Feed
             break;
-        case Phase::BodyContentLength: {
+        case BodyContentLength: {
             const size_t take = std::min(body_remaining_, input.size() - pos);
             pos += take;
             body_remaining_ -= take;
             if (body_remaining_ == 0) {
-                phase_ = Phase::Header;
+                phase_ = Header;
             }
             stop = true;  // a Content-Length body is one contiguous run — nothing more to forward now
             break;
         }
-        case Phase::BodyChunked: {
+        case BodyChunked: {
             if (chunk_remaining_ > 0) {  // forwarding the current chunk's DATA(+CRLF), opaque
                 const size_t take = std::min(chunk_remaining_, input.size() - pos);
                 pos += take;
@@ -201,14 +202,14 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             }
             pos = eol + CRLF.size();
             if (chunk_size == 0) {
-                phase_ = Phase::BodyChunkedDone;
+                phase_ = BodyChunkedDone;
                 chunk_remaining_ = CRLF.size();  // the blank line closing the chunked body
             } else {
                 chunk_remaining_ = chunk_size + CRLF.size();  // chunk DATA + its terminating CRLF
             }
             break;
         }
-        case Phase::BodyChunkedDone: {
+        case BodyChunkedDone: {
             // A chunked body closes with a bare CRLF. A trailer field (RFC 7230) would appear here instead;
             // this framer relays bodies opaquely and has no trailer scanner, so a non-CRLF close is refused
             // rather than silently mis-framed as the next message. The CRLF may itself be split across feeds.
@@ -221,7 +222,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
                 --chunk_remaining_;
             }
             if (chunk_remaining_ == 0) {
-                phase_ = Phase::Header;
+                phase_ = Header;
             }
             stop = true;
             break;
