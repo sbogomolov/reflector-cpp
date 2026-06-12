@@ -24,7 +24,7 @@ Linux and macOS. The CI workflow runs the unit suite on Ubuntu 24.04 x64, Ubuntu
 
 Prerequisites:
 
-- CMake ≥ 3.22, Ninja, Git
+- CMake ≥ 3.28, Ninja, Git
 - A C++23 toolchain. The standard library bits used here (`std::println`, `std::expected`, `std::format`) require:
   - GCC ≥ 14, or
   - Clang ≥ 18 (with libc++ or libstdc++ from GCC 14+), or
@@ -84,7 +84,7 @@ The default config path is `./config.toml`. The process logs to stdout and shuts
 The reflector opens an L2 packet-capture socket on each interface it listens on to observe incoming
 packets, and a UDP sender bound to each interface it emits on to re-emit them. The capture socket is
 what drives the privilege requirements below; the sender does not need to bind to a port (it sends
-only), so no port-related privileges are required. mDNS additionally joins its multicast group on the
+only), so no port-related privileges are required. mDNS and SSDP additionally join their multicast group(s) on the
 capture socket, which needs no privilege beyond what opening that socket already requires.
 
 #### Linux
@@ -142,7 +142,11 @@ Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and 
 
 ### `address_family`
 
-`"default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort; `"dual"` requires both; `"ipv4"` / `"ipv6"` use only one. It applies to every protocol the entry enables. mDNS and SSDP are bidirectional, so a handled family must have a source address on **both** interfaces (the target re-emits relayed queries/searches, the source re-emits relayed responses/advertisements).
+`"default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort; `"dual"` requires both; `"ipv4"` / `"ipv6"` use only one. It applies to every protocol the entry enables. mDNS and SSDP are bidirectional, so a handled family must have a source address on **both** interfaces (the target re-emits relayed queries/searches, the source re-emits relayed responses/advertisements). This condition is re-checked continuously at runtime (see [Reacting to address changes](#reacting-to-address-changes) below): a family is torn down if either interface loses its address and brought back up once both can send it again.
+
+### Reacting to address changes
+
+The reflector watches the kernel for interface address changes (a `NETLINK_ROUTE` socket on Linux, a `PF_ROUTE` socket on macOS) and adapts at runtime, without a restart. mDNS and SSDP bring a family up — joining its multicast group(s) and installing its capture registrations — once that family becomes reflectable (a source address for it is present on **both** interfaces), and tear it down when either interface loses the address; the family resumes automatically when the address returns. WoL keeps its captures installed and instead checks reachability per packet, so it has nothing to join or leave. Either way, a best-effort IPv6 family that had no address at startup begins reflecting as soon as one appears. Gaining a family logs at `info`; losing a *required* family logs at `error`, an optional one at `info`. The monitor is best-effort: if it cannot start, the reflector logs a warning and runs without address refresh.
 
 ### Per-protocol behavior
 
