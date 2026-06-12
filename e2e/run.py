@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ast
 import dataclasses
+import re
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,26 @@ VALGRIND_STOP_GRACE_SECONDS = 60
 REFLECTOR_SOURCE_IFNAME = "wol_src"
 REFLECTOR_TARGET_IFNAME = "wol_dst"
 RECEIVER_IFNAME = "probe0"
+
+# Address-change cases poll real traffic across the async netlink window: after an address is
+# removed/restored the reflector reacts on its own event loop, so a single shot would race the
+# teardown/bring-up. Each "shot" is a fresh receiver+sender pair. A positive shot returns as soon as
+# the reflected packet lands (so its window is just an upper bound); a silence shot must wait the
+# whole window to conclude nothing was reflected, and we require two consecutive silences so a lone
+# dropped datagram can't masquerade as a teardown. Windows are generous enough to hold under Valgrind.
+ADDR_CHANGE_REFLECTED_WINDOW = 4.0
+ADDR_CHANGE_SILENCE_WINDOW = 2.5
+ADDR_CHANGE_SILENCE_CONSECUTIVE = 2
+ADDR_CHANGE_POLL_DEADLINE = 60.0
+
+# Traffic alone proves a family stopped reflecting, but not WHY: removing the egress interface's address
+# also makes the low-level send guard (RawSocket::SendFrame) refuse to emit, so silence would occur even
+# if the dynamic per-family teardown never ran. We close that gap from the log: the ONLY errors a healthy
+# run may emit are the required-family capability-down notices (dual config logs a lost source at Error).
+# Any OTHER error means a packet was dispatched and an emit attempted on an interface whose source address
+# was removed — i.e. the capture was NOT torn down — which is exactly the masked-teardown bug.
+ADDR_CHANGE_ERROR_LINE = re.compile(r"\bERROR\b\s+\[")  # reflector log line: "<ts> ERROR [Tag] msg"
+ADDR_CHANGE_EXPECTED_ERROR = re.compile(r"Cannot reflect IPv[46] packets: a source address is no longer available")
 
 MDNS_GROUP_V4 = "224.0.0.251"
 MDNS_GROUP_V6 = "ff02::fb"
@@ -399,9 +420,70 @@ DIAL_CASES = [
     DialCase(name="dial_upstream_unreachable", family=4, group=SSDP_GROUP_V4, unreachable=True),
 ]
 
+# How each protocol is probed during an address-change phase: the UDP port, the verbatim payload the
+# sender emits (None -> a WoL magic packet for --mac), and the multicast group per family (None for
+# WoL's broadcast/all-nodes path). The expectation flips between phases (reflected vs silent); the
+# send side never does.
+PROBE_SPECS = {
+    "wol": {"port": CONFIGURED_PORT, "payload": None, "group_v4": None, "group_v6": None},
+    "mdns": {"port": MDNS_PORT, "payload": MDNS_QUERY_HEX, "group_v4": MDNS_GROUP_V4, "group_v6": MDNS_GROUP_V6},
+    "ssdp": {"port": SSDP_PORT, "payload": SSDP_MSEARCH_HEX, "group_v4": SSDP_GROUP_V4, "group_v6": SSDP_GROUP_V6},
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Phase:
+    # One knock-out within an address-change case: take down a single (interface, family) source
+    # address on the reflector, prove reflection of `protocol`/`family` stops, then restore it and
+    # prove reflection resumes -- all via real traffic.
+    label: str
+    protocol: str   # "wol" | "mdns" | "ssdp" -> PROBE_SPECS
+    family: int     # 4 | 6
+    interface: str  # "source" (wol_src) | "target" (wol_dst) -> which reflector interface to toggle
+
+
+@dataclasses.dataclass(frozen=True)
+class AddressChangeCase:
+    name: str
+    config: str               # config file (relative to e2e/) -- a dual-family reflector set
+    phases: tuple[Phase, ...]
+
+
+# Across the three cases every (interface, family) source that gates reflection is knocked out at least
+# once -- source v4 (mDNS), source v6 (SSDP), target v4 (WoL, SSDP), target v6 (WoL, mDNS) -- and both
+# teardown mechanisms are exercised: v4 via `ip addr del/add` (RTM_DELADDR/NEWADDR), v6 via the
+# disable_ipv6 sysctl. There is no IPv4 analogue of disable_ipv6, so v4 necessarily uses `ip addr`.
+ADDRESS_CHANGE_CASES = [
+    AddressChangeCase(
+        name="wol_address_change",
+        config="config-addrchange.toml",
+        phases=(
+            Phase(label="target IPv4", protocol="wol", family=4, interface="target"),
+            Phase(label="target IPv6", protocol="wol", family=6, interface="target"),
+        ),
+    ),
+    AddressChangeCase(
+        name="mdns_address_change",
+        config="config-addrchange.toml",
+        phases=(
+            Phase(label="source IPv4", protocol="mdns", family=4, interface="source"),
+            Phase(label="target IPv6", protocol="mdns", family=6, interface="target"),
+        ),
+    ),
+    AddressChangeCase(
+        name="ssdp_address_change",
+        config="config-addrchange.toml",
+        phases=(
+            Phase(label="source IPv6", protocol="ssdp", family=6, interface="source"),
+            Phase(label="target IPv4", protocol="ssdp", family=4, interface="target"),
+        ),
+    ),
+]
+
 # Every selectable case, regardless of runner. Round trips are first-class: in the full suite and
 # addressable by --case like any other. The runner is chosen per case by type (see make_runner).
-ALL_CASES: list[TestCase | RoundTripCase | DialCase] = [*TEST_CASES, *ROUNDTRIP_CASES, *DIAL_CASES]
+ALL_CASES: list[TestCase | RoundTripCase | DialCase | AddressChangeCase] = [
+    *TEST_CASES, *ROUNDTRIP_CASES, *DIAL_CASES, *ADDRESS_CHANGE_CASES]
 
 
 def format_command(command: list[str]) -> str:
@@ -560,7 +642,8 @@ class DockerE2E:
                 print(report.stderr, end="", file=sys.stderr, flush=True)
             raise RuntimeError(f"valgrind reported errors in case {self.case.name} (reflector exited {exit_code})")
 
-    def start_receiver(self) -> None:
+    def start_receiver(self, case: TestCase | None = None) -> None:
+        case = case or self.case
         command = [
             "run",
             "-d",
@@ -575,20 +658,20 @@ class DockerE2E:
             "/e2e/probe.py",
             "receive",
             "--port",
-            str(self.case.receive_port),
+            str(case.receive_port),
             "--timeout",
-            str(self.case.timeout_seconds),
+            str(case.timeout_seconds),
         ]
-        if self.case.expect_payload_hex is not None:
-            command.extend(["--expect-payload-hex", self.case.expect_payload_hex])
-        elif self.case.expect_mac is not None:
-            command.extend(["--expect-mac", self.case.expect_mac])
+        if case.expect_payload_hex is not None:
+            command.extend(["--expect-payload-hex", case.expect_payload_hex])
+        elif case.expect_mac is not None:
+            command.extend(["--expect-mac", case.expect_mac])
         else:
             command.append("--expect-none")
 
-        command.extend(["--family", str(self.case.family)])
-        if self.case.group is not None:
-            command.extend(["--join-group", self.case.group, "--interface", self.receiver_ifname])
+        command.extend(["--family", str(case.family)])
+        if case.group is not None:
+            command.extend(["--join-group", case.group, "--interface", self.receiver_ifname])
 
         docker(command)
         self.wait_for_receiver()
@@ -596,13 +679,14 @@ class DockerE2E:
     def wait_for_receiver(self) -> None:
         self.wait_for_container_log(self.receiver_container, RECEIVER_READY_LOG, "receiver")
 
-    def run_sender(self) -> None:
-        if self.case.send_payload_hex is not None:
-            payload_args = ["--payload-hex", self.case.send_payload_hex]
-        elif self.case.send_mac is not None:
-            payload_args = ["--mac", self.case.send_mac]
+    def run_sender(self, case: TestCase | None = None) -> None:
+        case = case or self.case
+        if case.send_payload_hex is not None:
+            payload_args = ["--payload-hex", case.send_payload_hex]
+        elif case.send_mac is not None:
+            payload_args = ["--mac", case.send_mac]
         else:
-            raise RuntimeError(f"case {self.case.name} has no send payload")
+            raise RuntimeError(f"case {case.name} has no send payload")
 
         docker(
             [
@@ -621,9 +705,9 @@ class DockerE2E:
                 "send",
                 *payload_args,
                 "--port",
-                str(self.case.send_port),
+                str(case.send_port),
                 "--address",
-                self.case.send_address,
+                case.send_address,
                 "--interface",
                 self.sender_ifname,
             ]
@@ -866,11 +950,166 @@ class DockerDial(DockerE2E):
             self.print_reflector_logs()
 
 
-def make_runner(args: argparse.Namespace, case: TestCase | RoundTripCase | DialCase) -> DockerE2E:
+class DockerAddressChange(DockerE2E):
+    # Proves the dynamic family bring-up/teardown end to end: with a dual-family reflector running, knock
+    # out one (interface, family) source address at a time and verify -- with real traffic, not logs --
+    # that reflection of exactly that family stops, then resumes once the address returns. The reflector
+    # reacts on its own event loop after the netlink notification, so every check polls across that async
+    # window (see the ADDR_CHANGE_* windows). All phases probe forward (source->target).
+    def __init__(self, args: argparse.Namespace, case: AddressChangeCase) -> None:
+        shim = TestCase(name=case.name, send_port=SSDP_PORT, receive_port=SSDP_PORT,
+            expect_mac=None, timeout_seconds=ADDR_CHANGE_REFLECTED_WINDOW, direction="forward")
+        super().__init__(args, shim)
+        self.ac = case
+        self.config_path = E2E_DIR / case.config  # a dual-family config, not the shared single one
+
+    def _phase_case(self, phase: Phase, *, expect: bool, timeout: float) -> TestCase:
+        # The per-shot TestCase reuses the base receiver/sender machinery. The send side always carries
+        # the real protocol packet; only the receiver's expectation flips -- `expect` True means the
+        # reflected packet must arrive, False means nothing may (--expect-none).
+        spec = PROBE_SPECS[phase.protocol]
+        is_wol = phase.protocol == "wol"
+        group = None if is_wol else (spec["group_v6"] if phase.family == 6 else spec["group_v4"])
+        return TestCase(
+            name=self.ac.name,
+            send_port=spec["port"],
+            receive_port=spec["port"],
+            expect_mac=(CONFIGURED_MAC if (expect and is_wol) else None),
+            timeout_seconds=timeout,
+            send_mac=(CONFIGURED_MAC if is_wol else None),
+            send_payload_hex=(None if is_wol else spec["payload"]),
+            family=phase.family,
+            direction="forward",
+            group=group,
+            expect_payload_hex=(spec["payload"] if (expect and not is_wol) else None),
+        )
+
+    def _probe(self, phase: Phase, *, expect: bool, timeout: float) -> bool:
+        # One send/receive shot. Returns whether the receiver's expectation held (reflected packet seen
+        # when expect=True, silence when expect=False). Each shot gets fresh containers under the fixed
+        # names, so stale ones from the previous shot are removed first.
+        docker(["rm", "-f", self.receiver_container, self.sender_container], check=False, echo=False)
+        case = self._phase_case(phase, expect=expect, timeout=timeout)
+        self.start_receiver(case)  # binds + joins before the sender fires
+        self.run_sender(case)
+        exit_code = docker(["wait", self.receiver_container]).stdout.strip()
+        return exit_code == "0"
+
+    def _poll_reflected(self, phase: Phase) -> bool:
+        deadline = time.monotonic() + ADDR_CHANGE_POLL_DEADLINE
+        while time.monotonic() < deadline:
+            if self._probe(phase, expect=True, timeout=ADDR_CHANGE_REFLECTED_WINDOW):
+                return True
+        return False
+
+    def _poll_not_reflected(self, phase: Phase) -> bool:
+        # Require consecutive silences: while reflection is still up the probe comes back fast (the
+        # reflected packet arrives and fails --expect-none), resetting the streak; only a real teardown
+        # yields an unbroken run of silent windows.
+        deadline = time.monotonic() + ADDR_CHANGE_POLL_DEADLINE
+        consecutive = 0
+        while time.monotonic() < deadline:
+            if self._probe(phase, expect=False, timeout=ADDR_CHANGE_SILENCE_WINDOW):
+                consecutive += 1
+                if consecutive >= ADDR_CHANGE_SILENCE_CONSECUTIVE:
+                    return True
+            else:
+                consecutive = 0
+        return False
+
+    def _sidecar(self, script: str, *, capture: bool = False) -> str:
+        # Address changes need CAP_NET_ADMIN and a writable /proc/sys, which the reflector container
+        # (scratch image, NET_RAW only) has by neither. Run a throwaway privileged container in the
+        # reflector's network namespace instead, so `ip addr` / the disable_ipv6 sysctl land on the very
+        # interfaces the reflector watches -- without widening the reflector's own privileges.
+        result = docker([
+            "run", "--rm", "--privileged", "--network", f"container:{self.reflector_container}",
+            self.args.helper_image, "sh", "-ec", script,
+        ])
+        return result.stdout.strip() if capture else ""
+
+    def _set_address(self, interface: str, family: int, *, up: bool, cidr: str | None = None) -> str | None:
+        # Bring one (interface, family) source address down or back up. IPv6 toggles the disable_ipv6
+        # sysctl (which drops every v6 address and, on re-enable, lets the kernel regenerate a usable
+        # link-local -- enough for CanSend(v6)); there is no IPv4 equivalent, so v4 deletes and re-adds
+        # the exact CIDR. Returns the removed v4 CIDR so the caller can hand it back on restore.
+        ifname = REFLECTOR_SOURCE_IFNAME if interface == "source" else REFLECTOR_TARGET_IFNAME
+        if family == 6:
+            self._sidecar(f"echo {0 if up else 1} > /proc/sys/net/ipv6/conf/{ifname}/disable_ipv6")
+            return None
+        if up:
+            if cidr is None:
+                raise RuntimeError("restoring an IPv4 address requires the CIDR captured on removal")
+            self._sidecar(f"ip addr add {cidr} dev {ifname}")
+            return cidr
+        captured = self._sidecar(f"ip -o -4 addr show dev {ifname} | awk '/inet /{{print $4; exit}}'", capture=True)
+        if not captured:
+            raise RuntimeError(f"no IPv4 address on {ifname} to remove")
+        self._sidecar(f"ip addr del {captured} dev {ifname}")
+        return captured
+
+    def _run_phase(self, phase: Phase) -> None:
+        desc = f"{self.ac.name} / {phase.label}"
+        print(f"--- phase: {desc} ({phase.protocol} IPv{phase.family}) ---", flush=True)
+
+        if not self._poll_reflected(phase):
+            raise RuntimeError(f"{desc}: reflection was not observed before the change (expected baseline reflection)")
+        print(f"{desc}: baseline reflected", flush=True)
+
+        cidr = self._set_address(phase.interface, phase.family, up=False)
+        if not self._poll_not_reflected(phase):
+            raise RuntimeError(f"{desc}: reflection continued after the {phase.interface} IPv{phase.family} "
+                               f"address was removed")
+        print(f"{desc}: reflection stopped after address removal", flush=True)
+
+        self._set_address(phase.interface, phase.family, up=True, cidr=cidr)
+        if not self._poll_reflected(phase):
+            raise RuntimeError(f"{desc}: reflection did not resume after the {phase.interface} IPv{phase.family} "
+                               f"address was restored")
+        print(f"{desc}: reflection resumed after address restore", flush=True)
+
+    def _assert_capability_gated_silence(self) -> None:
+        # The traffic checks prove each family stopped and resumed, but for an EGRESS-side removal the
+        # silence is also produced by SendFrame's source-address guard, so traffic can't tell a real
+        # dynamic teardown from the guard masking a teardown that never happened. Distinguish them from the
+        # reflector's own log: the only errors a healthy run may contain are the required-family
+        # capability-down notices. An un-whitelisted error (e.g. SendFrame's "interface has no source
+        # address", or a per-protocol reflect failure) means a packet was emit-attempted on the
+        # addressless egress — proof the capture was not torn down. Fail on any such line.
+        logs = docker(["logs", self.reflector_container], check=False)
+        text = f"{logs.stdout}\n{logs.stderr}"
+        unexpected = [line for line in text.splitlines()
+                      if ADDR_CHANGE_ERROR_LINE.search(line) and not ADDR_CHANGE_EXPECTED_ERROR.search(line)]
+        if unexpected:
+            joined = "\n  ".join(unexpected)
+            raise RuntimeError(
+                f"{self.ac.name}: the reflector logged unexpected error(s). The only errors a healthy "
+                f"address-change run may emit are the required-family capability-down notices; any other "
+                f"error means a packet was emit-attempted on an interface whose source address was removed "
+                f"(the dynamic per-family teardown did not remove the capture), so an observed silence came "
+                f"from the low-level egress send-guard, not the teardown under test:\n  {joined}")
+
+    def run(self) -> None:
+        print(f"\n=== {self.ac.name} ===", flush=True)
+        self.setup_networks()
+        self.start_reflector()
+        for phase in self.ac.phases:
+            self._run_phase(phase)
+        self._assert_capability_gated_silence()
+        print(f"PASS {self.ac.name}", flush=True)
+        if self.args.show_reflector_logs:
+            time.sleep(0.5)
+            self.print_reflector_logs()
+
+
+def make_runner(args: argparse.Namespace,
+        case: TestCase | RoundTripCase | DialCase | AddressChangeCase) -> DockerE2E:
     if isinstance(case, DialCase):
         return DockerDial(args, case)
     if isinstance(case, RoundTripCase):
         return DockerRoundTrip(args, case)
+    if isinstance(case, AddressChangeCase):
+        return DockerAddressChange(args, case)
     return DockerE2E(args, case)
 
 
@@ -881,7 +1120,7 @@ def build_reflector_image(image: str, target: str | None = None) -> None:
     docker([*command, "."], capture=False)
 
 
-def select_cases(case_names: list[str]) -> list[TestCase | RoundTripCase | DialCase]:
+def select_cases(case_names: list[str]) -> list[TestCase | RoundTripCase | DialCase | AddressChangeCase]:
     if not case_names:
         return ALL_CASES
 

@@ -1,0 +1,20 @@
+log_level = "debug"
+
+# Dual-family entries (address_family = "dual" requires BOTH IPv4 and IPv6), so each protocol reflects
+# v4 and v6 independently. The address-change cases knock out one (interface, family) at a time and prove
+# via real traffic that only that family's reflection stops, then resumes once the address returns.
+
+[wol]
+source_if = "wol_src"
+target_if = "wol_dst"
+mac = "02:42:ac:11:00:09"
+wol = true
+wol_ports = [40009]
+address_family = "dual"
+
+[discovery]
+source_if = "wol_src"
+target_if = "wol_dst"
+mdns = true
+ssdp = true
+address_family = "dual"
