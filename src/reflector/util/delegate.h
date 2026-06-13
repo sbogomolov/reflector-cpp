@@ -87,9 +87,11 @@ public:
     // guard branch (to keep hot-path calls branch-free) — a debug-only assert catches a null target,
     // and in release the call is undefined. Guard with IsValid() when a delegate may not have a target.
     Delegate() noexcept = default;
-    Delegate(void* object, StubT stub) : object_{object}, stub_{stub} {}
 
     [[nodiscard]] bool IsValid() const noexcept { return stub_ != nullptr; }
+
+private:
+    Delegate(void* object, StubT stub) : object_{object}, stub_{stub} {}
 
     template <typename T, auto method>
     [[nodiscard]] static R MethodStub(void* object, Args... args) {
