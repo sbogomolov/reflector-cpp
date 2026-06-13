@@ -23,7 +23,9 @@ TEST(ErrorTest, ConstructsFromStringRvalue) {
 }
 
 TEST(ErrorTest, ConstructsFromStringViewLvalue) {
-    std::string_view test_error{"test error"};
+    // Copy-init, not brace-init: brace/paren-init here trips a spurious -O3 -Wunused-value on GCC 14's
+    // armhf cross compiler (Ubuntu's g++-14-arm-linux-gnueabihf; see the linux-armv7 Release CI lane).
+    std::string_view test_error = "test error";
     Error error{test_error};
 
     EXPECT_EQ(test_error, "test error");
