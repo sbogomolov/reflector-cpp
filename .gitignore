@@ -1,5 +1,3 @@
 .cache/
-.claude/
-.codex/
 build/
 build-*/
