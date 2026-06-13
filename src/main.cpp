@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <csignal>
 #include <exception>
-
+#include <tuple>
 #include <unistd.h>
 
 namespace {
@@ -21,7 +21,7 @@ void SignalHandler(int) {
         // write() is async-signal-safe; best-effort, so a full/not-ready pipe (the result we ignore) is
         // fine -- a byte already pending is enough to wake the loop, which then re-checks g_stop_requested.
         const unsigned char byte = 1;
-        ::write(wakeup_fd, &byte, 1);
+        std::ignore = ::write(wakeup_fd, &byte, 1);
     }
 }
 
