@@ -31,7 +31,9 @@ inline constexpr uint8_t MSEARCH_MX_DEFAULT = 3;
 // Parses the MX header of an M-SEARCH (the searcher's max response wait, in seconds), returning the
 // value clamped to [1, 5] per UPnP Device Architecture 2.0. Returns nullopt when MX is absent or
 // unparseable, leaving the fallback (MSEARCH_MX_DEFAULT) and the logging to the caller, which has the
-// searcher's address for context. Scans only the header block; case-insensitive on the field name.
+// searcher's address for context. Walks the whole payload's CRLF-delimited lines for the first MX field
+// (an M-SEARCH carries no body, so there is no header/body boundary to stop at); field name is
+// case-insensitive.
 [[nodiscard]] std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexcept;
 
 // True if `payload` advertises the DIAL service — its service-type URN (urn:dial-multiscreen-org:service:dial)
