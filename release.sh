@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-# Cut a release. From a clean main in sync with origin/main, this confirms the version, then tags
-# v<version> (from CMakeLists.txt via version.sh) and pushes it. Pushing the tag triggers
-# .github/workflows/release.yml, which gates on CI being green for the commit, builds the per-arch
-# binaries, publishes the multi-arch image to GHCR, and creates the GitHub release.
-# The version in CMakeLists.txt is the single source of truth; the pushed tag is re-checked against
-# it by the "Tag version check" workflow.
+# Cut a release. From a clean main in sync with origin/main, this confirms the version, waits for CI
+# (ci.yml) to pass on HEAD, then tags v<version> (from CMakeLists.txt via version.sh) and pushes it.
+# Gating on CI here means a release is never cut on a commit whose CI is red or still running. Pushing
+# the tag triggers .github/workflows/release.yml, which re-checks CI, builds the per-arch binaries,
+# publishes the multi-arch image to GHCR, and creates the GitHub release. The version in CMakeLists.txt
+# is the single source of truth; the pushed tag is re-checked against it by the "Tag version check"
+# workflow. Requires the gh CLI (authenticated) for the CI check.
 
 cd "$(dirname "$0")"
 
@@ -36,6 +37,37 @@ if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1 \
     exit 1
 fi
 
+# Gate on CI being green for HEAD before the irreversible tag push -- release.yml re-checks this, but
+# only after the tag is pushed, so bring the check forward. ci.yml runs on the push to main; we poll
+# its run for this commit (~30 min ceiling, matching release.yml's verify-ci).
+if ! command -v gh >/dev/null 2>&1; then
+    echo "gh CLI is required to verify CI before releasing (install it, or push ${tag} manually)." >&2
+    exit 1
+fi
+
+slug=$(git config --get remote.origin.url | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##')
+sha=$(git rev-parse HEAD)
+echo "Waiting for CI (ci.yml) to pass on ${sha}..."
+ci_ok=
+i=0
+while [ "$i" -lt 90 ]; do
+    i=$((i + 1))
+    run=$(gh api "repos/${slug}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=1" \
+        --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"' 2>/dev/null || true)
+    case "${run%%|*}" in
+        completed)
+            if [ "${run##*|}" = success ]; then ci_ok=1; break; fi
+            echo "CI concluded '${run##*|}' on ${sha}; not releasing." >&2
+            exit 1
+            ;;
+        "" | null) echo "  no CI run for ${sha} yet; waiting..." ;;
+        *) echo "  CI is '${run%%|*}'; waiting..." ;;
+    esac
+    sleep 20
+done
+[ -n "$ci_ok" ] || { echo "Timed out waiting for CI on ${sha}; not releasing." >&2; exit 1; }
+echo "CI passed on ${sha}."
+
 # Confirm before the irreversible tag push. A non-interactive run (no stdin) reads EOF and aborts.
 printf 'Release %s at %s? [y/N] ' "$tag" "$(git rev-parse --short HEAD)"
 if ! read -r answer; then answer=""; fi
@@ -48,7 +80,6 @@ echo "Tagging and pushing ${tag}..."
 git tag -a "${tag}" -m "Release ${tag}"
 git push origin "${tag}"
 
-slug=$(git config --get remote.origin.url | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##')
-echo "Pushed ${tag}. The release workflow takes over from here -- it gates on CI, builds the"
+echo "Pushed ${tag}. The release workflow takes over from here -- it re-checks CI, builds the"
 echo "binaries, publishes the image to GHCR, and creates the GitHub release:"
 echo "  https://github.com/${slug}/actions/workflows/release.yml"
