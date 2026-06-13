@@ -2,6 +2,7 @@
 
 #include "reflector/event_loop_dispatcher.h"
 #include "reflector/util/delegate.h"
+#include "reflector/util/narrow_cast.h"
 #include "mocks/fake_dispatcher.h"
 #include "test_helpers.h"
 
@@ -42,7 +43,7 @@ struct RecordingChangeSink {
 void AppendAddrMessage(std::vector<std::byte>& out, uint16_t type, uint32_t interface_index) {
     static_assert(sizeof(nlmsghdr) % 4 == 0);
     nlmsghdr header{};
-    header.nlmsg_len = static_cast<uint32_t>(sizeof(nlmsghdr) + sizeof(ifaddrmsg));
+    header.nlmsg_len = reflector::narrow_cast<uint32_t>(sizeof(nlmsghdr) + sizeof(ifaddrmsg));
     header.nlmsg_type = type;
     ifaddrmsg message{};
     message.ifa_index = interface_index;

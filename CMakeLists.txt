@@ -119,6 +119,15 @@ function(reflector_configure_project_target target)
         $<$<CONFIG:Debug>:-ggdb3>
         ${_reflector_release_compile_options}
     )
+    # GCC on 32-bit ARM emits a benign -Wpsabi note ("parameter passing ... changed in GCC 7.1") for
+    # some std::vector<struct> iterator passing; it flags an ABI mismatch only across object files built
+    # by pre-/post-7.1 GCC, which never happens here (one toolchain, one static binary), yet -Werror
+    # makes it fatal. GCC-only flag; the processor guard matches "arm"/"armv7l" but excludes 64-bit
+    # ("arm64"/"aarch64"), so amd64, Linux arm64, and macOS arm64 are untouched.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+            AND CMAKE_SYSTEM_PROCESSOR MATCHES "^arm" AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "64")
+        target_compile_options(${target} PRIVATE -Wno-psabi)
+    endif()
     if(REFLECTOR_SANITIZE)
         target_compile_options(${target} PRIVATE
             -fsanitize=address,undefined

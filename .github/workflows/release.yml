@@ -65,6 +65,12 @@ jobs:
             cc: gcc-14
             cxx: g++-14
             reflector_static: "ON"
+          - variant: linux-armv7
+            runner: ubuntu-24.04
+            platform: linux
+            cc: arm-linux-gnueabihf-gcc-14
+            cxx: arm-linux-gnueabihf-g++-14
+            reflector_static: "ON"
           - variant: macos-arm64
             runner: macos-15
             platform: macos
@@ -81,6 +87,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cmake g++-14 gcc-14 ninja-build
+          if [ "${{ matrix.variant }}" = linux-armv7 ]; then
+            sudo apt-get install -y --no-install-recommends \
+              crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf
+          fi
 
       - name: Install macOS dependencies
         if: matrix.platform == 'macos'
@@ -88,10 +98,16 @@ jobs:
 
       - name: Configure
         run: |
+          # armv7 has no native runner: cross-compile via CMAKE_SYSTEM_* (CC/CXX are the cross compilers).
+          extra=""
+          if [ "${{ matrix.variant }}" = linux-armv7 ]; then
+            extra="-D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm"
+          fi
           cmake -S . -B build -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D BUILD_TESTING=OFF \
-            -D REFLECTOR_STATIC="${REFLECTOR_STATIC}"
+            -D REFLECTOR_STATIC="${REFLECTOR_STATIC}" \
+            $extra
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
@@ -103,9 +119,11 @@ jobs:
       - name: Verify static linking (Linux)
         if: matrix.platform == 'linux'
         run: |
+          # `file` reads the ELF header arch-independently, so one check covers amd64/arm64/armv7
+          # (ldd cannot introspect a foreign-arch binary).
           file build/reflector
-          ldd build/reflector 2>&1 | grep -q 'not a dynamic executable' \
-            || { echo "::error::reflector is not statically linked"; ldd build/reflector; exit 1; }
+          file build/reflector | grep -q 'statically linked' \
+            || { echo "::error::reflector is not statically linked"; exit 1; }
 
       - name: Stage binary
         run: |
@@ -136,8 +154,14 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
+            platform: linux/amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
+            platform: linux/arm64
+          # armv7 has no native runner; it cross-compiles on the amd64 runner via the Dockerfile (no QEMU).
+          - arch: armv7
+            runner: ubuntu-24.04
+            platform: linux/arm/v7
 
     steps:
       - name: Check out repository
@@ -158,7 +182,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/${{ matrix.arch }}
+          platforms: ${{ matrix.platform }}
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}

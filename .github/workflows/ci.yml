@@ -24,7 +24,7 @@ jobs:
       fail-fast: false
       matrix:
         build_type: [Debug, Release]
-        variant: [linux-amd64, linux-arm64, macos-arm64]
+        variant: [linux-amd64, linux-arm64, linux-armv7, macos-arm64]
         include:
           - variant: linux-amd64
             runner: ubuntu-24.04
@@ -36,6 +36,19 @@ jobs:
             platform: linux
             cc: gcc-14
             cxx: g++-14
+          # No native 32-bit ARM runner exists (Graviton can't run AArch32), so armv7 cross-compiles on
+          # the amd64 runner and runs the suite through qemu-arm-static: CMAKE_CROSSCOMPILING_EMULATOR
+          # routes both gtest_discover_tests and ctest through QEMU. Static + no sanitizers so QEMU needs
+          # no target sysroot. `crosscompile` drops sudo (see the test step). Add another 32-bit target by
+          # copying this entry and swapping cc/cxx + cross_packages (e.g. armel: arm-linux-gnueabi).
+          - variant: linux-armv7
+            runner: ubuntu-24.04
+            platform: linux
+            cc: arm-linux-gnueabihf-gcc-14
+            cxx: arm-linux-gnueabihf-g++-14
+            crosscompile: true
+            cross_packages: crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf qemu-user-static
+            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm -D REFLECTOR_STATIC=ON -D REFLECTOR_SANITIZE=OFF -D CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-arm-static
           - variant: macos-arm64
             runner: macos-15
             platform: macos
@@ -54,7 +67,8 @@ jobs:
             cmake \
             g++-14 \
             gcc-14 \
-            ninja-build
+            ninja-build \
+            ${{ matrix.cross_packages }}
 
       - name: Install macOS dependencies
         if: matrix.platform == 'macos'
@@ -72,7 +86,8 @@ jobs:
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
-            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }}
+            -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            ${{ matrix.cmake_args }}
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
@@ -80,11 +95,18 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      # Run under sudo so the RequiresRoot tests (loopback capture, veth/feth pairs needing
-      # CAP_NET_RAW/CAP_NET_ADMIN or bpf + root) run instead of skipping. Each fixture probes its
-      # operation and GTEST_SKIPs where unavailable, so this is safe on every platform.
+      # Native lanes run under sudo so the RequiresRoot tests (loopback capture, veth/feth pairs needing
+      # CAP_NET_RAW/CAP_NET_ADMIN or bpf + root) run instead of skipping; each fixture probes its operation
+      # and GTEST_SKIPs where unavailable. The cross (armv7) lane runs without sudo: under user-mode QEMU
+      # those privileged operations aren't viable, so the fixtures self-skip (raw-socket I/O stays covered
+      # by the native lanes). All tests carry the "unit" label, so -L unit selects the whole suite.
       - name: Run unit tests
-        run: sudo ctest --test-dir build --output-on-failure
+        run: |
+          if [ "${{ matrix.crosscompile }}" = "true" ]; then
+            ctest --test-dir build -L unit --output-on-failure
+          else
+            sudo ctest --test-dir build --output-on-failure
+          fi
 
   docker-e2e:
     name: Docker e2e

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-default_platforms="linux/amd64,linux/arm64"
+default_platforms="linux/amd64,linux/arm64,linux/arm/v7"
 default_push_image="ghcr.io/sbogomolov/reflector"
 image="reflector"
 image_set=false

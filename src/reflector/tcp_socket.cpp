@@ -4,6 +4,7 @@
 #include "interface.h"
 #include "logger.h"
 #include "util/fd_util.h"
+#include "util/narrow_cast.h"
 
 #include <array>
 #include <cerrno>
@@ -45,7 +46,7 @@ Logger& GetLogger() noexcept {
 [[nodiscard]] bool PinEgress(int fd, [[maybe_unused]] int family, const Interface& egress_if) noexcept {
 #if defined(__linux__)
     const auto name = egress_if.Name();
-    if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name.data(), static_cast<socklen_t>(name.size())) != 0) {
+    if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name.data(), narrow_cast<socklen_t>(name.size())) != 0) {
         GetLogger().Error("Cannot pin egress to interface \"{}\": {}", name, Error::FromErrno());
         return false;
     }

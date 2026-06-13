@@ -9,6 +9,7 @@
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
 #include "reflector/raw_socket.h"
+#include "reflector/util/narrow_cast.h"
 
 #include "util/udp_socket.h"
 
@@ -356,7 +357,7 @@ private:
     }
 
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {
-        return EncodeFrame(frame, static_cast<uint32_t>(frame.size()));
+        return EncodeFrame(frame, narrow_cast<uint32_t>(frame.size()));
     }
 
     // original_length sets bh_datalen; pass a value larger than frame.size() to model a frame BPF

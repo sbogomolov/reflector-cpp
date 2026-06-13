@@ -2,6 +2,7 @@
 
 #include "reflector/error.h"
 #include "reflector/logger.h"
+#include "reflector/util/narrow_cast.h"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -215,7 +216,7 @@ std::string IpAddress::ToString() const {
     std::string result;
     result.resize(buffer_size);
     if (inet_ntop(address_family, bytes_.data(), result.data(),
-            static_cast<socklen_t>(result.size())) == nullptr) {
+            narrow_cast<socklen_t>(result.size())) == nullptr) {
         GetLogger().Error("Cannot convert IP address to string: {}", Error::FromErrno());
         return "<invalid_ip>";
     }

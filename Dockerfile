@@ -2,7 +2,13 @@
 
 ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
 
-FROM ${DEBIAN_TRIXIE_SLIM} AS build-env
+# build-env runs on the BUILD host (so the arm/v7 image cross-compiles on an amd64/arm64 runner rather
+# than under slow QEMU). For a native target (amd64 on amd64, arm64 on arm64) the conditional below is a
+# no-op and /toolchain.cmake is empty, so --toolchain is a no-op in the builder stage. For arm/v7 it
+# installs the armhf cross toolchain and writes a CMake toolchain file selecting it.
+FROM --platform=$BUILDPLATFORM ${DEBIAN_TRIXIE_SLIM} AS build-env
+ARG TARGETARCH
+ARG TARGETVARIANT
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean \
@@ -15,7 +21,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
         iproute2 \
         ninja-build \
-        tzdata
+        tzdata \
+    && if [ "$TARGETARCH" = arm ] && [ "$TARGETVARIANT" = v7 ]; then \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf; \
+        { echo 'set(CMAKE_SYSTEM_NAME Linux)'; \
+          echo 'set(CMAKE_SYSTEM_PROCESSOR arm)'; \
+          echo 'set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc-14)'; \
+          echo 'set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++-14)'; } > /toolchain.cmake; \
+    else \
+        : > /toolchain.cmake; \
+    fi
 
 WORKDIR /src
 COPY CMakeLists.txt ./
@@ -25,6 +41,7 @@ FROM build-env AS builder
 RUN --mount=type=cache,target=/src/build/_deps,sharing=locked \
     --mount=type=cache,target=/root/.cache/ccache,sharing=locked \
     cmake -G Ninja -B build \
+        --toolchain /toolchain.cmake \
         -D CMAKE_BUILD_TYPE=Release \
         -D BUILD_TESTING=OFF \
         -D REFLECTOR_SANITIZE=OFF \
