@@ -612,6 +612,32 @@ TEST(HttpFramingMiscTest, RefusesMalformedContentLength) {
     EXPECT_FALSE(d.ok);
 }
 
+TEST(HttpFramingMiscTest, RefusesContentLengthWithTrailingJunk) {
+    // from_chars stops at the first non-digit and reports success, so a lenient parse would read "5abc" as 5
+    // and frame a 5-byte body, mis-parsing the trailing "abc" as the next message. Require the whole value to
+    // be the number: reject so the owner closes (matching ParseAuthority's port strictness).
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite));
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5abc\r\n\r\nhello");
+    EXPECT_FALSE(d.ok);
+}
+
+TEST(HttpFramingMiscTest, AcceptsContentLengthWithTrailingWhitespace) {
+    // Trailing OWS after the number is legal (RFC 7230 §3.2.4) and must NOT be mistaken for junk: the value is
+    // still 5, and the body frames normally.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite));
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 5 \r\n\r\nhello");
+    EXPECT_TRUE(d.ok);
+    EXPECT_TRUE(d.out.ends_with("\r\n\r\nhello")) << d.out;  // the 5-byte body forwarded in full
+}
+
 TEST(HttpFramingMiscTest, RefusesMalformedChunkSize) {
     // A chunk-size line that isn't valid hex is malformed: reject so the owner closes.
     UrlRewrite rewrite;

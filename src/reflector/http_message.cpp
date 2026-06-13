@@ -81,7 +81,11 @@ bool HttpFraming::ScanAndRewriteHeader() {
 
         if (StartsWithNoCase(line, "Content-Length:")) {
             const std::string_view v = TrimLeadingSpace(line.substr(line.find(':') + 1));
-            if (std::from_chars(v.data(), v.data() + v.size(), content_length).ec != std::errc{}) {
+            const auto result = std::from_chars(v.data(), v.data() + v.size(), content_length);
+            // Require the whole value to be the number, like ParseAuthority's port parse: from_chars stops
+            // at the first non-digit and reports success, so "12abc" would otherwise frame a body of 12 and
+            // mis-parse the rest. Trailing OWS (RFC 7230 §3.2.4) is tolerated; any other trailing byte rejects.
+            if (result.ec != std::errc{} || !TrimLeadingSpace({result.ptr, v.data() + v.size()}).empty()) {
                 GetLogger().Error("malformed Content-Length value \"{}\"", v);
                 return false;
             }
