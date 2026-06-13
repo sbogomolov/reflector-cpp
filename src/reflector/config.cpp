@@ -99,55 +99,31 @@ bool AddressFamiliesOverlap(AddressFamily lhs, AddressFamily rhs) noexcept {
 // requires an overlapping port). Names are not checked here: each config's name is its entry's TOML
 // table key, and TOML forbids duplicate table keys, so every entry — and thus every config — has a
 // unique name already (see Config::FromString).
-std::optional<Error> AppendWol(std::vector<WolConfig>& configs, WolConfig config) {
+template <typename ConfigType>
+std::optional<Error> AppendConfig(std::vector<ConfigType>& configs, ConfigType config, std::string_view protocol) {
     if (auto error = config.Verify()) {
         return error;
     }
     for (const auto& existing : configs) {
-        if (MacSelectionsOverlap(existing.mac, config.mac)
-                && existing.source_if == config.source_if
-                && existing.target_if == config.target_if
-                && PortsOverlap(existing.ports, config.ports)
-                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
-            return Error{
-                "duplicate wol rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, ports, and address family",
-                existing.name, config.name};
+        if (!MacSelectionsOverlap(existing.mac, config.mac)
+                || existing.source_if != config.source_if
+                || existing.target_if != config.target_if
+                || !AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+            continue;
         }
-    }
-    configs.push_back(std::move(config));
-    return std::nullopt;
-}
-
-std::optional<Error> AppendMdns(std::vector<MdnsConfig>& configs, MdnsConfig config) {
-    if (auto error = config.Verify()) {
-        return error;
-    }
-    for (const auto& existing : configs) {
-        if (MacSelectionsOverlap(existing.mac, config.mac)
-                && existing.source_if == config.source_if
-                && existing.target_if == config.target_if
-                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+        // WoL additionally needs a shared port to collide; mDNS/SSDP carry no ports. if constexpr discards
+        // the ports branch for the protocols that lack a `ports` member.
+        if constexpr (requires { config.ports; }) {
+            if (!PortsOverlap(existing.ports, config.ports)) {
+                continue;
+            }
             return Error{
-                "duplicate mdns rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
-                existing.name, config.name};
-        }
-    }
-    configs.push_back(std::move(config));
-    return std::nullopt;
-}
-
-std::optional<Error> AppendSsdp(std::vector<SsdpConfig>& configs, SsdpConfig config) {
-    if (auto error = config.Verify()) {
-        return error;
-    }
-    for (const auto& existing : configs) {
-        if (MacSelectionsOverlap(existing.mac, config.mac)
-                && existing.source_if == config.source_if
-                && existing.target_if == config.target_if
-                && AddressFamiliesOverlap(existing.address_family, config.address_family)) {
+                "duplicate {} rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, ports, and address family",
+                protocol, existing.name, config.name};
+        } else {
             return Error{
-                "duplicate ssdp rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
-                existing.name, config.name};
+                "duplicate {} rule: \"{}\" and \"{}\" have overlapping mac selection, source_if, target_if, and address family",
+                protocol, existing.name, config.name};
         }
     }
     configs.push_back(std::move(config));
@@ -251,21 +227,21 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
         if (wol_ports) {
             config.ports = *wol_ports;
         }
-        if (auto error = AppendWol(wol_configs, std::move(config))) {
+        if (auto error = AppendConfig(wol_configs, std::move(config), "wol")) {
             return error;
         }
     }
     if (mdns) {
-        if (auto error = AppendMdns(mdns_configs, MdnsConfig{
+        if (auto error = AppendConfig(mdns_configs, MdnsConfig{
                 .name = std::string{name}, .mac = mac, .source_if = source_if,
-                .target_if = target_if, .address_family = address_family})) {
+                .target_if = target_if, .address_family = address_family}, "mdns")) {
             return error;
         }
     }
     if (ssdp) {
-        if (auto error = AppendSsdp(ssdp_configs, SsdpConfig{
+        if (auto error = AppendConfig(ssdp_configs, SsdpConfig{
                 .name = std::string{name}, .mac = mac, .source_if = source_if,
-                .target_if = target_if, .address_family = address_family, .dial = dial})) {
+                .target_if = target_if, .address_family = address_family, .dial = dial}, "ssdp")) {
             return error;
         }
     }
