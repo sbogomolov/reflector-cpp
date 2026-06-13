@@ -1,5 +1,6 @@
 #include "checksum.h"
 
+#include "protocol_constants.h"
 #include "util/byte_order.h"
 
 #include <array>
@@ -10,7 +11,7 @@ namespace reflector {
 
 namespace {
 
-constexpr std::byte UDP_PROTOCOL{17};
+constexpr std::byte UDP_PROTOCOL{IP_PROTO_UDP};
 
 // Sum 16-bit big-endian words into a 32-bit accumulator, padding a trailing odd byte with a
 // zero low byte. `seed` lets callers chain segments (pseudo-header, then UDP header+payload).

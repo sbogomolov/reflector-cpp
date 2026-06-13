@@ -4,6 +4,7 @@
 #include "frame_builder.h"
 #include "ip_address.h"
 #include "mac_address.h"
+#include "protocol_constants.h"
 #include "util/byte_order.h"
 #include "util/fd_util.h"
 
@@ -147,16 +148,8 @@ constexpr size_t SEND_BUFFER_SIZE = 4 * 1024;
 constexpr size_t LOOPBACK_FAMILY_SIZE = 4;
 #endif
 
-constexpr size_t ETHERNET_HEADER_SIZE = 14;
-constexpr size_t ETHERTYPE_OFFSET = 12;
-// Use *_ETHERTYPE names (not ETHERTYPE_IPV*) because macOS <net/ethernet.h> defines
-// ETHERTYPE_IPV6 as a macro, which would macro-expand our identifier here into garbage.
-constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
-constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
-constexpr uint8_t IP_PROTO_UDP = 17;
-constexpr size_t IPV4_MIN_HEADER_SIZE = 20;
-constexpr size_t IPV6_HEADER_SIZE = 40;
-constexpr size_t UDP_HEADER_SIZE = 8;
+// The L2/L3/L4 sizes, ethertypes, and IP_PROTO_UDP this parser checks come from protocol_constants.h
+// (shared with the frame builder). IPV4_HEADER_SIZE doubles as the minimum valid IPv4 header here.
 
 } // namespace
 
@@ -622,7 +615,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
 
     auto parse_l3 = [&]() -> std::optional<std::tuple<IpAddress, IpAddress, uint8_t, std::span<const std::byte>>> {
         if (ethertype == IPV4_ETHERTYPE) {
-            if (l3.size() < IPV4_MIN_HEADER_SIZE) {
+            if (l3.size() < IPV4_HEADER_SIZE) {
                 logger_.Error("IPv4 payload too short for header: {} bytes", l3.size());
                 return std::nullopt;
             }
@@ -633,7 +626,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             }
             const auto ihl_words = version_ihl & 0x0f;
             const auto header_size = static_cast<size_t>(ihl_words) * 4;
-            if (header_size < IPV4_MIN_HEADER_SIZE || l3.size() < header_size) {
+            if (header_size < IPV4_HEADER_SIZE || l3.size() < header_size) {
                 logger_.Error("IPv4 IHL {} words yields header size {} (l3 size {})",
                     ihl_words, header_size, l3.size());
                 return std::nullopt;

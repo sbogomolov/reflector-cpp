@@ -2,6 +2,7 @@
 
 #include "checksum.h"
 #include "logger.h"
+#include "protocol_constants.h"
 #include "util/byte_order.h"
 
 #include <cassert>
@@ -12,19 +13,12 @@ namespace reflector {
 
 namespace {
 
-// TODO: harmonize these protocol size/format constants across the codebase. The MAC size,
-// Ethernet/IPv4/IPv6/UDP header sizes, ethertypes, and UDP protocol number are duplicated here
-// and in the raw_socket parser, and appear as bare literals elsewhere (e.g. MacAddress's 6).
-// Define each once in a shared header and use it throughout.
-constexpr size_t ETHERNET_HEADER_SIZE = 14;
+// Shared L2/L3/L4 sizes/ethertypes/IP_PROTO_UDP come from protocol_constants.h. These are
+// frame-builder-only: the DLT_NULL prefix, the MAC length (from the canonical MacAddress type), a
+// std::byte view of the UDP protocol number, and the 16-bit length-field cap.
 constexpr size_t LOOPBACK_HEADER_SIZE = 4;
-constexpr size_t IPV4_HEADER_SIZE = 20;
-constexpr size_t IPV6_HEADER_SIZE = 40;
-constexpr size_t UDP_HEADER_SIZE = 8;
-constexpr size_t MAC_SIZE = 6;
-constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
-constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
-constexpr std::byte UDP_PROTOCOL{17};
+constexpr size_t MAC_SIZE = MacAddress::ByteArray{}.size();
+constexpr std::byte UDP_PROTOCOL{IP_PROTO_UDP};
 constexpr size_t MAX_UDP_LENGTH = 0xffff;
 
 Logger& GetLogger() noexcept {
