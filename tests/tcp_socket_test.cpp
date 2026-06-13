@@ -259,6 +259,23 @@ TEST_P(TcpSocketFamilyTest, ReadOnIdleSocketWouldBlock) {
     EXPECT_EQ(pair->server.Read(buf).status, IoStatus::WouldBlock);
 }
 
+// A zero-length Read must report WouldBlock, never Closed — recv() of 0 bytes returns 0, the same as an
+// orderly EOF. The DIAL forward path Reads into the receive buffer's free tail, which is empty when the
+// buffer is full; misreading that as a peer close would abort the connection. Proven against a socket that
+// has ACTUALLY received a FIN: the empty Read still says WouldBlock, and the real EOF survives for the next
+// non-empty Read.
+TEST_P(TcpSocketFamilyTest, EmptySpanReadIsWouldBlockNotEof) {
+    auto pair = EstablishedPair();
+    ASSERT_TRUE(pair.has_value());
+
+    pair->client.Close();  // peer sends FIN -> a genuine EOF is now pending on the server side
+    ASSERT_TRUE(WaitReadable(pair->server.Fd()));
+
+    EXPECT_EQ(pair->server.Read(std::span<std::byte>{}).status, IoStatus::WouldBlock);  // not Closed
+    std::byte buf[16];
+    EXPECT_EQ(pair->server.Read(buf).status, IoStatus::Closed);  // the pending EOF is still there to read
+}
+
 TEST_P(TcpSocketFamilyTest, SendBuffersTheTailAndFlushDrainsItInOrder) {
     auto pair = EstablishedPair();
     ASSERT_TRUE(pair.has_value());

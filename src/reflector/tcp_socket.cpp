@@ -263,6 +263,12 @@ bool TcpSocket::FinishConnect() noexcept {
 }
 
 IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
+    // A zero-length recv() returns 0 on both platforms — indistinguishable from an orderly EOF — so an
+    // empty `out` (a full receive buffer offering no tail) would be misread as Closed and abort the
+    // connection. Report WouldBlock instead: nothing was read, retry on the next readable edge.
+    if (out.empty()) {
+        return {IoStatus::WouldBlock, 0};
+    }
     const ssize_t n = ::recv(fd_.Get(), out.data(), out.size(), 0);
     if (n > 0) {
         return {IoStatus::Ok, static_cast<size_t>(n)};
