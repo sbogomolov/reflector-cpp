@@ -20,6 +20,14 @@ namespace reflector {
 // A family is reflected only while BOTH interfaces can send it; its group join and captures are
 // brought up / torn down as addresses come and go (DynamicFamilyReflector). Both sockets must
 // outlive this reflector.
+//
+// KNOWN LIMITATION: legacy one-shot queries (RFC 6762 §6.7 — a querier asking from an ephemeral
+// source port and expecting a UNICAST reply) are not bridged. A query is always re-emitted from the
+// standard 5353 source port, so the responder multicasts its answer to the group; that multicast
+// reflects back to the querier's segment but never reaches its ephemeral port, so the querier sees
+// nothing. Full mDNS resolvers (which query and listen on 5353) work end to end; only the legacy
+// unicast-reply path is unsupported. Bridging it would need SSDP-style per-query reserved-port
+// sessions (see SsdpReflector); out of scope, as modern resolvers dominate.
 class MdnsReflector : public DynamicFamilyReflector {
 public:
     MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
