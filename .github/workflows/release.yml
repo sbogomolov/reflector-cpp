@@ -65,12 +65,25 @@ jobs:
             cc: gcc-14
             cxx: g++-14
             reflector_static: "ON"
+          # armv7/armv5 have no native runner: cross-compile on the amd64 runner. cross_packages adds the
+          # toolchain; cmake_args drives CMAKE_SYSTEM_* (CC/CXX point at the cross compilers). Same matrix-
+          # field approach as ci.yml. armv7 = armhf (hard-float); armv5 = armel (soft-float, EN7562 boxes).
           - variant: linux-armv7
             runner: ubuntu-24.04
             platform: linux
             cc: arm-linux-gnueabihf-gcc-14
             cxx: arm-linux-gnueabihf-g++-14
             reflector_static: "ON"
+            cross_packages: crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf
+            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm
+          - variant: linux-armv5
+            runner: ubuntu-24.04
+            platform: linux
+            cc: arm-linux-gnueabi-gcc-14
+            cxx: arm-linux-gnueabi-g++-14
+            reflector_static: "ON"
+            cross_packages: crossbuild-essential-armel g++-14-arm-linux-gnueabi gcc-14-arm-linux-gnueabi
+            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm
           - variant: macos-arm64
             runner: macos-15
             platform: macos
@@ -86,11 +99,8 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cmake g++-14 gcc-14 ninja-build
-          if [ "${{ matrix.variant }}" = linux-armv7 ]; then
-            sudo apt-get install -y --no-install-recommends \
-              crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf
-          fi
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++-14 gcc-14 ninja-build ${{ matrix.cross_packages }}
 
       - name: Install macOS dependencies
         if: matrix.platform == 'macos'
@@ -98,16 +108,11 @@ jobs:
 
       - name: Configure
         run: |
-          # armv7 has no native runner: cross-compile via CMAKE_SYSTEM_* (CC/CXX are the cross compilers).
-          extra=""
-          if [ "${{ matrix.variant }}" = linux-armv7 ]; then
-            extra="-D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm"
-          fi
           cmake -S . -B build -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D BUILD_TESTING=OFF \
             -D REFLECTOR_STATIC="${REFLECTOR_STATIC}" \
-            $extra
+            ${{ matrix.cmake_args }}
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
@@ -119,7 +124,7 @@ jobs:
       - name: Verify static linking (Linux)
         if: matrix.platform == 'linux'
         run: |
-          # `file` reads the ELF header arch-independently, so one check covers amd64/arm64/armv7
+          # `file` reads the ELF header arch-independently, so one check covers amd64/arm64/armv7/armv5
           # (ldd cannot introspect a foreign-arch binary).
           file build/reflector
           file build/reflector | grep -q 'statically linked' \
@@ -158,10 +163,13 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
-          # armv7 has no native runner; it cross-compiles on the amd64 runner via the Dockerfile (no QEMU).
+          # armv7/armv5 have no native runner; they cross-compile on the amd64 runner via the Dockerfile (no QEMU).
           - arch: armv7
             runner: ubuntu-24.04
             platform: linux/arm/v7
+          - arch: armv5
+            runner: ubuntu-24.04
+            platform: linux/arm/v5
 
     steps:
       - name: Check out repository

@@ -2,10 +2,11 @@
 
 ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
 
-# build-env runs on the BUILD host (so the arm/v7 image cross-compiles on an amd64/arm64 runner rather
-# than under slow QEMU). For a native target (amd64 on amd64, arm64 on arm64) the conditional below is a
-# no-op and /toolchain.cmake is empty, so --toolchain is a no-op in the builder stage. For arm/v7 it
-# installs the armhf cross toolchain and writes a CMake toolchain file selecting it.
+# build-env runs on the BUILD host (so the arm/v7 and arm/v5 images cross-compile on an amd64/arm64
+# runner rather than under slow QEMU). For a native target (amd64 on amd64, arm64 on arm64) the
+# conditional below is a no-op and /toolchain.cmake is empty, so --toolchain is a no-op in the builder
+# stage. For 32-bit arm it installs the matching cross toolchain (armhf for v7, armel for v5) and writes
+# a CMake toolchain file selecting it.
 FROM --platform=$BUILDPLATFORM ${DEBIAN_TRIXIE_SLIM} AS build-env
 ARG TARGETARCH
 ARG TARGETVARIANT
@@ -22,13 +23,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         iproute2 \
         ninja-build \
         tzdata \
-    && if [ "$TARGETARCH" = arm ] && [ "$TARGETVARIANT" = v7 ]; then \
+    && if [ "$TARGETARCH" = arm ]; then \
+        case "$TARGETVARIANT" in \
+          v7) triple=arm-linux-gnueabihf; pkg=armhf ;; \
+          v5) triple=arm-linux-gnueabi;  pkg=armel ;; \
+          *)  echo "unsupported arm variant: ${TARGETVARIANT}" >&2; exit 1 ;; \
+        esac; \
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf; \
+            "crossbuild-essential-${pkg}" "g++-14-${triple}" "gcc-14-${triple}"; \
         { echo 'set(CMAKE_SYSTEM_NAME Linux)'; \
           echo 'set(CMAKE_SYSTEM_PROCESSOR arm)'; \
-          echo 'set(CMAKE_C_COMPILER arm-linux-gnueabihf-gcc-14)'; \
-          echo 'set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++-14)'; } > /toolchain.cmake; \
+          echo "set(CMAKE_C_COMPILER ${triple}-gcc-14)"; \
+          echo "set(CMAKE_CXX_COMPILER ${triple}-g++-14)"; } > /toolchain.cmake; \
     else \
         : > /toolchain.cmake; \
     fi

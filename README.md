@@ -18,9 +18,9 @@ keeps running. The per-protocol re-emit details are described under [Configurati
 
 ## Platform support
 
-Linux and macOS. The CI workflow runs the unit suite on Ubuntu 24.04 x64, Ubuntu 24.04 arm64, and macOS 15, plus a cross-compiled 32-bit ARMv7 (`linux/arm/v7`) build whose unit suite runs under QEMU; it also runs Docker build and e2e jobs on Ubuntu 24.04.
+Linux and macOS. The CI workflow runs the unit suite on Ubuntu 24.04 x64, Ubuntu 24.04 arm64, and macOS 15, plus cross-compiled 32-bit ARM builds (`linux/arm/v7` and `linux/arm/v5`) whose unit suites run under QEMU; it also runs Docker build and e2e jobs on Ubuntu 24.04.
 
-The published multi-arch Docker image targets `linux/amd64`, `linux/arm64`, and `linux/arm/v7`. The last lets it run on 32-bit ARMv7 devices such as older MikroTik routers (e.g. RB3011, RB4011, hAP ac2/ac3, CRS3xx) through the RouterOS *Container* feature.
+The published multi-arch Docker image targets `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`. The 32-bit ARM variants let it run on MikroTik routers through the RouterOS *Container* feature: `arm/v7` for older ARMv7 devices (e.g. RB3011, RB4011, hAP ac2/ac3, CRS3xx), and `arm/v5` for the newer low-end ARMv5 boxes built on the EN7562CT SoC (hEX refresh, hEX S refresh, hAP ax S).
 
 ## Build
 
@@ -56,7 +56,7 @@ Requires Docker with Buildx.
 ./docker_build.sh --push
 ```
 
-The runtime image uses pinned Debian/distroless base image digests. By default, `./docker_build.sh` loads a single-platform image into the local Docker engine and tags it as `reflector:<version>` and `reflector:latest`. With `--push`, it publishes `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64`, `linux/arm64`, and `linux/arm/v7`; override the destination with `--image`, or override architectures with `--platforms` for unusual deployment targets.
+The runtime image uses pinned Debian/distroless base image digests. By default, `./docker_build.sh` loads a single-platform image into the local Docker engine and tags it as `reflector:<version>` and `reflector:latest`. With `--push`, it publishes `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; override the destination with `--image`, or override architectures with `--platforms` for unusual deployment targets.
 
 ## Release
 
