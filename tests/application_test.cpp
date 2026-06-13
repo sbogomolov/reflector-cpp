@@ -1,6 +1,7 @@
 #include "reflector/application.h"
 
 #include "reflector/config.h"
+#include "reflector/error.h"
 #include "reflector/interface.h"
 #include "reflector/link_socket.h"
 #include "reflector/mac_address.h"
@@ -12,6 +13,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <csignal>
 #include <cstdint>
 #include <memory>
@@ -22,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+#include <unistd.h>
+
 namespace reflector {
 
 // Exercises Application's wiring entirely against fakes — a fake dispatcher, address monitor, and
@@ -31,6 +35,9 @@ class ApplicationTest : public ::testing::Test {
 protected:
     static size_t SocketCount(const Application& app) { return app.SocketCount(); }
     static size_t ReflectorCount(const Application& app) { return app.ReflectorCount(); }
+    // The signal-wakeup self-pipe read fd (friendship isn't inherited, so the TEST_F body reaches the
+    // private member through this fixture accessor, like the counts above).
+    static int WakeupReadFd(const Application& app) { return app.wakeup_read_.Get(); }
 
     // Per-interface settings the factories stamp onto the Interface and socket when first
     // created. Interfaces with no entry get the defaults (valid, can send both families,
@@ -545,6 +552,32 @@ TEST_F(ApplicationTest, RunDelegatesToTheDispatcher) {
     app.Run(stop_requested);
 
     EXPECT_EQ(dispatcher_->run_calls, 1u);
+}
+
+// PrepareSignalWakeup registers a self-pipe read end with the dispatcher (so a signal handler can break the
+// poll by writing the returned fd), and OnWakeup drains it. Opt-in -- only this test and production main
+// call it, so the other cases' dispatcher-registration counts stay unperturbed.
+TEST_F(ApplicationTest, SignalWakeupRegistersAndDrains) {
+    auto app = MakeApp();
+    const size_t before = dispatcher_->RegistrationCount();
+
+    const int write_fd = app.PrepareSignalWakeup();
+    ASSERT_GE(write_fd, 0);
+    EXPECT_EQ(dispatcher_->RegistrationCount(), before + 1);  // the pipe's read end is now watched
+
+    const int read_fd = WakeupReadFd(app);
+    ASSERT_TRUE(dispatcher_->IsWatching(read_fd));
+
+    // Simulate the handler: write the wakeup byte, then fire the readable edge the reactor would deliver.
+    const unsigned char byte = 1;
+    ASSERT_EQ(::write(write_fd, &byte, 1), 1);
+    dispatcher_->FireReadable(read_fd);  // OnWakeup drains the pipe
+
+    // Drained: the read end now blocks (EAGAIN), proving OnWakeup consumed the byte rather than leaving the
+    // level-triggered fd readable (which would spin the real reactor after the loop's stop check).
+    unsigned char drained = 0;
+    EXPECT_EQ(::read(read_fd, &drained, 1), -1);
+    EXPECT_TRUE(IsWouldBlockErrno(errno));
 }
 
 } // namespace reflector

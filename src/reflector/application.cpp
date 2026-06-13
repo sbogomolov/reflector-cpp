@@ -1,19 +1,25 @@
 #include "application.h"
 
 #include "default_address_monitor.h"
+#include "error.h"
 #include "event_loop_dispatcher.h"
 #include "logger.h"
 #include "mdns_reflector.h"
 #include "raw_socket.h"
 #include "ssdp_reflector.h"
 #include "util/delegate.h"
+#include "util/fd_util.h"
 #include "wol_reflector.h"
 
+#include <array>
 #include <cassert>
+#include <cstddef>
 #include <memory>
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 using namespace reflector;
@@ -138,6 +144,47 @@ void Application::OnInterfaceChanged(unsigned interface_index) noexcept {
     // it changed, so a single broadcast after the refresh is enough.
     for (const auto& reflector : reflectors_) {
         reflector->OnInterfaceChanged();
+    }
+}
+
+int Application::PrepareSignalWakeup() {
+    int fds[2];
+    if (::pipe(fds) != 0) {
+        GetLogger().Warning("Cannot create signal wakeup pipe: {}; shutdown bounded by the poll interval",
+            Error::FromErrno());
+        return -1;
+    }
+    wakeup_read_.Reset(fds[0]);
+    wakeup_write_.Reset(fds[1]);
+
+    // Non-blocking both ends: the handler's write must never block in async-signal context (a full pipe just
+    // drops the byte -- one already pending suffices to wake), and OnWakeup drains to EAGAIN. No close-on-exec:
+    // the daemon never execs (like every other fd here), so there is nothing to leak across an exec.
+    for (const int fd : {wakeup_read_.Get(), wakeup_write_.Get()}) {
+        if (!SetNonBlocking(fd)) {
+            GetLogger().Warning("Cannot configure signal wakeup pipe: {}; shutdown bounded by the poll interval",
+                Error::FromErrno());
+            wakeup_read_.Reset();
+            wakeup_write_.Reset();
+            return -1;
+        }
+    }
+
+    wakeup_reg_ = dispatcher_->Register(wakeup_read_.Get(), CreateDelegate<&Application::OnWakeup>(this));
+    if (!wakeup_reg_.IsValid()) {
+        GetLogger().Warning("Cannot register the signal wakeup pipe; shutdown bounded by the poll interval");
+        wakeup_read_.Reset();
+        wakeup_write_.Reset();
+        return -1;
+    }
+    return wakeup_write_.Get();
+}
+
+void Application::OnWakeup(int fd) noexcept {
+    // The wakeup byte(s) exist only to break the poll; consume them so the level-triggered read does not
+    // re-fire, then let the loop's stop_requested check end the run.
+    std::array<std::byte, 64> scratch{};
+    while (::read(fd, scratch.data(), scratch.size()) > 0) {
     }
 }
 

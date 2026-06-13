@@ -8,6 +8,7 @@
 #include "link_socket.h"
 #include "reflector.h"
 #include "util/no_move.h"
+#include "util/unique_fd.h"
 
 #include <csignal>
 #include <cstddef>
@@ -51,6 +52,15 @@ public:
 
     void Run(const volatile std::sig_atomic_t& stop_requested);
 
+    // Sets up a self-pipe and registers its read end with the dispatcher, returning the write fd a signal
+    // handler writes one byte to in order to break the blocking poll immediately -- the loop then re-checks
+    // stop_requested and exits, instead of waiting up to one poll interval. Also robust to a SA_RESTART
+    // handler (signal()'s default on Linux) that would otherwise restart the poll rather than surface EINTR.
+    // Best-effort: returns -1 (after logging a warning) if the pipe or its registration cannot be set up,
+    // leaving shutdown bounded by the poll interval. Call once, after Configure, before Run. Production
+    // wiring only -- the other tests never call it, so their dispatcher-registration counts are unperturbed.
+    [[nodiscard]] int PrepareSignalWakeup();
+
 private:
     friend class ApplicationTest;
 
@@ -89,6 +99,10 @@ private:
     // every interface when index == 0 (the monitor's overflow signal).
     void OnInterfaceChanged(unsigned interface_index) noexcept;
 
+    // Drains the signal-wakeup self-pipe set up by PrepareSignalWakeup. The byte exists only to wake the
+    // poll; the loop's stop_requested check ends the run. Level-triggered, so drain fully.
+    void OnWakeup(int fd) noexcept;
+
     InterfaceFactory interface_factory_;
     SocketFactory socket_factory_;
 
@@ -106,6 +120,13 @@ private:
     DefaultPacketDispatcher packet_dispatcher_{*dispatcher_};
     std::vector<std::unique_ptr<Reflector>> reflectors_;
     std::unique_ptr<AddressMonitor> address_monitor_;
+
+    // Signal-wakeup self-pipe (best-effort; populated by PrepareSignalWakeup, otherwise empty). Declared
+    // last so it tears down first: wakeup_reg_ unregisters from dispatcher_ while it is still alive, then
+    // the pipe fds close. wakeup_reg_ holds a callback bound to `this`, so it must outlive nothing here.
+    UniqueFd wakeup_write_;
+    UniqueFd wakeup_read_;
+    Dispatcher::Registration wakeup_reg_;
 };
 
 } // namespace reflector

@@ -10,9 +10,19 @@
 
 namespace {
 volatile std::sig_atomic_t g_stop_requested = 0;
+// The write end of Application's signal-wakeup self-pipe, or -1 until PrepareSignalWakeup sets it. Writing
+// one byte breaks the dispatcher's blocking poll at once so shutdown doesn't wait up to a poll interval.
+volatile std::sig_atomic_t g_wakeup_fd = -1;
 
 void SignalHandler(int) {
     g_stop_requested = 1;
+    const int wakeup_fd = g_wakeup_fd;
+    if (wakeup_fd >= 0) {
+        // write() is async-signal-safe; best-effort, so a full/not-ready pipe (the result we ignore) is
+        // fine -- a byte already pending is enough to wake the loop, which then re-checks g_stop_requested.
+        const unsigned char byte = 1;
+        ::write(wakeup_fd, &byte, 1);
+    }
 }
 
 void ConfigureStdoutBuffering() noexcept {
@@ -50,7 +60,14 @@ int Run(int argc, char* argv[]) {
         return 1;
     }
 
+    // Let SIGINT/SIGTERM break the dispatcher's poll at once instead of waiting up to a poll interval.
+    // Best-effort: -1 (setup failed, already logged) leaves the signal handler to only set the stop flag.
+    g_wakeup_fd = app.PrepareSignalWakeup();
+
     app.Run(g_stop_requested);
+
+    // The pipe closes with `app`; stop the handler from writing a stale fd during teardown.
+    g_wakeup_fd = -1;
 
     return 0;
 }
