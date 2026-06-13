@@ -45,7 +45,6 @@ struct FakeLinkSocket : LinkSocket {
     [[nodiscard]] std::optional<Packet> Receive() noexcept override { return std::nullopt; }
 #if defined(__APPLE__)
     [[nodiscard]] bool HasBufferedData() const noexcept override { return false; }
-    void ClearBuffer() noexcept override {}
 #endif
 
     [[nodiscard]] bool SendUdpDatagram(MacAddress dst_mac, const IpEndpoint& dst,

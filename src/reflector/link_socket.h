@@ -38,11 +38,10 @@ public:
     [[nodiscard]] virtual std::optional<Packet> Receive() noexcept = 0;
 
 #if defined(__APPLE__)
-    // macOS BPF batches several frames into one read(); these let the dispatcher drain the
-    // userland buffer past the per-event cap and discard it when it abandons a drain. Not on
-    // Linux, where AF_PACKET delivers one frame per recv with no userland buffering.
+    // macOS BPF batches several frames into one read(); this lets the dispatcher keep draining the
+    // userland buffer past the per-event cap while frames remain. Not on Linux, where AF_PACKET
+    // delivers one frame per recv with no userland buffering.
     [[nodiscard]] virtual bool HasBufferedData() const noexcept = 0;
-    virtual void ClearBuffer() noexcept = 0;
 #endif
 
     // --- send side: a reflector emits reflected datagrams through this ---

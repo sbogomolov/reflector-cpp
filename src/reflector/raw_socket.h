@@ -93,12 +93,6 @@ public:
     // while the buffer still has data. Not defined on Linux because AF_PACKET delivers one
     // frame per recv with no userland buffering.
     [[nodiscard]] bool HasBufferedData() const noexcept override;
-
-    // Discards any unparsed bytes in the userland buffer. DefaultPacketDispatcher calls this when it
-    // abandons a drain mid-batch (last registration for this fd was unregistered by a
-    // callback); the leftover frames would otherwise sit until either the socket is
-    // destroyed or new kernel data arrives to trigger a fresh drain.
-    void ClearBuffer() noexcept override;
 #endif
 
 private:
@@ -121,6 +115,13 @@ private:
     // multicast, or broadcast) and enforce their address-type precondition first.
     [[nodiscard]] bool SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept;
+
+#if defined(__APPLE__)
+    // Discards any unparsed bytes in the userland receive buffer. Called only by Close(), so a socket
+    // that closes mid-batch never leaves a stale partial batch behind. The dispatcher fully drains each
+    // read event (it loops while HasBufferedData), so there is no abandoned-drain path that needs this.
+    void ClearBuffer() noexcept;
+#endif
 
     Logger logger_;
     const Interface& interface_;
