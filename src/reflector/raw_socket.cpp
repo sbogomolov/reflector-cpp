@@ -8,6 +8,7 @@
 #include "util/byte_order.h"
 #include "util/fd_util.h"
 
+#include <algorithm>
 #include <array>
 #include <arpa/inet.h>
 #include <bit>
@@ -36,8 +37,9 @@
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <sys/socket.h>
-// Added to the UAPI in Linux 4.20; define it if the build's kernel headers predate that.
-// The setsockopt still fails at runtime on a pre-4.20 kernel, which RawSocket treats as fatal.
+// Added to the UAPI in Linux 4.20; define it for older build headers. At runtime the setsockopt may
+// still fail on a pre-4.20 kernel (or under user-mode QEMU), in which case Open falls back to dropping
+// our own outgoing frames inside the BPF filter (DROP_OUTGOING_PROLOGUE).
 #ifndef PACKET_IGNORE_OUTGOING
 #define PACKET_IGNORE_OUTGOING 23
 #endif
@@ -52,10 +54,11 @@ namespace reflector {
 namespace {
 
 // Classic BPF programs that accept IPv4 UDP or IPv6 UDP only (no VLAN tag, no IPv6
-// extension headers). Direction filtering is handled at the socket level rather than in
-// the program: Linux sets PACKET_IGNORE_OUTGOING and macOS clears BIOCSSEESENT (on
-// Ethernet), so the kernel never feeds us our own injected frames. Both prevent two
-// reflector entries with mirrored interface pairs (entry A: eth0 → eth1, entry B: eth1 →
+// extension headers). Direction filtering keeps the kernel from feeding us our own injected
+// frames: Linux prefers the PACKET_IGNORE_OUTGOING socket option and falls back to prepending
+// DROP_OUTGOING_PROLOGUE (the SKF_AD_PKTTYPE ancillary load reads skb->pkt_type) when the kernel
+// lacks it; macOS clears BIOCSSEESENT (on Ethernet) as BSD BPF has no such ancillary. Both prevent
+// two reflector entries with mirrored interface pairs (entry A: eth0 → eth1, entry B: eth1 →
 // eth0) from ping-ponging the same frame: without this, B's capture on eth1 would pick up
 // A's egress and re-reflect it back to eth0, where A would in turn pick up B's egress, ad
 // infinitum.
@@ -69,9 +72,9 @@ struct BpfInsn {
 // Non-const so the kernel APIs (sock_filter* / bpf_insn*) accept .data() without
 // const_cast. The surrounding anonymous namespace gives internal linkage; no caller
 // mutates them and the kernel only reads.
-// Ethernet UDP filter: accept IPv4/IPv6 UDP only. Direction filtering is done at the
-// socket level (see above), not here, so this is a plain protocol classifier shared by
-// both platforms.
+// Ethernet UDP filter: accept IPv4/IPv6 UDP only — a plain protocol classifier shared by both
+// platforms. Direction filtering is layered on per-platform (Linux: PACKET_IGNORE_OUTGOING, or a
+// prepended prologue as fallback; macOS: BIOCSSEESENT; see above), not encoded here.
 //
 //   0: ldh  [12]                load ethertype
 //   1: jeq  0x0800, jt=3, jf=0  if IPv4, jump to 5 (IPv4 path); else fall through
@@ -93,6 +96,18 @@ std::array<BpfInsn, 9> ETHERNET_UDP_FILTER{{
     {0x0006,  0,  0, 0xffffffff}, // BPF_RET|BPF_K, accept
     {0x0006,  0,  0, 0x00000000}, // BPF_RET|BPF_K, drop
 }};
+
+#if defined(__linux__)
+// Fallback for kernels without PACKET_IGNORE_OUTGOING (pre-4.20, or under user-mode QEMU, which does
+// not translate that option): prepended to ETHERNET_UDP_FILTER (see Open) so the SKF_AD_PKTTYPE
+// ancillary load reads skb->pkt_type and frames we sent (PACKET_OUTGOING) are dropped, keeping the
+// capture socket from re-receiving its own injections. (BPF_LD|BPF_B|BPF_ABS = 0x30, etc.)
+constexpr std::array<BpfInsn, 3> DROP_OUTGOING_PROLOGUE{{
+    {BPF_LD | BPF_B | BPF_ABS, 0, 0, static_cast<uint32_t>(SKF_AD_OFF + SKF_AD_PKTTYPE)}, // A = pkt_type
+    {BPF_JMP | BPF_JEQ | BPF_K, 0, 1, PACKET_OUTGOING}, // our TX: jt=0 -> drop (next); else jf=1 -> classifier
+    {BPF_RET | BPF_K, 0, 0, 0},                         // drop
+}};
+#endif
 
 #if defined(__APPLE__)
 // DLT_NULL framing: 4-byte address family in host byte order (BSD loopback driver
@@ -178,24 +193,29 @@ RawSocket::RawSocket(const Interface& interface)
         return;
     }
 
-    sock_fprog program{
-        .len = ETHERNET_UDP_FILTER.size(),
-        .filter = reinterpret_cast<sock_filter*>(ETHERNET_UDP_FILTER.data()),
-    };
+    // Loop-prevention: keep the kernel from handing this capture socket our own injected frames.
+    // Prefer PACKET_IGNORE_OUTGOING (drops outgoing at the socket, before the filter runs); if the
+    // kernel lacks it (pre-4.20) or rejects it (user-mode QEMU), fall back to dropping PACKET_OUTGOING
+    // inside the program via DROP_OUTGOING_PROLOGUE.
+    const int ignore_outgoing = 1;
+    const bool socket_drops_outgoing = setsockopt(fd_.Get(), SOL_PACKET, PACKET_IGNORE_OUTGOING,
+        &ignore_outgoing, sizeof(ignore_outgoing)) == 0;
+
+    // `amended` must outlive the SO_ATTACH_FILTER call below; populated only on the fallback path.
+    std::array<BpfInsn, DROP_OUTGOING_PROLOGUE.size() + ETHERNET_UDP_FILTER.size()> amended;
+    sock_fprog program{};
+    if (socket_drops_outgoing) {
+        program = sock_fprog{.len = ETHERNET_UDP_FILTER.size(),
+            .filter = reinterpret_cast<sock_filter*>(ETHERNET_UDP_FILTER.data())};
+    } else {
+        logger_.Info("PACKET_IGNORE_OUTGOING unavailable ({}); dropping our own frames in the BPF filter",
+            Error::FromErrno());
+        std::ranges::copy(ETHERNET_UDP_FILTER, std::ranges::copy(DROP_OUTGOING_PROLOGUE, amended.begin()).out);
+        program = sock_fprog{.len = amended.size(),
+            .filter = reinterpret_cast<sock_filter*>(amended.data())};
+    }
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
         logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-
-    // Stop the kernel from handing this capture socket our own injected frames — the
-    // loop-prevention counterpart to macOS's BIOCSSEESENT=0 (see the filter note above).
-    // Fatal if unsupported (kernel < 4.20): a capture socket that re-receives its own
-    // injections would let mirrored reflector entries ping-pong a frame forever.
-    const int ignore_outgoing = 1;
-    if (setsockopt(fd_.Get(), SOL_PACKET, PACKET_IGNORE_OUTGOING, &ignore_outgoing,
-            sizeof(ignore_outgoing)) != 0) {
-        logger_.Error("Cannot set PACKET_IGNORE_OUTGOING: {}", Error::FromErrno());
         Close();
         return;
     }
