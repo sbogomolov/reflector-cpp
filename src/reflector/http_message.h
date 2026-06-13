@@ -34,6 +34,15 @@ struct Authority {
 // from its buffer. The header is copied because rewriting changes it; the body is a zero-copy slice of the
 // fed input. Each Feed yields at most one message's worth — a complete header plus as much of its body as
 // arrived — so the owner loops Feed over its buffer until consumed == 0 (need more bytes), then reads more.
+//
+// Body framing covers exactly what DIAL needs: a Content-Length body, a Transfer-Encoding: chunked body, or
+// no body. A message carrying NEITHER header is treated as bodyless (the message ends at the blank line).
+// KNOWN LIMITATION: that means a close-delimited response (RFC 7230 §3.3.3 rule 7 — a response with no
+// Content-Length and no chunked encoding, whose body runs until the connection closes) is mis-framed: its
+// header forwards, then its body bytes are parsed as the next message's header and the connection is dropped
+// as malformed. Real DIAL device servers send Content-Length (or chunked), so this does not arise in
+// practice; a device that relied on close-delimiting would need a Phase that streams the body until EOF
+// (and status-line awareness for the always-bodyless 1xx/204/304 and HEAD-response cases). Out of scope here.
 class HttpFraming {
 public:
     // Called once per rewritable authority header — Host (requests), Application-URL / Location
