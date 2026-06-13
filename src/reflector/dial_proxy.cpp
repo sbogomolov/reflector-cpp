@@ -27,6 +27,31 @@ std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& d
     return EnsureListener(device, Endpoint::Role::Discovery);
 }
 
+void DialProxy::OnInterfaceChanged() noexcept {
+    const auto current = source_if_.SourceAddress(IpAddress::Family::V4);
+
+    // A listener is stale when its bind address no longer matches source_if's current V4 source — the
+    // address changed under it, or vanished (current == nullopt makes every listener stale). Drop the
+    // connections pinned to a stale endpoint FIRST: a Connection borrows Endpoint& and its dtor
+    // decrements that endpoint's active_connections, so erasing the endpoint with a live connection
+    // still pinned would dangle the reference. The predicate is the same on both sweeps, so a dropped
+    // connection's endpoint is always among the endpoints dropped below.
+    const auto is_stale = [&current](const Endpoint& endpoint) {
+        return current != endpoint.listener.LocalEndpoint().addr;
+    };
+    std::erase_if(connections_, [&](const auto& entry) { return is_stale(entry.second.endpoint); });
+    const auto dropped = std::erase_if(endpoints_, [&](const auto& entry) { return is_stale(entry.second); });
+
+    if (dropped > 0) {
+        logger_.Info("source_if V4 source is now {}; dropped {} stale DIAL listener(s) for re-mint",
+            current ? current->ToString() : "none", dropped);
+    }
+    if (connections_.empty() && endpoints_.empty()) {
+        // Nothing left to sweep — stop the reaper (it otherwise self-stops on its next fire).
+        eviction_timer_.Stop();
+    }
+}
+
 std::optional<IpEndpoint> DialProxy::EnsureRestListener(const IpEndpoint& device) {
     return EnsureListener(device, Endpoint::Role::Rest);
 }

@@ -437,6 +437,41 @@ TEST_F(DialProxyTest, BindAddressFlowsFromTheSourceInterface) {
     EXPECT_EQ(authority->addr, alt);  // bound to the source_if address, not a hard-coded loopback
 }
 
+// A source-interface address change leaves every minted listener bound to a now-dead address. The proxy
+// drops the stale listeners (and stops its reaper once both maps empty) so the next rewrite re-mints against
+// the fresh address. Without this, each rewrite refreshes the endpoint's last_active, so a chatty device
+// would keep the stale listener alive past the eviction grace indefinitely.
+TEST_F(DialProxyTest, OnInterfaceChangedDropsListenersBoundToAChangedSourceAddress) {
+    auto proxy = MakeProxy();
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(2)).has_value());
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(3)).has_value());
+    ASSERT_EQ(EndpointCount(proxy), 2u);
+    const int fd = ListenerFd(proxy, Device(2));
+    ASSERT_TRUE(dispatcher.IsWatching(fd));
+
+    source_if.SetV4(std::nullopt);  // source_if lost its IPv4 source: every listener's bind is now stale
+    proxy.OnInterfaceChanged();
+
+    EXPECT_EQ(EndpointCount(proxy), 0u);         // both stale listeners dropped
+    EXPECT_FALSE(HasEndpoint(proxy, Device(2)));
+    EXPECT_FALSE(dispatcher.IsWatching(fd));      // the accept registration went with the endpoint
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);       // nothing left to sweep -> the reaper stopped
+}
+
+// An OnInterfaceChanged that does not actually change source_if's V4 source leaves the listeners untouched —
+// no needless re-mint churn, no dropped in-flight discovery.
+TEST_F(DialProxyTest, OnInterfaceChangedKeepsListenersWhenSourceAddressUnchanged) {
+    auto proxy = MakeProxy();
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(2)).has_value());
+    const int fd = ListenerFd(proxy, Device(2));
+
+    proxy.OnInterfaceChanged();  // source_if still has its default 127.0.0.1 source
+
+    EXPECT_EQ(EndpointCount(proxy), 1u);
+    EXPECT_TRUE(HasEndpoint(proxy, Device(2)));
+    EXPECT_TRUE(dispatcher.IsWatching(fd));
+}
+
 TEST_F(DialProxyTest, DiscoveryAndRestCapsAreIndependent) {
     auto proxy = MakeProxy();
     // Fill the Discovery cap entirely...
@@ -1970,6 +2005,24 @@ TEST_F(DialProxyForwardTest, EvictionReapsAClosedIdleAndConnectingNodeInOneSweep
     EXPECT_EQ(ConnectionCount(proxy), 0u);  // all three reaped in the one sweep
 
     ::close(conn_client);
+}
+
+// A source-address change drops not only the stale listeners but the live connections pinned to them: a
+// Connection borrows Endpoint&, so it must be erased before the endpoint it references — and its client
+// reached an authority that no longer routes anyway.
+TEST_F(DialProxyForwardTest, OnInterfaceChangedDropsConnectionsPinnedToAStaleListener) {
+    auto proxy = MakeProxy();
+    OpenConnection oc = OpenOne(proxy);
+    ASSERT_NE(oc.id, 0u);
+    ASSERT_EQ(ConnectionCount(proxy), 1u);
+    ASSERT_EQ(EndpointCount(proxy), 1u);
+
+    source_if.SetV4(std::nullopt);  // the listener's bind address is gone -> endpoint and its connection stale
+    proxy.OnInterfaceChanged();
+
+    EXPECT_EQ(ConnectionCount(proxy), 0u);   // the pinned connection went first, with no dangling Endpoint&
+    EXPECT_EQ(EndpointCount(proxy), 0u);
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);  // both maps empty -> reaper stopped
 }
 
 } // namespace reflector

@@ -81,6 +81,16 @@ public:
     // Refreshes the endpoint's last_active.
     [[nodiscard]] std::optional<IpEndpoint> EnsureDiscoveryListener(const IpEndpoint& device);
 
+    // React to a possible source-interface address change. Every listener is bound to source_if's V4
+    // address as it was at mint time, so once that address changes (or goes away) the listener's
+    // advertised authority is dead — and because each rewrite refreshes the endpoint's last_active, a
+    // chatty device would keep its stale listener alive past the eviction grace forever. Drops every
+    // listener whose bind address no longer matches source_if's current V4 source (and the connections
+    // pinned to it) so the next rewrite re-mints against the fresh address. Called by SsdpReflector from
+    // the reflector OnInterfaceChanged broadcast; runs outside any connection fd handler, so erasing
+    // connections here is safe.
+    void OnInterfaceChanged() noexcept;
+
 private:
     friend class DialProxyTest;  // reaches the internal EnsureRestListener (whose only caller is the u2c rewrite)
 

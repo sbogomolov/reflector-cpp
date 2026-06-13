@@ -1,6 +1,8 @@
 #include "reflector/ssdp_reflector.h"
 #include "reflector/ip_address.h"
 #include "reflector/mac_address.h"
+#include "reflector/tcp_socket.h"
+#include "mocks/fake_interface.h"
 #include "mocks/fake_link_socket.h"
 #include "mocks/fake_packet_dispatcher.h"
 #include "test_helpers.h"
@@ -945,6 +947,46 @@ TEST_F(SsdpReflectorTest, DialListenerBindsOnSourceInterfaceNotTarget) {
     const auto text = AsText(source.sent.back().payload);
     EXPECT_EQ(text.find(DIAL_DEVICE_AUTHORITY), std::string_view::npos) << text;  // rewritten -> listener bound
     EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;    // on source_if's address
+}
+
+// A source-interface address CHANGE (not just a teardown/restore of the same address) must route through
+// SsdpReflector::OnInterfaceChanged into the DIAL proxy: the listener bound to the OLD address is dropped,
+// and the next reflected advertisement re-mints one on the NEW address. Without the wiring + drop, the proxy
+// would keep advertising a LOCATION on the now-dead old address. The existing DialProxySurvivesAFamilyTeardown
+// only toggles the TARGET interface, so the source-bound listener is never stale there — this is the
+// source-side path. Mirrors DialListenerBindsOnSourceInterfaceNotTarget's loopback-rewrite observation; a
+// distinct second loopback address isn't bindable on every platform (macOS routes only 127.0.0.1 to lo), so
+// skip where it can't bind — the Linux docker gate still exercises it.
+TEST_F(SsdpReflectorTest, DialReMintsListenerOnSourceAddressChange) {
+    const auto changed = IpAddress::FromString("127.0.0.2").value();
+    FakeInterface bind_probe;
+    bind_probe.SetV4(changed);
+    if (!TcpSocket::Listen(bind_probe, IpAddress::Family::V4)) {
+        GTEST_SKIP() << "127.0.0.2 is not bindable on this platform";
+    }
+
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // First advertisement: the listener mints on source_if's original 127.0.0.1.
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_NE(AsText(source.sent.back().payload).find("http://127.0.0.1:"), std::string_view::npos)
+        << AsText(source.sent.back().payload);
+
+    // source_if's V4 source changes; the reflector broadcast must carry that into the proxy.
+    source.iface.SetV4(changed);
+    reflector.OnInterfaceChanged();
+
+    // Second advertisement: the proxy re-mints on the NEW address — proving the stale listener was dropped and
+    // the SsdpReflector -> DialProxy wiring delivered the change (a surviving old listener would still say .1).
+    packet_dispatcher.Deliver(target, MakePacket(MakeDialAdvertisement(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 2u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_NE(text.find("http://127.0.0.2:"), std::string_view::npos) << text;  // re-minted on the new address
+    EXPECT_EQ(text.find("http://127.0.0.1:"), std::string_view::npos) << text;  // not the old (dropped) one
 }
 
 TEST_F(SsdpReflectorTest, DialForwardsLocationUnchangedWhenListenerMintFails) {

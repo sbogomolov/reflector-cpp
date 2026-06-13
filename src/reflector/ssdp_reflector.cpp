@@ -81,6 +81,15 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
         config.dial ? "enabled" : "disabled");
 }
 
+void SsdpReflector::OnInterfaceChanged() noexcept {
+    DynamicFamilyReflector::OnInterfaceChanged();  // re-gate families: join/leave groups + (un)register captures
+    if (dial_proxy_) {
+        // Drops listeners bound to a now-changed source_if address; the next reflected DIAL advertisement
+        // re-mints them lazily (RewriteDialLocation -> EnsureDiscoveryListener), against the fresh address.
+        dial_proxy_->OnInterfaceChanged();
+    }
+}
+
 bool SsdpReflector::BringUpFamily(IpAddress::Family family) {
     // SSDP has more than one group per family (IPv6: link-local + site-local); each is set up into
     // the family's setup. A failure rolls the whole family back (RAII leaves/unregisters the rest).

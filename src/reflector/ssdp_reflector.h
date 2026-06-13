@@ -36,6 +36,11 @@ public:
     SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const SsdpConfig& config);
 
+    // Re-gate the per-family groups/captures (DynamicFamilyReflector), then let the DIAL proxy drop any
+    // listener bound to a source address that has since changed — the proxy is otherwise blind to address
+    // changes, so its listeners would advertise a dead authority.
+    void OnInterfaceChanged() noexcept override;
+
 private:
     static constexpr uint16_t SSDP_PORT = 1900;
     static constexpr uint8_t SSDP_TTL = 2;
