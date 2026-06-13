@@ -177,26 +177,19 @@ RawSocket::RawSocket(const Interface& interface)
     }
 
 #if defined(__linux__)
-    fd_.Reset(socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, htons(ETH_P_ALL)));
+    // Open with protocol 0 so the socket captures nothing yet. This lets us install the BPF filter
+    // (and PACKET_IGNORE_OUTGOING) before bind starts packet delivery, eliminating the window in which
+    // unfiltered frames (e.g. IGMP from multicast joins) would otherwise queue and reach the parser.
+    fd_.Reset(socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, 0));
     if (!fd_) {
         logger_.Error("Cannot open AF_PACKET socket: {}", Error::FromErrno());
         return;
     }
 
-    sockaddr_ll addr{};
-    addr.sll_family = AF_PACKET;
-    addr.sll_protocol = htons(ETH_P_ALL);
-    addr.sll_ifindex = static_cast<int>(interface_.Index());
-    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-
     // Loop-prevention: keep the kernel from handing this capture socket our own injected frames.
-    // Prefer PACKET_IGNORE_OUTGOING (drops outgoing at the socket, before the filter runs); if the
-    // kernel lacks it (pre-4.20) or rejects it (user-mode QEMU), fall back to dropping PACKET_OUTGOING
-    // inside the program via DROP_OUTGOING_PROLOGUE.
+    // Prefer PACKET_IGNORE_OUTGOING (drops outgoing at the socket); if the kernel lacks it (pre-4.20)
+    // or rejects it (user-mode QEMU), prepend an in-program PACKET_OUTGOING drop (DROP_OUTGOING_PROLOGUE)
+    // to the classifier instead so we still never re-capture our own injections.
     const int ignore_outgoing = 1;
     const bool socket_drops_outgoing = setsockopt(fd_.Get(), SOL_PACKET, PACKET_IGNORE_OUTGOING,
         &ignore_outgoing, sizeof(ignore_outgoing)) == 0;
@@ -216,6 +209,18 @@ RawSocket::RawSocket(const Interface& interface)
     }
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
         logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
+        Close();
+        return;
+    }
+
+    // Start capturing: bind to the interface with protocol ETH_P_ALL. The filter is already in place,
+    // so every delivered frame is filtered — there is no unfiltered-capture window.
+    sockaddr_ll addr{};
+    addr.sll_family = AF_PACKET;
+    addr.sll_protocol = htons(ETH_P_ALL);
+    addr.sll_ifindex = static_cast<int>(interface_.Index());
+    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         Close();
         return;
     }
