@@ -99,11 +99,11 @@ jobs:
       # CAP_NET_RAW/CAP_NET_ADMIN or bpf + root) run instead of skipping; each fixture probes its operation
       # and GTEST_SKIPs where unavailable. The cross (armv7) lane runs without sudo: under user-mode QEMU
       # those privileged operations aren't viable, so the fixtures self-skip (raw-socket I/O stays covered
-      # by the native lanes). All tests carry the "unit" label, so -L unit selects the whole suite.
+      # by the native lanes).
       - name: Run unit tests
         run: |
           if [ "${{ matrix.crosscompile }}" = "true" ]; then
-            ctest --test-dir build -L unit --output-on-failure
+            ctest --test-dir build --output-on-failure
           else
             sudo ctest --test-dir build --output-on-failure
           fi
