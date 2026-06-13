@@ -100,7 +100,7 @@ TEST(FrameBuilderTest, EthernetIpv4) {
     EXPECT_EQ(std::to_integer<uint8_t>(ip[1]), 0);  // DSCP / ECN
     EXPECT_EQ(ReadU16Be(ip.subspan(2)), 20u + 8u + 4u);  // total length
     EXPECT_EQ(ReadU16Be(ip.subspan(4)), 0);  // identification
-    EXPECT_EQ(ReadU16Be(ip.subspan(6)), 0);  // flags / fragment offset
+    EXPECT_EQ(ReadU16Be(ip.subspan(6)), 0x4000);  // flags: DF set (RFC 6864 atomic), fragment offset 0
     EXPECT_EQ(std::to_integer<uint8_t>(ip[8]), 255);  // TTL
     EXPECT_EQ(std::to_integer<uint8_t>(ip[9]), 17);  // protocol UDP
     EXPECT_EQ(Ipv4HeaderChecksum(ip), 0x0000);  // header checksum in place re-sums to zero
@@ -169,7 +169,7 @@ TEST(FrameBuilderTest, LoopbackIpv4) {
     EXPECT_EQ(std::to_integer<uint8_t>(ip[1]), 0);  // DSCP / ECN
     EXPECT_EQ(ReadU16Be(ip.subspan(2)), 20u + 8u + 4u);  // total length
     EXPECT_EQ(ReadU16Be(ip.subspan(4)), 0);  // identification
-    EXPECT_EQ(ReadU16Be(ip.subspan(6)), 0);  // flags / fragment offset
+    EXPECT_EQ(ReadU16Be(ip.subspan(6)), 0x4000);  // flags: DF set (RFC 6864 atomic), fragment offset 0
     EXPECT_EQ(std::to_integer<uint8_t>(ip[8]), 255);  // TTL
     EXPECT_EQ(std::to_integer<uint8_t>(ip[9]), 17);  // protocol UDP
     EXPECT_EQ(Ipv4HeaderChecksum(ip), 0x0000);  // header checksum in place re-sums to zero

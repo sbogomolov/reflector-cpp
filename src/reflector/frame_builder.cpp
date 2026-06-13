@@ -20,6 +20,10 @@ constexpr size_t LOOPBACK_HEADER_SIZE = 4;
 constexpr size_t MAC_SIZE = MacAddress::ByteArray{}.size();
 constexpr std::byte UDP_PROTOCOL{IP_PROTO_UDP};
 constexpr size_t MAX_UDP_LENGTH = 0xffff;
+// Don't Fragment, set in the 16-bit flags+fragment-offset field. We emit a zero IP identification, which
+// RFC 6864 permits only for atomic (DF=1) datagrams; these one-hop link-local/broadcast datagrams are
+// never fragmented anyway, so DF makes that explicit and keeps the zero ID conformant.
+constexpr uint16_t IPV4_FLAG_DF = 0x4000;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"FrameBuilder"};
@@ -63,6 +67,7 @@ void WriteIpUdp(const IpEndpoint& src, const IpEndpoint& dst,
     if (v4) {
         out[0] = std::byte{0x45};  // version 4, IHL 5 (no options)
         WriteU16Be(static_cast<uint16_t>(ip_size + udp_length), out.subspan(2));  // total length
+        WriteU16Be(IPV4_FLAG_DF, out.subspan(6));  // flags: DF set, fragment offset 0 (set before checksum)
         out[8] = std::byte{ttl};  // TTL
         out[9] = UDP_PROTOCOL;  // protocol
         std::memcpy(out.data() + 12, src.addr.Bytes().data(), 4);
