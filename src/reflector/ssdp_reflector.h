@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config.h"
+#include "config/config.h"
 #include "dial_proxy.h"
 #include "dynamic_family_reflector.h"
 #include "ip_address.h"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "config.h"
+#include "config/config.h"
 #include "family_capability.h"
 #include "link_socket.h"
 #include "mac_address.h"

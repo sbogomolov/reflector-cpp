@@ -1,5 +1,5 @@
 #include "reflector/application.h"
-#include "reflector/config.h"
+#include "reflector/config/config.h"
 #include "reflector/logger.h"
 
 #include <cstdio>
