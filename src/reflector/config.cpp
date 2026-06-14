@@ -5,11 +5,16 @@
 #include <toml++/toml.hpp>
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <ios>
+#include <map>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <string>
 #include <system_error>
 
@@ -85,9 +90,8 @@ bool AddressFamiliesOverlap(AddressFamily lhs, AddressFamily rhs) noexcept {
 // Verify one reflector config and reject it if it duplicates an already-accepted one of the same
 // protocol, then append it. Two rules collide when they could reflect the same captured packet:
 // overlapping MAC selection, same source_if and target_if, and overlapping address family (WoL also
-// requires an overlapping port). Names are not checked here: each config's name is its entry's TOML
-// table key, and TOML forbids duplicate table keys, so every entry — and thus every config — has a
-// unique name already (see Config::FromString).
+// requires an overlapping port). Names are not checked here: ConfigAccumulator::AddEntry rejects
+// duplicate entry names across every source before an entry's configs are appended.
 template <typename ConfigType>
 std::optional<Error> AppendConfig(std::vector<ConfigType>& configs, ConfigType config, std::string_view protocol) {
     if (auto error = config.Verify()) {
@@ -120,10 +124,10 @@ std::optional<Error> AppendConfig(std::vector<ConfigType>& configs, ConfigType c
 }
 
 // A single reflector entry's fields, addressed by their lowercase config key. ReadEntry consumes
-// this interface rather than a toml::table directly, so the field parsing and validation are shared
-// and independent of where the values come from: a source only surfaces the fields it holds and
-// hands back each one as the type that field expects (string, bool, or a port list). TomlSource is
-// the only backend today; the interface is the seam an alternative source plugs into.
+// this interface so the field parsing and validation are shared and independent of where the values
+// come from: a source only surfaces the fields it holds and hands back each one as the type that
+// field expects (string, bool, or a port list). TomlSource reads a parsed toml::table; EnvSource
+// reads REFLECTOR_* environment variables, coercing their string values to the expected types.
 class ConfigSource {
 public:
     ConfigSource() = default;
@@ -131,7 +135,7 @@ public:
     ConfigSource& operator=(const ConfigSource&) = delete;
     virtual ~ConfigSource() = default;
 
-    // The entry's display name (for TomlSource, its table key), used in errors and as the label.
+    // The entry's display name (TOML table key, or env tag / NAME), used in errors and as the label.
     [[nodiscard]] virtual std::string_view Name() const = 0;
     // The field keys present in this entry, so the caller can dispatch known fields and reject unknown ones.
     [[nodiscard]] virtual std::vector<std::string_view> Keys() const = 0;
@@ -150,13 +154,10 @@ public:
     [[nodiscard]] std::string_view Name() const override { return name_; }
 
     [[nodiscard]] std::vector<std::string_view> Keys() const override {
-        std::vector<std::string_view> keys;
-        keys.reserve(table_->size());
-        for (const auto& [key, node] : *table_) {
-            (void)node;
-            keys.emplace_back(ToStringView(key));
-        }
-        return keys;
+        // toml++'s iterator pair isn't tuple-like, so std::views::keys doesn't apply; transform .first.
+        return *table_
+            | std::views::transform([](const auto& entry) { return ToStringView(entry.first); })
+            | std::ranges::to<std::vector<std::string_view>>();
     }
 
     [[nodiscard]] std::expected<std::string_view, Error> GetString(std::string_view key) const override {
@@ -182,6 +183,77 @@ public:
 private:
     std::string_view name_;
     const toml::table* table_;
+};
+
+// --- Environment backend: extract field values from REFLECTOR_<tag>_<param> strings ---
+
+using EnvParams = std::map<std::string, std::string, std::less<>>;
+
+// Environment values are strings, so a boolean must be spelled out. true/false mirror TOML; 1/0 are
+// accepted too since they are the natural booleans for shell/Docker env files.
+std::expected<bool, Error> ParseEnvBool(std::string_view name, std::string_view key, std::string_view value) {
+    const auto lower = AsciiToLower(value);
+    if (lower == "true" || lower == "1") {
+        return true;
+    }
+    if (lower == "false" || lower == "0") {
+        return false;
+    }
+    return std::unexpected(Error{"entry \"{}\" {} must be true/false or 1/0; got \"{}\"", name, key, value});
+}
+
+// Environment arrays are comma-separated (e.g. "7,9"), since env vars can't hold a TOML array.
+std::expected<std::vector<uint16_t>, Error> ParseEnvPorts(std::string_view name, std::string_view value) {
+    std::vector<uint16_t> ports;
+    for (size_t pos = 0; pos <= value.size();) {
+        const auto comma = value.find(',', pos);
+        const auto end = comma == std::string_view::npos ? value.size() : comma;
+        auto token = value.substr(pos, end - pos);
+        const auto first = token.find_first_not_of(" \t");
+        const auto last = token.find_last_not_of(" \t");
+        token = first == std::string_view::npos ? std::string_view{} : token.substr(first, last - first + 1);
+        if (token.empty()) {
+            return std::unexpected(Error{"entry \"{}\" wol_ports has an empty entry in \"{}\"", name, value});
+        }
+        uint16_t port = 0;
+        const auto [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), port);
+        if (ec != std::errc{} || ptr != token.data() + token.size()) {
+            return std::unexpected(Error{"entry \"{}\" wol_ports entry is not a valid port: \"{}\"", name, token});
+        }
+        ports.push_back(port);
+        if (comma == std::string_view::npos) {
+            break;
+        }
+        pos = comma + 1;
+    }
+    return ports;
+}
+
+class EnvSource final : public ConfigSource {
+public:
+    EnvSource(std::string name, EnvParams params) : name_{std::move(name)}, params_{std::move(params)} {}
+
+    [[nodiscard]] std::string_view Name() const override { return name_; }
+
+    [[nodiscard]] std::vector<std::string_view> Keys() const override {
+        return params_ | std::views::keys | std::ranges::to<std::vector<std::string_view>>();
+    }
+
+    [[nodiscard]] std::expected<std::string_view, Error> GetString(std::string_view key) const override {
+        return std::string_view{params_.find(key)->second};
+    }
+
+    [[nodiscard]] std::expected<bool, Error> GetBool(std::string_view key) const override {
+        return ParseEnvBool(name_, key, params_.find(key)->second);
+    }
+
+    [[nodiscard]] std::expected<std::vector<uint16_t>, Error> GetPorts(std::string_view key) const override {
+        return ParseEnvPorts(name_, params_.find(key)->second);
+    }
+
+private:
+    std::string name_;
+    EnvParams params_;
 };
 
 // Reads one entry from any source and appends a reflector config for each protocol it enables. The
@@ -302,6 +374,130 @@ std::optional<Error> ReadEntry(const ConfigSource& source,
     return std::nullopt;
 }
 
+// Accumulates reflector entries (and the optional log level) from one or more sources. Entry names
+// must be unique across every source. Sources are applied in order and the last log level set wins,
+// which is how the environment overrides the file's log_level.
+struct ConfigAccumulator {
+    std::vector<WolConfig> wol;
+    std::vector<MdnsConfig> mdns;
+    std::vector<SsdpConfig> ssdp;
+    std::optional<LogLevel> log_level;
+    std::vector<std::string> entry_names;
+
+    std::optional<Error> AddEntry(const ConfigSource& source) {
+        const auto name = source.Name();
+        if (std::ranges::find(entry_names, name) != entry_names.end()) {
+            return Error{"duplicate entry name \"{}\"", name};
+        }
+        entry_names.emplace_back(name);
+        return ReadEntry(source, wol, mdns, ssdp);
+    }
+};
+
+std::optional<Error> ApplyToml(ConfigAccumulator& acc, std::string_view str) {
+    auto parsed = toml::parse(str);
+    if (!parsed) {
+        const auto& err = parsed.error();
+        const auto& src = err.source();
+        return Error{"invalid configuration at line {}, column {}: {}",
+            src.begin.line, src.begin.column, err.description()};
+    }
+
+    const auto root_table = std::move(parsed).table();
+    for (const auto& [key, value] : root_table) {
+        const auto key_name = ToStringView(key);
+        // A top-level table is a reflector entry (its key is the entry name); the lone known scalar
+        // is log_level; any other top-level scalar is a mistyped setting.
+        if (const auto* entry_table = value.as_table()) {
+            const TomlSource source{key_name, *entry_table};
+            if (auto error = acc.AddEntry(source)) {
+                return error;
+            }
+        } else if (key_name == "log_level") {
+            const auto field_value = value.value<std::string_view>();
+            if (!field_value) {
+                return Error{"log_level must be a string"};
+            }
+            auto level = LogLevelFromString(*field_value);
+            if (!level) {
+                return std::move(level).error();
+            }
+            acc.log_level = *level;
+        } else {
+            return Error{"unexpected top-level key: \"{}\" (expected an entry table or log_level)", key_name};
+        }
+    }
+    return std::nullopt;
+}
+
+// A tag is the <tag> in REFLECTOR_<tag>_<param>. Restricting it to alphanumerics keeps the split on
+// the first underscore unambiguous even though parameter names contain underscores (source_if, etc.).
+bool IsAlnumTag(std::string_view tag) noexcept {
+    return !tag.empty() && std::ranges::all_of(tag, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    });
+}
+
+std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> env_vars) {
+    constexpr std::string_view prefix = "REFLECTOR_";
+    constexpr std::string_view log_level_var = "REFLECTOR_LOG_LEVEL";
+
+    std::optional<std::string_view> log_level_value;
+    // tag -> (lowercase param -> value). std::map gives a deterministic (sorted) entry order so that
+    // duplicate-detection errors and tests don't depend on environ ordering.
+    std::map<std::string, EnvParams, std::less<>> tags;
+
+    for (const auto& var : env_vars) {
+        if (!var.key.starts_with(prefix)) {
+            continue;
+        }
+        if (var.key == log_level_var) {
+            log_level_value = var.value;
+            continue;
+        }
+        const auto rest = var.key.substr(prefix.size());
+        const auto underscore = rest.find('_');
+        if (underscore == std::string_view::npos) {
+            return Error{"environment variable \"{}\" is not of the form REFLECTOR_<tag>_<param>", var.key};
+        }
+        const auto tag = rest.substr(0, underscore);
+        const auto param = rest.substr(underscore + 1);
+        if (!IsAlnumTag(tag)) {
+            return Error{"environment variable \"{}\" has an invalid tag \"{}\" (use letters and digits only)", var.key, tag};
+        }
+        if (AsciiToLower(tag) == "log") {
+            return Error{"environment variable \"{}\": \"{}\" is a reserved tag (use REFLECTOR_LOG_LEVEL for the log level)", var.key, tag};
+        }
+        if (param.empty()) {
+            return Error{"environment variable \"{}\" is missing a parameter name after the tag", var.key};
+        }
+        tags[std::string{tag}].insert_or_assign(AsciiToLower(param), std::string{var.value});
+    }
+
+    if (log_level_value) {
+        auto level = LogLevelFromString(*log_level_value);
+        if (!level) {
+            return std::move(level).error();
+        }
+        acc.log_level = *level;
+    }
+
+    for (auto& [tag, params] : tags) {
+        // NAME, when given, becomes the entry name; otherwise the tag doubles as the name. NAME is not
+        // a reflector field, so it never reaches ReadEntry.
+        std::string name = tag;
+        if (const auto it = params.find("name"); it != params.end()) {
+            name = it->second;
+            params.erase(it);
+        }
+        const EnvSource source{std::move(name), std::move(params)};
+        if (auto error = acc.AddEntry(source)) {
+            return error;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 namespace reflector {
@@ -370,7 +566,7 @@ std::optional<Error> SsdpConfig::Verify() const {
     return std::nullopt;
 }
 
-std::expected<Config, Error> Config::FromFile(const char* path) {
+std::expected<std::string, Error> Config::ReadFileToString(const char* path) {
     std::ifstream file{path};
     if (!file) {
         return std::unexpected(Error{"cannot open file \"{}\"", path});
@@ -388,53 +584,33 @@ std::expected<Config, Error> Config::FromFile(const char* path) {
         return static_cast<size_t>(file.gcount());
     });
 
-    return FromString(contents);
+    return contents;
 }
 
 std::expected<Config, Error> Config::FromString(std::string_view str) {
-    auto config = Config{};
-    auto parsed = toml::parse(str);
-    if (!parsed) {
-        const auto& err = parsed.error();
-        const auto& src = err.source();
-        return std::unexpected(Error{
-            "invalid configuration at line {}, column {}: {}",
-            src.begin.line, src.begin.column, err.description()});
-    }
+    return Load(str, std::span<const EnvVar>{});
+}
 
-    const auto root_table = std::move(parsed).table();
-    if (root_table.empty()) {
-        return std::unexpected(Error{"invalid configuration"});
-    }
-
-    for (const auto& [key, value] : root_table) {
-        const auto key_name = ToStringView(key);
-        // A top-level table is a reflector entry (its key is the entry name); the lone known scalar
-        // is log_level; any other top-level scalar is a mistyped setting.
-        if (const auto* entry_table = value.as_table()) {
-            const TomlSource source{key_name, *entry_table};
-            if (auto error = ReadEntry(source, config.wol_configs_, config.mdns_configs_, config.ssdp_configs_)) {
-                return std::unexpected(*std::move(error));
-            }
-        } else if (key_name == "log_level") {
-            const auto field_value = value.value<std::string_view>();
-            if (!field_value) {
-                return std::unexpected(Error{"log_level must be a string"});
-            }
-            auto level = LogLevelFromString(*field_value);
-            if (!level) {
-                return std::unexpected(std::move(level).error());
-            }
-            config.log_level_ = *level;
-        } else {
-            return std::unexpected(Error{"unexpected top-level key: \"{}\" (expected an entry table or log_level)", key_name});
+std::expected<Config, Error> Config::Load(std::optional<std::string_view> toml_text,
+        std::span<const EnvVar> env_vars) {
+    ConfigAccumulator acc;
+    if (toml_text) {
+        if (auto error = ApplyToml(acc, *toml_text)) {
+            return std::unexpected(*std::move(error));
         }
     }
+    if (auto error = ApplyEnv(acc, env_vars)) {
+        return std::unexpected(*std::move(error));
+    }
 
+    Config config;
+    config.wol_configs_ = std::move(acc.wol);
+    config.mdns_configs_ = std::move(acc.mdns);
+    config.ssdp_configs_ = std::move(acc.ssdp);
+    config.log_level_ = acc.log_level.value_or(LogLevel::Info);
     if (config.ReflectorCount() == 0) {
         return std::unexpected(Error{"configuration must contain at least one reflector"});
     }
-
     return config;
 }
 

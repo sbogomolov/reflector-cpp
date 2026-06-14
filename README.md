@@ -79,7 +79,7 @@ GitHub CLI (`gh`, authenticated) and Docker.
 ./build/reflector [config.toml]
 ```
 
-The default config path is `./config.toml`. The process logs to stdout and shuts down cleanly on `SIGINT` / `SIGTERM`.
+Configuration comes from a TOML file, from environment variables, or from both. With a path argument the file is read and merged with any `REFLECTOR_*` environment variables; with **no argument** the configuration comes entirely from the environment (see [Environment variables](#environment-variables)). The process logs to stdout and shuts down cleanly on `SIGINT` / `SIGTERM`.
 
 ### Runtime privileges
 
@@ -114,14 +114,16 @@ Log out and back in after installing for the group membership to take effect.
 
 ### Run in Docker
 
-Prebuilt multi-arch images are published to `ghcr.io/sbogomolov/reflector`, tagged `latest` and per release version, for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; Docker pulls the variant matching the host. The image is a single static binary on `scratch` — no shell, no package manager. Its entrypoint is the reflector, with `/etc/reflector/config.toml` as the default argument, so mount your config there.
+Prebuilt multi-arch images are published to `ghcr.io/sbogomolov/reflector`, tagged `latest` and per release version, for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; Docker pulls the variant matching the host. The image is a single static binary on `scratch` — no shell, no package manager. Its entrypoint is the reflector with no default argument, so it configures itself from `REFLECTOR_*` [environment variables](#environment-variables); pass a config file path to use a file instead.
 
-Because the reflector captures at L2 on each interface, the container must be **on the real segments it bridges**, not on a default NAT bridge network (which would hide that traffic from it). On a Linux host, `--network host` is the simplest way:
+Because the reflector captures at L2 on each interface, the container must be **on the real segments it bridges**, not on a default NAT bridge network (which would hide that traffic from it). On a Linux host, `--network host` is the simplest way. Configure it with `-e` variables:
 
 ```sh
 docker run --rm \
     --network host \
-    -v /path/to/config.toml:/etc/reflector/config.toml:ro \
+    -e REFLECTOR_TV_SOURCE_IF=eth0 \
+    -e REFLECTOR_TV_TARGET_IF=eth1 \
+    -e REFLECTOR_TV_MDNS=true \
     ghcr.io/sbogomolov/reflector:latest
 ```
 
@@ -131,18 +133,20 @@ docker run --rm \
 docker run --rm \
     --network host \
     --cap-drop ALL --cap-add NET_RAW \
-    -v /path/to/config.toml:/etc/reflector/config.toml:ro \
+    -e REFLECTOR_TV_SOURCE_IF=eth0 \
+    -e REFLECTOR_TV_TARGET_IF=eth1 \
+    -e REFLECTOR_TV_MDNS=true \
     ghcr.io/sbogomolov/reflector:latest
 ```
 
-To keep it running as a service, drop `--rm` and run it detached with a restart policy:
+To use a config file instead of (or alongside) the environment, mount it and pass its path as the argument. This form also shows running it as a service — `-d` with a restart policy:
 
 ```sh
 docker run -d --name reflector --restart unless-stopped \
     --network host \
     --cap-drop ALL --cap-add NET_RAW \
     -v /path/to/config.toml:/etc/reflector/config.toml:ro \
-    ghcr.io/sbogomolov/reflector:latest
+    ghcr.io/sbogomolov/reflector:latest /etc/reflector/config.toml
 ```
 
 Logs are timestamped in UTC by default; pass `-e TZ=Europe/Berlin` (any zoneinfo name) for local time — the zoneinfo database is bundled in the image.
@@ -162,7 +166,7 @@ ssdp      = true         # enable SSDP, disabled by default
 dial      = true         # enable the DIAL proxy, disabled by default
 ```
 
-Mount the config to `/etc/reflector/config.toml`. For the RouterOS side — enabling container mode, creating the `veth`s, and attaching each to its VLAN — see MikroTik's [Container documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container).
+On RouterOS, setting the container's environment variables is usually easier than mounting a file: the entry above becomes `REFLECTOR_TV_SOURCE_IF=veth-lan`, `REFLECTOR_TV_TARGET_IF=veth-iot`, `REFLECTOR_TV_MAC=B0:37:95:C5:60:BE`, `REFLECTOR_TV_WOL=true`, and so on (see [Environment variables](#environment-variables)). To use the file instead, mount it to `/etc/reflector/config.toml` and set that path as the container's command argument. For the RouterOS side — enabling container mode, creating the `veth`s, and attaching each to its VLAN — see MikroTik's [Container documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container).
 
 ## Configuration
 
@@ -184,6 +188,28 @@ address_family = "default"       # optional; default | dual | ipv4 | ipv6 (defau
 ```
 
 An entry must enable at least one protocol and expands into one reflector per enabled protocol, all sharing the entry's interfaces, `mac`, and `address_family`. The same shape serves a single device (set `mac`) or a whole network (omit `mac`). No IP addresses ever appear in the config. `dial` is not a separate reflector — it augments the entry's SSDP reflector with the DIAL application proxy (so it requires `ssdp`; see [DIAL](#dial)).
+
+### Environment variables
+
+Every setting can also come from the environment, which is convenient for containers and RouterOS where mounting a file is awkward. A file argument is then optional; with none, the environment is the whole configuration. Variables are named `REFLECTOR_<TAG>_<PARAM>`:
+
+- `<TAG>` ties one entry's parameters together — any alphanumeric string (`1`, `2`, `TV`, …). It also becomes the entry's name (and thus its log label) unless a `NAME` parameter overrides it.
+- `<PARAM>` is `NAME` or any field from the entry table above (`SOURCE_IF`, `TARGET_IF`, `MAC`, `WOL`, `MDNS`, `SSDP`, `DIAL`, `WOL_PORTS`, `ADDRESS_FAMILY`), case-insensitive.
+
+The only global is `REFLECTOR_LOG_LEVEL`, so `LOG` is a reserved tag. Booleans are `true`/`false` or `1`/`0`; `WOL_PORTS` is comma-separated (`7,9`). The `[tv]` entry above looks like this in the environment:
+
+```sh
+REFLECTOR_LOG_LEVEL=info
+REFLECTOR_TV_SOURCE_IF=en0
+REFLECTOR_TV_TARGET_IF=lo0
+REFLECTOR_TV_MAC=B0:37:95:C5:60:BE
+REFLECTOR_TV_WOL=true
+REFLECTOR_TV_MDNS=true
+REFLECTOR_TV_SSDP=true
+REFLECTOR_TV_DIAL=true
+```
+
+When a file and environment variables are both given they are merged: each contributes entries to one combined configuration, and `REFLECTOR_LOG_LEVEL` overrides the file's `log_level`. The [duplicate detection](#duplicate-detection) below applies across both sources. An unknown `<PARAM>`, a non-alphanumeric or reserved tag, and a tag with no parameter are all rejected at startup.
 
 ### The `mac` field
 
@@ -225,7 +251,7 @@ It is a **terminating HTTP reverse proxy**. When a DIAL `LOCATION` (in a relayed
 
 ### Duplicate detection
 
-Entry names are unique (TOML rejects duplicate table names). Beyond that, two entries that enable the same protocol are rejected as a duplicate of that protocol only when they could reflect the same packet twice: same `source_if`, same `target_if`, overlapping MAC selection, overlapping address-family handling, and — for WoL — at least one shared port. MAC selection overlaps when both entries set the same `mac`, or when either omits `mac` (any device). Address-family handling overlaps when both can handle the same IP version: an `ipv4`-only and an `ipv6`-only entry never overlap, while `default`/`dual` overlap with either. Entries that differ in interface, MAC, address family (or WoL ports), or that enable *different* protocols, coexist.
+Entry names must be unique across the file and the environment — a name that appears twice (including the same name from both sources) is rejected at startup. Beyond that, two entries that enable the same protocol are rejected as a duplicate of that protocol only when they could reflect the same packet twice: same `source_if`, same `target_if`, overlapping MAC selection, overlapping address-family handling, and — for WoL — at least one shared port. MAC selection overlaps when both entries set the same `mac`, or when either omits `mac` (any device). Address-family handling overlaps when both can handle the same IP version: an `ipv4`-only and an `ipv6`-only entry never overlap, while `default`/`dual` overlap with either. Entries that differ in interface, MAC, address family (or WoL ports), or that enable *different* protocols, coexist.
 
 ## Tests
 

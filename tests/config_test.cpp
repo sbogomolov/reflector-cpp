@@ -9,10 +9,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -36,6 +39,17 @@ target_if = "eth1"
 wol = true
 )";
     return toml;
+}
+
+// Builds an EnvVar list from literal key/value pairs. The views reference the string literals (static
+// storage), so the returned vector stays valid for as long as it lives.
+std::vector<EnvVar> Env(std::initializer_list<std::pair<std::string_view, std::string_view>> vars) {
+    std::vector<EnvVar> env;
+    env.reserve(vars.size());
+    for (const auto& [key, value] : vars) {
+        env.push_back(EnvVar{key, value});
+    }
+    return env;
 }
 
 } // namespace
@@ -376,7 +390,7 @@ wol = true
 )").has_value());
 }
 
-// --- FromFile and malformed input ---
+// --- file reading and malformed input ---
 
 TEST(ConfigTest, RejectsEmptyDocument) {
     EXPECT_FALSE(Config::FromString("").has_value());
@@ -394,17 +408,17 @@ TEST(ConfigTest, MalformedTomlErrorIncludesLineAndColumn) {
     EXPECT_NE(message.find("column"), std::string::npos) << "message: " << message;
 }
 
-TEST(ConfigTest, FromFileMissingFails) {
+TEST(ConfigTest, ReadFileToStringMissingFails) {
     const auto path = MakeTempConfigPath("missing");
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
 
     const auto path_string = path.string();
-    EXPECT_FALSE(Config::FromFile(path_string.c_str()).has_value());
+    EXPECT_FALSE(Config::ReadFileToString(path_string.c_str()).has_value());
 }
 
-TEST(ConfigTest, FromFileParsesConfig) {
+TEST(ConfigTest, ReadsAndParsesFileConfig) {
     const auto path = MakeTempConfigPath("valid");
     {
         std::ofstream file{path};
@@ -419,11 +433,13 @@ wol = true
     }
 
     const auto path_string = path.string();
-    const auto config = Config::FromFile(path_string.c_str());
+    const auto contents = Config::ReadFileToString(path_string.c_str());
 
     std::error_code ec;
     std::filesystem::remove(path, ec);
 
+    ASSERT_TRUE(contents.has_value()) << contents.error().Message();
+    const auto config = Config::FromString(*contents);
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     ASSERT_EQ(config->WolConfigs().size(), 1);
 
@@ -1518,6 +1534,377 @@ dial = true
 )");
     ASSERT_FALSE(config.has_value());
     EXPECT_NE(config.error().Message().find("dial"), std::string::npos) << config.error().Message();
+}
+
+// --- environment-variable configuration (Config::Load) ---
+
+TEST(ConfigTest, EnvParsesSingleWolEntry) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_NAME", "tv"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_MAC", "B0:37:95:C5:60:BE"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->WolConfigs().size(), 1u);
+    const auto& wol = config->WolConfigs().front();
+    EXPECT_EQ(wol.name, "tv");
+    EXPECT_EQ(wol.source_if, "eth0");
+    EXPECT_EQ(wol.target_if, "eth1");
+    ASSERT_TRUE(wol.mac.has_value());
+    EXPECT_EQ(*wol.mac, *MacAddress::FromString("B0:37:95:C5:60:BE"));
+}
+
+TEST(ConfigTest, EnvNameDefaultsToTag) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_lan_SOURCE_IF", "eth0"},
+        {"REFLECTOR_lan_TARGET_IF", "eth1"},
+        {"REFLECTOR_lan_MDNS", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->MdnsConfigs().size(), 1u);
+    EXPECT_EQ(config->MdnsConfigs().front().name, "lan");
+}
+
+TEST(ConfigTest, EnvParamNamesAreCaseInsensitive) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_source_if", "eth0"},
+        {"REFLECTOR_1_Target_If", "eth1"},
+        {"REFLECTOR_1_WoL", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1u);
+}
+
+TEST(ConfigTest, EnvAcceptsTrueBooleanSpellings) {
+    for (const std::string_view value : {"true", "TRUE", "True", "1"}) {
+        const auto config = Config::Load(std::nullopt, Env({
+            {"REFLECTOR_1_SOURCE_IF", "eth0"},
+            {"REFLECTOR_1_TARGET_IF", "eth1"},
+            {"REFLECTOR_1_WOL", value},
+        }));
+        ASSERT_TRUE(config.has_value()) << "value=" << value << ": " << config.error().Message();
+        EXPECT_EQ(config->WolConfigs().size(), 1u) << "value=" << value;
+    }
+}
+
+TEST(ConfigTest, EnvAcceptsFalseBooleanSpellings) {
+    for (const std::string_view value : {"false", "FALSE", "0"}) {
+        const auto config = Config::Load(std::nullopt, Env({
+            {"REFLECTOR_1_SOURCE_IF", "eth0"},
+            {"REFLECTOR_1_TARGET_IF", "eth1"},
+            {"REFLECTOR_1_WOL", value},
+            {"REFLECTOR_1_MDNS", "true"},
+        }));
+        ASSERT_TRUE(config.has_value()) << "value=" << value << ": " << config.error().Message();
+        EXPECT_TRUE(config->WolConfigs().empty()) << "value=" << value;
+        EXPECT_EQ(config->MdnsConfigs().size(), 1u) << "value=" << value;
+    }
+}
+
+TEST(ConfigTest, EnvRejectsInvalidBoolean) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "yes"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvParsesWolPortsCsv) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_1_WOL_PORTS", "7, 9, 4000"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().front().ports, (std::vector<uint16_t>{7, 9, 4000}));
+}
+
+TEST(ConfigTest, EnvRejectsInvalidWolPorts) {
+    for (const std::string_view value : {"7,x", "7,,9", "70000", "", "7,0"}) {
+        const auto config = Config::Load(std::nullopt, Env({
+            {"REFLECTOR_1_SOURCE_IF", "eth0"},
+            {"REFLECTOR_1_TARGET_IF", "eth1"},
+            {"REFLECTOR_1_WOL", "true"},
+            {"REFLECTOR_1_WOL_PORTS", value},
+        }));
+        EXPECT_FALSE(config.has_value()) << "value=" << value;
+    }
+}
+
+TEST(ConfigTest, EnvParsesAddressFamily) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_SSDP", "true"},
+        {"REFLECTOR_1_ADDRESS_FAMILY", "ipv4"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->SsdpConfigs().front().address_family, AddressFamily::IPv4);
+}
+
+TEST(ConfigTest, EnvAddressFamilyIsCaseInsensitive) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_MDNS", "true"},
+        {"REFLECTOR_1_ADDRESS_FAMILY", "DuAl"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MdnsConfigs().front().address_family, AddressFamily::Dual);
+}
+
+TEST(ConfigTest, EnvRejectsInvalidAddressFamily) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_MDNS", "true"},
+        {"REFLECTOR_1_ADDRESS_FAMILY", "ipx"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsInvalidMac) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_1_MAC", "not-a-mac"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvParsesDialFlag) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_SSDP", "true"},
+        {"REFLECTOR_1_DIAL", "1"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->SsdpConfigs().size(), 1u);
+    EXPECT_TRUE(config->SsdpConfigs().front().dial);
+}
+
+TEST(ConfigTest, EnvEnablesMultipleProtocolsFromOneTag) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_NAME", "tv"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_1_MDNS", "true"},
+        {"REFLECTOR_1_SSDP", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1u);
+    EXPECT_EQ(config->MdnsConfigs().size(), 1u);
+    EXPECT_EQ(config->SsdpConfigs().size(), 1u);
+    EXPECT_EQ(config->WolConfigs().front().name, "tv");
+    EXPECT_EQ(config->SsdpConfigs().front().name, "tv");
+}
+
+TEST(ConfigTest, EnvParsesMultipleTags) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_2_SOURCE_IF", "eth2"},
+        {"REFLECTOR_2_TARGET_IF", "eth3"},
+        {"REFLECTOR_2_MDNS", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1u);
+    EXPECT_EQ(config->MdnsConfigs().size(), 1u);
+}
+
+TEST(ConfigTest, EnvSetsLogLevel) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_LOG_LEVEL", "debug"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
+}
+
+TEST(ConfigTest, EnvLogLevelIsCaseInsensitive) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_LOG_LEVEL", "WARNING"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+}
+
+TEST(ConfigTest, EnvRejectsInvalidLogLevel) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_LOG_LEVEL", "verbose"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvIgnoresUnrelatedVariables) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"PATH", "/usr/bin"},
+        {"REFLECTORISH", "x"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().size(), 1u);
+}
+
+TEST(ConfigTest, EnvRejectsUnknownParameter) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_1_BOGUS", "x"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsReservedLogTag) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_LOG_FORMAT", "json"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsTagWithoutParameter) {
+    EXPECT_FALSE(Config::Load(std::nullopt, Env({{"REFLECTOR_1", "x"}})).has_value());
+    EXPECT_FALSE(Config::Load(std::nullopt, Env({{"REFLECTOR_1_", "x"}})).has_value());
+}
+
+TEST(ConfigTest, EnvRejectsEmptyTag) {
+    // REFLECTOR__SOURCE_IF: nothing between the prefix and the first underscore -> empty tag.
+    EXPECT_FALSE(Config::Load(std::nullopt, Env({{"REFLECTOR__SOURCE_IF", "eth0"}})).has_value());
+}
+
+TEST(ConfigTest, EnvRejectsNonAlphanumericTag) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_a.b_SOURCE_IF", "eth0"},
+        {"REFLECTOR_a.b_TARGET_IF", "eth1"},
+        {"REFLECTOR_a.b_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsDuplicateNameAcrossTags) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_1_NAME", "tv"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+        {"REFLECTOR_2_NAME", "tv"},
+        {"REFLECTOR_2_SOURCE_IF", "eth2"},
+        {"REFLECTOR_2_TARGET_IF", "eth3"},
+        {"REFLECTOR_2_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsEmptyConfiguration) {
+    EXPECT_FALSE(Config::Load(std::nullopt, std::span<const EnvVar>{}).has_value());
+    EXPECT_FALSE(Config::Load(std::nullopt, Env({{"PATH", "/usr/bin"}})).has_value());
+}
+
+// --- merging a TOML file with environment variables ---
+
+TEST(ConfigTest, MergeCombinesFileAndEnvEntries) {
+    const auto config = Config::Load(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({
+        {"REFLECTOR_radio_SOURCE_IF", "eth2"},
+        {"REFLECTOR_radio_TARGET_IF", "eth3"},
+        {"REFLECTOR_radio_MDNS", "true"},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    ASSERT_EQ(config->WolConfigs().size(), 1u);
+    ASSERT_EQ(config->MdnsConfigs().size(), 1u);
+    EXPECT_EQ(config->WolConfigs().front().name, "tv");
+    EXPECT_EQ(config->MdnsConfigs().front().name, "radio");
+}
+
+TEST(ConfigTest, MergeDetectsCrossSourceDuplicate) {
+    const auto config = Config::Load(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({
+        {"REFLECTOR_other_SOURCE_IF", "eth0"},
+        {"REFLECTOR_other_TARGET_IF", "eth1"},
+        {"REFLECTOR_other_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, MergeDetectsDuplicateNameAcrossSources) {
+    const auto config = Config::Load(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({
+        {"REFLECTOR_x_NAME", "tv"},
+        {"REFLECTOR_x_SOURCE_IF", "eth2"},
+        {"REFLECTOR_x_TARGET_IF", "eth3"},
+        {"REFLECTOR_x_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvLogLevelOverridesFile) {
+    const auto config = Config::Load(R"(
+log_level = "error"
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({{"REFLECTOR_LOG_LEVEL", "debug"}}));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
+}
+
+TEST(ConfigTest, FileLogLevelKeptWhenEnvUnset) {
+    const auto config = Config::Load(R"(
+log_level = "warning"
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", std::span<const EnvVar>{});
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+}
+
+TEST(ConfigTest, EnvLogLevelSetsWhenFileOmitsIt) {
+    // File contributes an entry but no log_level; the env supplies it (sole setter, not an override).
+    const auto config = Config::Load(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({{"REFLECTOR_LOG_LEVEL", "debug"}}));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
 }
 
 }  // namespace reflector
