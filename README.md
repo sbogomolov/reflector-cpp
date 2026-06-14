@@ -112,6 +112,58 @@ open "/Applications/Wireshark.app/Contents/Resources/Extras/Install ChmodBPF.pkg
 
 Log out and back in after installing for the group membership to take effect.
 
+### Run in Docker
+
+Prebuilt multi-arch images are published to `ghcr.io/sbogomolov/reflector`, tagged `latest` and per release version, for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; Docker pulls the variant matching the host. The image is a single static binary on `scratch` — no shell, no package manager. Its entrypoint is the reflector, with `/etc/reflector/config.toml` as the default argument, so mount your config there.
+
+Because the reflector captures at L2 on each interface, the container must be **on the real segments it bridges**, not on a default NAT bridge network (which would hide that traffic from it). On a Linux host, `--network host` is the simplest way:
+
+```sh
+docker run --rm \
+    --network host \
+    -v /path/to/config.toml:/etc/reflector/config.toml:ro \
+    ghcr.io/sbogomolov/reflector:latest
+```
+
+`CAP_NET_RAW` is required (see [Runtime privileges](#runtime-privileges)) and is in Docker's default capability set, so the command above works as-is. For least privilege, drop everything else and grant just that one:
+
+```sh
+docker run --rm \
+    --network host \
+    --cap-drop ALL --cap-add NET_RAW \
+    -v /path/to/config.toml:/etc/reflector/config.toml:ro \
+    ghcr.io/sbogomolov/reflector:latest
+```
+
+To keep it running as a service, drop `--rm` and run it detached with a restart policy:
+
+```sh
+docker run -d --name reflector --restart unless-stopped \
+    --network host \
+    --cap-drop ALL --cap-add NET_RAW \
+    -v /path/to/config.toml:/etc/reflector/config.toml:ro \
+    ghcr.io/sbogomolov/reflector:latest
+```
+
+Logs are timestamped in UTC by default; pass `-e TZ=Europe/Berlin` (any zoneinfo name) for local time — the zoneinfo database is bundled in the image.
+
+#### On MikroTik RouterOS
+
+The `arm64`, `arm/v7`, and `arm/v5` variants let the reflector run on the router itself through the RouterOS *Container* feature, bridging two of the router's VLANs without a separate host. Since it has to see both segments, give the container **two `veth` interfaces, one bridged into each VLAN**, and name them as the entry's `source_if` / `target_if`:
+
+```toml
+[livingroom-tv]
+source_if = "veth-lan"   # veth bridged into the LAN VLAN
+target_if = "veth-iot"   # veth bridged into the IoT VLAN
+mac       = "B0:37:95:C5:60:BE"   # optional; target a specific device (omit for the whole VLAN)
+wol       = true         # enable Wake-on-LAN, disabled by default
+mdns      = true         # enable mDNS, disabled by default
+ssdp      = true         # enable SSDP, disabled by default
+dial      = true         # enable the DIAL proxy, disabled by default
+```
+
+Mount the config to `/etc/reflector/config.toml`. For the RouterOS side — enabling container mode, creating the `veth`s, and attaching each to its VLAN — see MikroTik's [Container documentation](https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container).
+
 ## Configuration
 
 `config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the three protocols. `log_level` is the only top-level setting:
