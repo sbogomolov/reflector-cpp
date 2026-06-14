@@ -123,6 +123,20 @@ TEST(ConfigTest, VerifyRejectsDuplicatePorts) {
     EXPECT_TRUE(wol_config.Verify().has_value());
 }
 
+TEST(ConfigTest, VerifyRejectsEmptyPorts) {
+    // Reachable only by a direct caller: the parser defaults ports to {7,9} and rejects an empty
+    // wol_ports array before assignment, so this branch has no TOML/env path.
+    const auto wol_config = WolConfig{
+        .name = "a",
+        .mac = std::nullopt,
+        .source_if = "eth0",
+        .target_if = "eth1",
+        .ports = {},
+    };
+
+    EXPECT_TRUE(wol_config.Verify().has_value());
+}
+
 // --- entry parsing and protocol expansion ---
 
 TEST(ConfigTest, ParsesSingleProtocolEntry) {
@@ -532,6 +546,26 @@ wol = true
 )").has_value());
 }
 
+TEST(ConfigTest, RejectsEmptyNameMdns) {
+    // Same invariant via MdnsConfig::Verify (empty name reaches a different protocol's check).
+    EXPECT_FALSE(Config::FromString(R"(
+[""]
+source_if = "eth0"
+target_if = "eth1"
+mdns = true
+)").has_value());
+}
+
+TEST(ConfigTest, RejectsEmptyNameSsdp) {
+    // Same invariant via SsdpConfig::Verify.
+    EXPECT_FALSE(Config::FromString(R"(
+[""]
+source_if = "eth0"
+target_if = "eth1"
+ssdp = true
+)").has_value());
+}
+
 TEST(ConfigTest, RejectsUnknownEntryField) {
     EXPECT_FALSE(Config::FromString(R"(
 [tv]
@@ -879,6 +913,24 @@ source_if = "eth0"
 target_if = "eth1"
 wol = true
 address_family = "ipv4"
+)").has_value());
+}
+
+TEST(ConfigTest, RejectsDuplicateIpv6OnlyRules) {
+    // Two ipv6-only rules on the same triple collide via the IPv6 disjunct of AddressFamiliesOverlap
+    // (the IPv4 disjunct is false for both) -- the mirror of the default/ipv4 case above.
+    EXPECT_FALSE(Config::FromString(R"(
+[a]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+address_family = "ipv6"
+
+[b]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+address_family = "ipv6"
 )").has_value());
 }
 
@@ -1473,6 +1525,69 @@ TEST(ConfigTest, SsdpFormatterPrintsDial) {
     EXPECT_NE(std::format("{}", ssdp).find("dial: true"), std::string::npos);
 }
 
+TEST(ConfigTest, AddressFamilyFormatter) {
+    EXPECT_EQ(std::format("{}", AddressFamily::Default), "default");
+    EXPECT_EQ(std::format("{}", AddressFamily::Dual), "dual");
+    EXPECT_EQ(std::format("{}", AddressFamily::IPv4), "ipv4");
+    EXPECT_EQ(std::format("{}", AddressFamily::IPv6), "ipv6");
+}
+
+TEST(ConfigTest, WolConfigFormatter) {
+    const auto with_mac = WolConfig{
+        .name = "tv", .mac = *MacAddress::FromString("00:11:22:33:44:55"),
+        .source_if = "eth0", .target_if = "eth1", .ports = {7, 9, 42},
+    };
+    const auto s = std::format("{}", with_mac);
+    EXPECT_NE(s.find("\"tv\""), std::string::npos) << s;
+    EXPECT_NE(s.find("eth0"), std::string::npos) << s;
+    EXPECT_NE(s.find("eth1"), std::string::npos) << s;
+    EXPECT_NE(s.find("ports: ["), std::string::npos) << s;
+    EXPECT_NE(s.find("42"), std::string::npos) << s;
+    EXPECT_EQ(s.find("any"), std::string::npos) << s;  // mac present, so not "any"
+
+    const auto no_mac = WolConfig{.name = "net", .mac = std::nullopt, .source_if = "eth0", .target_if = "eth1"};
+    EXPECT_NE(std::format("{}", no_mac).find("any"), std::string::npos);
+}
+
+TEST(ConfigTest, MdnsConfigFormatter) {
+    const auto mdns = MdnsConfig{
+        .name = "disc", .mac = std::nullopt, .source_if = "lan", .target_if = "iot",
+        .address_family = AddressFamily::IPv6,
+    };
+    const auto s = std::format("{}", mdns);
+    EXPECT_NE(s.find("\"disc\""), std::string::npos) << s;
+    EXPECT_NE(s.find("any"), std::string::npos) << s;   // no mac
+    EXPECT_NE(s.find("ipv6"), std::string::npos) << s;  // address_family rendered
+}
+
+TEST(ConfigTest, SsdpFormatterPrintsMacAndDialFalse) {
+    const auto ssdp = SsdpConfig{
+        .name = "tv", .mac = *MacAddress::FromString("00:11:22:33:44:55"),
+        .source_if = "lan", .target_if = "iot", .dial = false,
+    };
+    const auto s = std::format("{}", ssdp);
+    EXPECT_NE(s.find("dial: false"), std::string::npos) << s;
+    EXPECT_EQ(s.find("any"), std::string::npos) << s;  // mac present
+}
+
+TEST(ConfigTest, ConfigFormatterRendersAllSections) {
+    const auto config = Config::FromString(R"(
+log_level = "warning"
+[tv]
+source_if = "lan"
+target_if = "iot"
+wol = true
+mdns = true
+ssdp = true
+)");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    const auto s = std::format("{}", *config);
+    EXPECT_NE(s.find("log_level:"), std::string::npos) << s;
+    EXPECT_NE(s.find("wol: ["), std::string::npos) << s;
+    EXPECT_NE(s.find("mdns: ["), std::string::npos) << s;
+    EXPECT_NE(s.find("ssdp: ["), std::string::npos) << s;
+}
+
 TEST(ConfigTest, ParsesSsdpDialFlagFromToml) {
     const auto config = Config::FromString(R"(
 [tv]
@@ -1499,14 +1614,18 @@ ssdp = true
 }
 
 TEST(ConfigTest, RejectsDialWithoutSsdp) {
+    // wol is enabled so the entry passes the "enables no protocol" check and actually reaches the
+    // dial-without-ssdp branch; asserting on "dial" ensures the dial-specific error fired (the
+    // no-protocol message also contains "ssdp", so a "ssdp" assertion would pass via the wrong path).
     const auto config = Config::FromString(R"(
 [tv]
 source_if = "lan"
 target_if = "iot"
+wol = true
 dial = true
 )");
     ASSERT_FALSE(config.has_value());  // dial requires ssdp (rejected at parse, no config appended)
-    EXPECT_NE(config.error().Message().find("ssdp"), std::string::npos) << config.error().Message();
+    EXPECT_NE(config.error().Message().find("dial"), std::string::npos) << config.error().Message();
 }
 
 TEST(ConfigTest, RejectsNonBooleanDial) {
