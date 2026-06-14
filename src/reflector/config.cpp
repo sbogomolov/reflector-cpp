@@ -21,17 +21,6 @@ std::string_view ToStringView(const toml::key& key) {
     return std::string_view{key.data(), key.length()};
 }
 
-std::expected<std::string_view, Error> ReadStringField(const toml::node& field_node,
-        std::string_view section, std::string_view field_name) {
-    const auto field_value = field_node.value<std::string_view>();
-    if (!field_value) {
-        // The key is present (we only reach here while iterating existing keys); it just
-        // isn't a string. Absent required fields are caught later by the config's Verify().
-        return std::unexpected(Error{"{} {} must be a string", section, field_name});
-    }
-    return *field_value;
-}
-
 std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
     const auto lower = AsciiToLower(s);
     if (lower == "debug") return LogLevel::Debug;
@@ -130,12 +119,78 @@ std::optional<Error> AppendConfig(std::vector<ConfigType>& configs, ConfigType c
     return std::nullopt;
 }
 
-// Reads one [name] entry and appends a reflector config for each protocol it enables. The entry's
-// shared fields (mac, source_if, target_if, address_family) flow to every enabled protocol; for a
-// real device the one mac is both the WoL target and the mDNS/SSDP frame source.
-std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
+// A single reflector entry's fields, addressed by their lowercase config key. ReadEntry consumes
+// this interface rather than a toml::table directly, so the field parsing and validation are shared
+// and independent of where the values come from: a source only surfaces the fields it holds and
+// hands back each one as the type that field expects (string, bool, or a port list). TomlSource is
+// the only backend today; the interface is the seam an alternative source plugs into.
+class ConfigSource {
+public:
+    ConfigSource() = default;
+    ConfigSource(const ConfigSource&) = delete;
+    ConfigSource& operator=(const ConfigSource&) = delete;
+    virtual ~ConfigSource() = default;
+
+    // The entry's display name (for TomlSource, its table key), used in errors and as the label.
+    [[nodiscard]] virtual std::string_view Name() const = 0;
+    // The field keys present in this entry, so the caller can dispatch known fields and reject unknown ones.
+    [[nodiscard]] virtual std::vector<std::string_view> Keys() const = 0;
+    // The three value shapes reflector fields reduce to. `key` is always one returned by Keys().
+    [[nodiscard]] virtual std::expected<std::string_view, Error> GetString(std::string_view key) const = 0;
+    [[nodiscard]] virtual std::expected<bool, Error> GetBool(std::string_view key) const = 0;
+    [[nodiscard]] virtual std::expected<std::vector<uint16_t>, Error> GetPorts(std::string_view key) const = 0;
+};
+
+// --- TOML backend: extract field values from a parsed toml::table ---
+
+class TomlSource final : public ConfigSource {
+public:
+    TomlSource(std::string_view name, const toml::table& table) noexcept : name_{name}, table_{&table} {}
+
+    [[nodiscard]] std::string_view Name() const override { return name_; }
+
+    [[nodiscard]] std::vector<std::string_view> Keys() const override {
+        std::vector<std::string_view> keys;
+        keys.reserve(table_->size());
+        for (const auto& [key, node] : *table_) {
+            (void)node;
+            keys.emplace_back(ToStringView(key));
+        }
+        return keys;
+    }
+
+    [[nodiscard]] std::expected<std::string_view, Error> GetString(std::string_view key) const override {
+        const auto value = table_->get(key)->value<std::string_view>();
+        if (!value) {
+            return std::unexpected(Error{"entry \"{}\" {} must be a string", name_, key});
+        }
+        return *value;
+    }
+
+    [[nodiscard]] std::expected<bool, Error> GetBool(std::string_view key) const override {
+        const auto value = table_->get(key)->value<bool>();
+        if (!value) {
+            return std::unexpected(Error{"entry \"{}\" {} must be a boolean", name_, key});
+        }
+        return *value;
+    }
+
+    [[nodiscard]] std::expected<std::vector<uint16_t>, Error> GetPorts(std::string_view key) const override {
+        return ReadPorts(*table_->get(key));
+    }
+
+private:
+    std::string_view name_;
+    const toml::table* table_;
+};
+
+// Reads one entry from any source and appends a reflector config for each protocol it enables. The
+// entry's shared fields (mac, source_if, target_if, address_family) flow to every enabled protocol;
+// for a real device the one mac is both the WoL target and the mDNS/SSDP frame source.
+std::optional<Error> ReadEntry(const ConfigSource& source,
         std::vector<WolConfig>& wol_configs, std::vector<MdnsConfig>& mdns_configs,
         std::vector<SsdpConfig>& ssdp_configs) {
+    const auto name = source.Name();
     std::string source_if;
     std::string target_if;
     std::optional<MacAddress> mac;
@@ -146,22 +201,21 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
     bool dial = false;
     AddressFamily address_family = AddressFamily::Default;
 
-    for (const auto& [field_key, field_node] : table) {
-        const auto field_name = ToStringView(field_key);
+    for (const auto field_name : source.Keys()) {
         if (field_name == "source_if") {
-            auto value = ReadStringField(field_node, "entry", field_name);
+            auto value = source.GetString(field_name);
             if (!value) {
                 return std::move(value).error();
             }
             source_if = *value;
         } else if (field_name == "target_if") {
-            auto value = ReadStringField(field_node, "entry", field_name);
+            auto value = source.GetString(field_name);
             if (!value) {
                 return std::move(value).error();
             }
             target_if = *value;
         } else if (field_name == "mac") {
-            auto value = ReadStringField(field_node, "entry", field_name);
+            auto value = source.GetString(field_name);
             if (!value) {
                 return std::move(value).error();
             }
@@ -171,16 +225,16 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
             }
             mac = *parsed;
         } else if (field_name == "wol_ports") {
-            auto ports = ReadPorts(field_node);
+            auto ports = source.GetPorts(field_name);
             if (!ports) {
                 return std::move(ports).error();
             }
             wol_ports = std::move(*ports);
         } else if (field_name == "wol" || field_name == "mdns" || field_name == "ssdp"
                 || field_name == "dial") {
-            const auto flag = field_node.value<bool>();
+            auto flag = source.GetBool(field_name);
             if (!flag) {
-                return Error{"entry \"{}\" {} must be a boolean", name, field_name};
+                return std::move(flag).error();
             }
             if (field_name == "wol") {
                 wol = *flag;
@@ -192,9 +246,9 @@ std::optional<Error> ReadEntry(std::string_view name, const toml::table& table,
                 dial = *flag;
             }
         } else if (field_name == "address_family") {
-            const auto value = field_node.value<std::string_view>();
+            auto value = source.GetString(field_name);
             if (!value) {
-                return Error{"entry \"{}\" address_family must be a string", name};
+                return std::move(value).error();
             }
             auto parsed = AddressFamilyFromString("entry", *value);
             if (!parsed) {
@@ -358,8 +412,8 @@ std::expected<Config, Error> Config::FromString(std::string_view str) {
         // A top-level table is a reflector entry (its key is the entry name); the lone known scalar
         // is log_level; any other top-level scalar is a mistyped setting.
         if (const auto* entry_table = value.as_table()) {
-            if (auto error = ReadEntry(key_name, *entry_table,
-                    config.wol_configs_, config.mdns_configs_, config.ssdp_configs_)) {
+            const TomlSource source{key_name, *entry_table};
+            if (auto error = ReadEntry(source, config.wol_configs_, config.mdns_configs_, config.ssdp_configs_)) {
                 return std::unexpected(*std::move(error));
             }
         } else if (key_name == "log_level") {
