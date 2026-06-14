@@ -1,7 +1,7 @@
 #pragma once
 
 #include "address_monitor.h"
-#include "config.h"
+#include "config/config.h"
 #include "default_packet_dispatcher.h"
 #include "dispatcher.h"
 #include "interface.h"

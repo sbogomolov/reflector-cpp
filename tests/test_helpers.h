@@ -1,7 +1,7 @@
 #pragma once
 
 #include "mocks/fake_interface.h"
-#include "reflector/config.h"
+#include "reflector/config/config.h"
 #include "reflector/interface.h"
 #include "reflector/ip_address.h"
 #include "reflector/logger.h"

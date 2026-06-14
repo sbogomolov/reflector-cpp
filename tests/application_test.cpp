@@ -1,6 +1,6 @@
 #include "reflector/application.h"
 
-#include "reflector/config.h"
+#include "reflector/config/config.h"
 #include "reflector/error.h"
 #include "reflector/interface.h"
 #include "reflector/link_socket.h"
