@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -19,6 +20,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -278,16 +280,22 @@ protected:
         dispatcher.FireTimers(now);  // the proxy registered the timer; the dispatcher fires it
     }
 
-    // Fire the listener's readable edge until the accept queue yields the Connection. A loopback connect()
-    // returns after the handshake, but the listener's accept queue can lag it by a beat (more so under load
-    // in a single-process run), so a single FireReadable may Accept -> EAGAIN. Returns the Connection keyed
-    // by the next id, or nullptr after the bound. The retry idiom OpenOne / DropsNewAcceptAtMaxConnections use.
+    // Wait for the listener to report a pending connection (POLLIN), then fire its readable edge to
+    // accept it. A loopback connect() returns after the handshake, but the listener's accept queue can
+    // lag it by a beat, so poll for readability -- bounded by a wall-clock deadline -- rather than
+    // busy-firing a fixed number of times, which could exhaust its count before the queue updates under
+    // a slow emulator (qemu-arm-static). Returns the Connection keyed by the next id, or nullptr after
+    // the deadline. Shared by the accept-and-check tests.
     DialProxy::Connection* AcceptOne(DialProxy& proxy, int listener_fd) {
         const uint64_t id = NextConnectionId(proxy);
         DialProxy::Connection* conn = FindConnection(proxy, id);
-        for (int attempt = 0; attempt < 100 && conn == nullptr; ++attempt) {
-            dispatcher.FireReadable(listener_fd);
-            conn = FindConnection(proxy, id);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (conn == nullptr && std::chrono::steady_clock::now() < deadline) {
+            pollfd pfd{.fd = listener_fd, .events = POLLIN, .revents = 0};
+            if (::poll(&pfd, 1, 1000) > 0) {
+                dispatcher.FireReadable(listener_fd);
+                conn = FindConnection(proxy, id);
+            }
         }
         return conn;
     }
@@ -669,16 +677,23 @@ TEST_F(DialProxyTest, ConnectFailureTearsDownTheConnection) {
     const int accepted_client_fd = ConnClientFd(*conn);
     const int upstream_fd = ConnUpstreamFd(*conn);
 
-    // The loopback connect's refusal (RST -> SO_ERROR) is asynchronous; poll the upstream fd until the
-    // kernel reports the error, so the manually-fired writable edge deterministically sees FinishConnect
-    // Error. A bare POLLOUT can briefly precede the RST landing, so re-poll until POLLERR|POLLHUP rather
-    // than asserting it on the first wakeup (which would race a not-yet-failed connect that FinishConnect
-    // reads as SO_ERROR==0, a spurious success). Bounded so a connect that wrongly succeeds still fails.
+    // The loopback connect's refusal (RST -> SO_ERROR) is asynchronous. Poll for POLLOUT and inspect
+    // revents for POLLERR/POLLHUP -- the failed connect is writable, with the error riding alongside,
+    // and revents (unlike getsockopt) does not consume SO_ERROR, which FinishConnect must still read.
+    // POLLOUT must be requested: macOS does not surface POLLERR for a bare events == 0 poll. The
+    // writable edge can briefly precede the RST, so bound the wait by a wall-clock deadline (not a
+    // fixed iteration count) and sleep between checks: the original count-bounded loop busy-spun on the
+    // immediately-ready POLLOUT, exhausting its budget in microseconds of wall-clock -- and the spin
+    // also starved the RST's delivery -- before the error surfaced under qemu-arm-static.
     pollfd pfd{.fd = upstream_fd, .events = POLLOUT, .revents = 0};
     bool errored = false;
-    for (int attempt = 0; attempt < 1000 && !errored; ++attempt) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!errored && std::chrono::steady_clock::now() < deadline) {
         ASSERT_GT(::poll(&pfd, 1, 5000), 0) << "upstream connect neither completed nor failed within 5s";
         errored = (pfd.revents & (POLLERR | POLLHUP)) != 0;
+        if (!errored) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));  // writable but no error yet: let the RST land
+        }
     }
     ASSERT_TRUE(errored) << "expected the refused connect to surface as an error";
 
@@ -827,15 +842,8 @@ protected:
         oc.client_fd = ConnectRawClient(*authority);
         EXPECT_GE(oc.client_fd, 0);
 
-        // The loopback connect() returns after the handshake, but the listener's accept queue can lag it by
-        // a beat, so a single edge may Accept -> EAGAIN. Re-fire until the Connection is minted (the
-        // DropsNewAcceptAtMaxConnections idiom).
-        const uint64_t id = NextConnectionId(proxy);
-        auto* conn = FindConnection(proxy, id);
-        for (int attempt = 0; attempt < 100 && conn == nullptr; ++attempt) {
-            dispatcher.FireReadable(listener_fd);
-            conn = FindConnection(proxy, id);
-        }
+        const uint64_t id = NextConnectionId(proxy);  // the id AcceptOne will mint (a peek, not consumed)
+        auto* conn = AcceptOne(proxy, listener_fd);
         EXPECT_NE(conn, nullptr);
         if (conn == nullptr) {
             return oc;
