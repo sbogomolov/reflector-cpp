@@ -5,10 +5,46 @@
 #include <cstdio>
 #include <csignal>
 #include <exception>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <unistd.h>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#else
+// Provided by libc. Declared at global scope (not inside the anonymous namespace, where it would
+// become an undefined internal-linkage symbol) and extern "C" so it binds to the libc symbol.
+extern "C" char** environ;
+#endif
 
 namespace {
+// The process environment as a NULL-terminated array of "KEY=VALUE" strings.
+char** Environment() noexcept {
+#if defined(__APPLE__)
+    return *_NSGetEnviron();
+#else
+    return environ;
+#endif
+}
+
+// Collects the environment into key/value views (split on the first '='). The views borrow the
+// environ strings, which live for the whole process, so they stay valid through Config::Load.
+std::vector<reflector::EnvVar> GatherEnvironment() {
+    std::vector<reflector::EnvVar> vars;
+    for (char** entry = Environment(); entry != nullptr && *entry != nullptr; ++entry) {
+        const std::string_view text{*entry};
+        const auto eq = text.find('=');
+        if (eq == std::string_view::npos) {
+            continue;
+        }
+        vars.push_back({text.substr(0, eq), text.substr(eq + 1)});
+    }
+    return vars;
+}
+
 volatile std::sig_atomic_t g_stop_requested = 0;
 // The write end of Application's signal-wakeup self-pipe, or -1 until PrepareSignalWakeup sets it. Writing
 // one byte breaks the dispatcher's blocking poll at once so shutdown doesn't wait up to a poll interval.
@@ -43,10 +79,24 @@ int Run(int argc, char* argv[]) {
         return 2;
     }
 
-    const auto* config_path = argc == 2 ? argv[1] : "config.toml";
-    auto config = reflector::Config::FromFile(config_path);
+    // A config file is optional: with no argument, the configuration comes entirely from
+    // REFLECTOR_* environment variables. When given, the file and the environment are merged.
+    std::optional<std::string> file_contents;
+    if (argc == 2) {
+        auto contents = reflector::Config::ReadFileToString(argv[1]);
+        if (!contents) {
+            logger.Error("Cannot read configuration file: {}", contents.error());
+            return 1;
+        }
+        file_contents = *std::move(contents);
+    }
+
+    const auto env_vars = GatherEnvironment();
+    const std::optional<std::string_view> toml_text =
+        file_contents ? std::optional<std::string_view>{*file_contents} : std::nullopt;
+    auto config = reflector::Config::Load(toml_text, env_vars);
     if (!config) {
-        logger.Error("Cannot read configuration file: {}", config.error());
+        logger.Error("Invalid configuration: {}", config.error());
         return 1;
     }
 

@@ -150,4 +150,5 @@ FROM scratch AS runtime
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /src/build/reflector /usr/local/bin/reflector
 ENTRYPOINT ["/usr/local/bin/reflector"]
-CMD ["/etc/reflector/config.toml"]
+# No default argument: with none the reflector configures itself from REFLECTOR_* environment
+# variables. To use a file instead, mount it and pass its path, e.g. `docker run ... <image> /etc/reflector/config.toml`.
