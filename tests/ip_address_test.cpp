@@ -251,7 +251,7 @@ TEST(IpAddressTest, ToSockaddrV4RoundTrips) {
     const auto* v4 = reinterpret_cast<const sockaddr_in*>(&storage);
     EXPECT_EQ(ntohs(v4->sin_port), 7);
     EXPECT_EQ(IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&storage)), addr);
-#if defined(__APPLE__)
+#if !defined(__linux__)
     EXPECT_EQ(v4->sin_len, sizeof(sockaddr_in));  // BSD sockaddr length, needed by MCAST_JOIN_GROUP
 #endif
 }
@@ -266,7 +266,7 @@ TEST(IpAddressTest, ToSockaddrV6RoundTripsWithScopeId) {
     EXPECT_EQ(ntohs(v6->sin6_port), 9);
     EXPECT_EQ(v6->sin6_scope_id, 42u);
     EXPECT_EQ(IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&storage)), addr);
-#if defined(__APPLE__)
+#if !defined(__linux__)
     EXPECT_EQ(v6->sin6_len, sizeof(sockaddr_in6));  // BSD sockaddr length, needed by MCAST_JOIN_GROUP
 #endif
 }

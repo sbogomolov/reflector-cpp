@@ -20,7 +20,7 @@
 #if defined(__linux__)
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#elif defined(__APPLE__)
+#else
 #include <net/if.h>
 #include <net/route.h>
 #endif
@@ -58,7 +58,7 @@ constexpr uint16_t ADDR_MESSAGE = RTM_NEWADDR;
 constexpr uint16_t DELETED_ADDR_MESSAGE = RTM_DELADDR;
 constexpr uint16_t NON_ADDR_MESSAGE = RTM_NEWLINK;
 
-#elif defined(__APPLE__)
+#else
 
 // Appends one PF_ROUTE message (ifa_msghdr) of the given type carrying ifam_index. The parser
 // reads ifam_msglen/ifam_type from the rt_msghdr-shared prefix and ifam_index from the

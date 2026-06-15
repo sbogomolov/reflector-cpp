@@ -35,10 +35,10 @@ constexpr uint16_t INJECT_SRC_PORT = 40000;
 constexpr uint16_t INJECT_DST_PORT = 40009;
 
 // Creates a connected virtual-interface pair for the test's lifetime (veth on Linux, feth on
-// macOS) so a frame injected on the first interface is received on the second. Needs root
-// (interface creation is CAP_NET_ADMIN), so IsValid() is false otherwise — and on any setup
-// failure — for callers to GTEST_SKIP. We shell out to ip/ifconfig because there is no portable
-// syscall for macOS feth peering. Only interfaces we created are torn down.
+// macOS, epair on FreeBSD) so a frame injected on the first interface is received on the second.
+// Needs root (interface creation is CAP_NET_ADMIN), so IsValid() is false otherwise — and on any
+// setup failure — for callers to GTEST_SKIP. We shell out to ip/ifconfig because there is no
+// portable syscall for the BSD pair peering. Only interfaces we created are torn down.
 class InterfacePair {
 public:
     InterfacePair() {
@@ -84,6 +84,20 @@ public:
             && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
             && Run("ifconfig " + receive_ + " up")
             && Run("ifconfig " + receive_ + " inet6 fe80::2 prefixlen 64");
+#elif defined(__FreeBSD__)
+        // epair creates a connected pair in one call: `ifconfig epair create` prints the 'a' end
+        // (e.g. epair0a); the peer is the same name with a trailing 'b'.
+        inject_ = RunCapture("ifconfig epair create");
+        if (inject_.empty()) {
+            return;
+        }
+        created_ = true;  // destroying the 'a' end removes both
+        receive_ = inject_;
+        receive_.back() = 'b';
+        valid_ = Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
+            && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + receive_ + " up")
+            && Run("ifconfig " + receive_ + " inet6 fe80::2 prefixlen 64");
 #endif
         if (!valid_) {
             Destroy();
@@ -105,9 +119,9 @@ private:
         return std::system((command + " >/dev/null 2>&1").c_str()) == 0;
     }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // Runs `command` and returns its stdout with trailing whitespace trimmed (empty on failure) —
-    // used to capture the interface name `ifconfig feth create` prints.
+    // used to capture the interface name `ifconfig feth/epair create` prints.
     static std::string RunCapture(const std::string& command) {
         std::string output;
         FILE* pipe = ::popen((command + " 2>/dev/null").c_str(), "r");
@@ -138,17 +152,21 @@ private:
         if (created_receive_) {
             Run("ifconfig " + receive_ + " destroy");
         }
+#elif defined(__FreeBSD__)
+        if (created_) {
+            Run("ifconfig " + inject_ + " destroy");  // removes both ends of the epair
+        }
 #endif
     }
 
     // assigned at construction (unique per process / kernel-assigned)
     std::string inject_;
     std::string receive_;
-#if defined(__linux__)
-    bool created_ = false;
-#elif defined(__APPLE__)
+#if defined(__APPLE__)
     bool created_inject_ = false;
     bool created_receive_ = false;
+#else
+    bool created_ = false;
 #endif
     bool valid_ = false;
 };
@@ -175,7 +193,7 @@ protected:
     FakeInterface iface{"test", 0, {}};
     RawSocket socket{RawSocket::ForTesting(iface, -1)};
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     using LinkType = RawSocket::LinkType;
     void SetLinkType(LinkType link_type) noexcept { socket.link_type_ = link_type; }
 #endif
@@ -486,8 +504,8 @@ TEST_F(RawSocketTest, JoinMulticastGroupRejectsNonMulticastAddress) {
     EXPECT_FALSE(JoinFdValid(IpAddress::Family::V6));
 }
 
-#if defined(__APPLE__)
-// DLT_NULL is macOS-only — on Linux AF_PACKET delivers Ethernet frames for every
+#if !defined(__linux__)
+// DLT_NULL framing only appears on the BSDs — on Linux AF_PACKET delivers Ethernet frames for every
 // interface, lo included, so the parser never encounters loopback framing there.
 TEST_F(RawSocketTest, ParsesLoopbackIpv4UdpWithZeroMacs) {
     SetLinkType(LinkType::Loopback);
@@ -660,7 +678,7 @@ TEST(RawSocketBatchTest, ReceiveDropsBpfTruncatedFrame) {
     });
     EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
-#endif  // defined(__APPLE__)
+#endif  // !defined(__linux__)
 
 #if defined(__linux__)
 // recv(MSG_TRUNC) reports an oversized frame's real length, so Receive drops it (with a warning)
@@ -742,20 +760,20 @@ TEST_F(RawSocketRequiresRootTest, DrainsBatchedFramesFromOneRead) {
         ASSERT_TRUE(sender_socket.SendTo(payload, {IpAddress::LoopbackV4(), listener_port}));
     }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     bool observed_buffered_read = false;
 #endif
     for (int i = 0; i < packet_count; ++i) {
         const auto packet = ReceiveOurDatagram();
         ASSERT_TRUE(packet.has_value()) << "missing packet " << (i + 1);
-#if defined(__APPLE__)
+#if !defined(__linux__)
         if (socket->HasBufferedData()) {
             observed_buffered_read = true;
         }
 #endif
     }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     EXPECT_TRUE(observed_buffered_read)
         << "Expected at least one Receive() to leave userland-buffered data behind — "
            "the macOS multi-frame BPF batch walk was not exercised";
@@ -786,12 +804,13 @@ TEST_F(RawSocketRequiresRootTest, InjectsUdpDatagram) {
 // captures it (the BPF filter drops only the outgoing copy, so the looped-back broadcast
 // survives), verifying the on-the-wire frame's source/destination and payload.
 //
-// Linux only — compiled out of the macOS build rather than skipped at runtime: macOS never loops
-// BPF-injected frames on lo0 back to the input path (the same reason pcap_inject on lo0 is a no-op
-// there; confirmed that neither a UDP socket nor the injecting BPF device itself observes them), so
-// this can never run there. The macOS inject path is asserted by InjectsUdpDatagram above and its
-// framing by the frame-builder tests.
-#if defined(__linux__)
+// Everywhere but macOS — compiled out of the macOS build rather than skipped at runtime: macOS never
+// loops BPF-injected frames on lo0 back to the input path (the same reason pcap_inject on lo0 is a
+// no-op there; confirmed that neither a UDP socket nor the injecting BPF device itself observes
+// them), so this can never run there. The macOS inject path is asserted by InjectsUdpDatagram above
+// and its framing by the frame-builder tests. Linux loops back via its Ethernet lo and FreeBSD via
+// if_simloop, so the round trip completes on both.
+#if !defined(__APPLE__)
 TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
     const std::array payload{std::byte{0xca}, std::byte{0xfe}, std::byte{0xba}, std::byte{0xbe}};
 
@@ -881,7 +900,7 @@ protected:
 #if defined(__linux__)
             const auto addresses =
                 ResolveInterfaceAddresses(if_nametoindex(pair.ReceiveInterface().c_str()));
-#elif defined(__APPLE__)
+#else
             const auto addresses = ResolveInterfaceAddresses(pair.ReceiveInterface());
 #endif
             if (addresses.v6 && addresses.v6->IsLinkLocal()) {

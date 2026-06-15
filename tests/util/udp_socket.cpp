@@ -89,6 +89,9 @@ bool UdpSocket::SetInterface(const std::string& interface) {
                       interface, idx, Error::FromErrno());
         return false;
     }
+#else
+    // FreeBSD has no egress-pin socket option (no SO_BINDTODEVICE / IP_BOUND_IF); rely on the routing
+    // table, mirroring the production TcpSocket source-bind fallback. interface_index_ is still recorded.
 #endif
 
     interface_index_ = idx;
