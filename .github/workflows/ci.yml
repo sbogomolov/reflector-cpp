@@ -113,6 +113,13 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # macOS (like FreeBSD) only binds explicitly-assigned loopback addresses, so the two DIAL tests
+      # that bind 127.0.0.2 self-skip. Add the alias so they run here too (Linux makes all of 127/8
+      # bindable, so it needs nothing). Best-effort — the tests just skip again if it doesn't take.
+      - name: Add 127.0.0.2 loopback alias for the DIAL tests (macOS)
+        if: matrix.platform == 'macos'
+        run: sudo ifconfig lo0 alias 127.0.0.2 || true
+
       # Native lanes run under sudo so the RequiresRoot tests (loopback capture, veth/feth pairs needing
       # CAP_NET_RAW/CAP_NET_ADMIN or bpf + root) run instead of skipping; each fixture probes its operation
       # and GTEST_SKIPs where unavailable. The cross (armv7) lane runs without sudo: under user-mode QEMU
@@ -125,6 +132,52 @@ jobs:
           else
             sudo ctest --test-dir build --output-on-failure
           fi
+
+  freebsd:
+    name: Unit (freebsd-amd64 ${{ matrix.build_type }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # FreeBSD shares its BSD platform path (kqueue, BPF, route sockets, getifaddrs) with macOS but needs
+      # a real FreeBSD kernel to build and test — Docker can't provide one. vmactions boots a FreeBSD VM via
+      # QEMU inside the Linux runner (same spirit as the armv7/armv5-under-QEMU lanes above) and runs the
+      # script inside it. The VM runs as root, so the RequiresRoot tests (BPF capture, epair pairs) run
+      # instead of skipping; each fixture self-skips where its operation isn't available.
+      - name: Build and test in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.2'  # 14.x base ships clang/libc++ >= 18 (std::println/format/expected); OPNsense 25.x tracks 14.3
+          usesh: true
+          prepare: |
+            # Upgrade the image's pre-installed packages before installing ours: the base VM ships an
+            # older pcre2 than the git in the current pkg catalogue links against, so a freshly
+            # pkg-installed git fails to load ("ld-elf.so.1: ... PCRE2_10.47 ... not defined"). That
+            # makes cmake's find_package(Git) read an empty version and abort FetchContent. Upgrading
+            # first brings the shared libs in line with what we install.
+            pkg upgrade -y
+            pkg install -y cmake ninja git
+          run: |
+            cmake --version
+            c++ --version
+            # Release is the static config we ship (REFLECTOR_STATIC); Debug stays dynamic so it can
+            # carry ASan/UBSan (the two are mutually exclusive). Same split as the Linux lanes.
+            if [ "${{ matrix.build_type }}" = Release ]; then static=ON; sanitize=OFF; else static=OFF; sanitize=ON; fi
+            cmake -S . -B build -G Ninja -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -D REFLECTOR_STATIC=$static -D REFLECTOR_SANITIZE=$sanitize
+            cmake --build build
+            # FreeBSD (like macOS) only binds explicitly-assigned loopback addresses, so add 127.0.0.2
+            # for the two DIAL tests; best-effort — they skip again if it doesn't take.
+            ifconfig lo0 alias 127.0.0.2/32 || true
+            ctest --test-dir build --output-on-failure
 
   docker-e2e:
     name: Docker e2e
