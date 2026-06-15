@@ -58,22 +58,19 @@ jobs:
             platform: linux
             cc: gcc-14
             cxx: g++-14
-            reflector_static: "ON"
           - variant: linux-arm64
             runner: ubuntu-24.04-arm
             platform: linux
             cc: gcc-14
             cxx: g++-14
-            reflector_static: "ON"
           # armv7/armv5 have no native runner: cross-compile on the amd64 runner. cross_packages adds the
-          # toolchain; cmake_args drives CMAKE_SYSTEM_* (CC/CXX point at the cross compilers). Same matrix-
-          # field approach as ci.yml. armv7 = armhf (hard-float); armv5 = armel (soft-float, EN7562 boxes).
+          # toolchain; cmake_args drives CMAKE_SYSTEM_* (CC/CXX point at the cross compilers). Same cross-
+          # compile setup as ci.yml. armv7 = armhf (hard-float); armv5 = armel (soft-float, EN7562 boxes).
           - variant: linux-armv7
             runner: ubuntu-24.04
             platform: linux
             cc: arm-linux-gnueabihf-gcc-14
             cxx: arm-linux-gnueabihf-g++-14
-            reflector_static: "ON"
             cross_packages: crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf
             cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm
           - variant: linux-armv5
@@ -81,7 +78,6 @@ jobs:
             platform: linux
             cc: arm-linux-gnueabi-gcc-14
             cxx: arm-linux-gnueabi-g++-14
-            reflector_static: "ON"
             cross_packages: crossbuild-essential-armel g++-14-arm-linux-gnueabi gcc-14-arm-linux-gnueabi
             cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm
           - variant: macos-arm64
@@ -89,7 +85,6 @@ jobs:
             platform: macos
             cc: clang
             cxx: clang++
-            reflector_static: "OFF"  # macOS has no static libSystem; ships dynamic against the system libs
 
     steps:
       - name: Check out repository
@@ -106,17 +101,19 @@ jobs:
         if: matrix.platform == 'macos'
         run: brew list ninja >/dev/null 2>&1 || brew install ninja
 
+      # Every release binary is static (REFLECTOR_STATIC) except macOS, which has no static libSystem and
+      # ships dynamic against the system libs — derive it from the platform.
       - name: Configure
         run: |
+          if [ "${{ matrix.platform }}" = macos ]; then static=OFF; else static=ON; fi
           cmake -S . -B build -G Ninja \
             -D CMAKE_BUILD_TYPE=Release \
             -D BUILD_TESTING=OFF \
-            -D REFLECTOR_STATIC="${REFLECTOR_STATIC}" \
+            -D REFLECTOR_STATIC=$static \
             ${{ matrix.cmake_args }}
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
-          REFLECTOR_STATIC: ${{ matrix.reflector_static }}
 
       - name: Build
         run: cmake --build build --target reflector_app
