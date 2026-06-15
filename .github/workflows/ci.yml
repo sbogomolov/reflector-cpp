@@ -48,7 +48,7 @@ jobs:
             cxx: arm-linux-gnueabihf-g++-14
             crosscompile: true
             cross_packages: crossbuild-essential-armhf g++-14-arm-linux-gnueabihf gcc-14-arm-linux-gnueabihf qemu-user-static
-            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm -D REFLECTOR_STATIC=ON -D REFLECTOR_SANITIZE=OFF -D CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-arm-static
+            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm -D CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-arm-static
           - variant: linux-armv5
             runner: ubuntu-24.04
             platform: linux
@@ -56,7 +56,7 @@ jobs:
             cxx: arm-linux-gnueabi-g++-14
             crosscompile: true
             cross_packages: crossbuild-essential-armel g++-14-arm-linux-gnueabi gcc-14-arm-linux-gnueabi qemu-user-static
-            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm -D REFLECTOR_STATIC=ON -D REFLECTOR_SANITIZE=OFF -D CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-arm-static
+            cmake_args: -D CMAKE_SYSTEM_NAME=Linux -D CMAKE_SYSTEM_PROCESSOR=arm -D CMAKE_CROSSCOMPILING_EMULATOR=/usr/bin/qemu-arm-static
           - variant: macos-arm64
             runner: macos-15
             platform: macos
@@ -91,10 +91,20 @@ jobs:
         env:
           CXX: ${{ matrix.cxx }}
 
+      # Release is the static config we ship (REFLECTOR_STATIC); Debug stays dynamic so it can carry
+      # ASan/UBSan — the two are mutually exclusive. macOS has no static libSystem, so it is never
+      # static (its Debug keeps the sanitizers, its Release is plain dynamic). The cross lanes run under
+      # qemu-user with no target sysroot, so they build static (no runtime libs to find) and unsanitized
+      # (no target ASan/UBSan runtime) in both configs.
       - name: Configure
         run: |
+          if [ "${{ matrix.build_type }}" = Release ]; then static=ON; sanitize=OFF; else static=OFF; sanitize=ON; fi
+          if [ "${{ matrix.platform }}" = macos ]; then static=OFF; fi
+          if [ "${{ matrix.crosscompile }}" = true ]; then static=ON; sanitize=OFF; fi
           cmake -S . -B build -G Ninja \
             -D CMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -D REFLECTOR_STATIC=$static \
+            -D REFLECTOR_SANITIZE=$sanitize \
             ${{ matrix.cmake_args }}
         env:
           CC: ${{ matrix.cc }}
