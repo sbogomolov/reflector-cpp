@@ -43,7 +43,7 @@ struct FakeLinkSocket : LinkSocket {
     [[nodiscard]] bool IsValid() const noexcept override { return valid; }
     [[nodiscard]] int Fd() const noexcept override { return fd; }
     [[nodiscard]] std::optional<Packet> Receive() noexcept override { return std::nullopt; }
-#if defined(__APPLE__)
+#if !defined(__linux__)
     [[nodiscard]] bool HasBufferedData() const noexcept override { return false; }
 #endif
 

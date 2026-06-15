@@ -149,7 +149,7 @@ TEST(FrameBuilderTest, EthernetIpv6) {
     EXPECT_TRUE(std::equal(udp.begin() + 8, udp.end(), payload.begin()));  // payload
 }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 TEST(FrameBuilderTest, LoopbackIpv4) {
     const auto src_ip = IpAddress::FromV4Bytes(127, 0, 0, 1);
     const auto dst_ip = *IpAddress::FromString("224.0.0.251");

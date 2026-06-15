@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 #include <net/bpf.h>
 #endif
 
@@ -159,12 +159,12 @@ inline uint16_t BindLoopback(UdpSocket& socket, uint16_t port = 0) {
     return bound_port;
 }
 
-// Loopback interface name varies by OS; "lo" on Linux, "lo0" on macOS.
+// Loopback interface name varies by OS; "lo" on Linux, "lo0" on macOS and FreeBSD.
 inline std::string_view LoopbackInterface() noexcept {
-#if defined(__APPLE__)
-    return "lo0";
-#else
+#if defined(__linux__)
     return "lo";
+#else
+    return "lo0";
 #endif
 }
 
@@ -318,7 +318,7 @@ struct TestCaptureSocket {
         return WriteRaw(EncodeFrame(frame));
     }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // Packs multiple frames into a single BPF batch so one read() returns all of them and
     // Receive's batch walker steps through them on successive calls. macOS-only because
     // Linux's AF_PACKET preserves message boundaries — a Linux multi-frame "batch" would
@@ -363,7 +363,7 @@ private:
     // original_length sets bh_datalen; pass a value larger than frame.size() to model a frame BPF
     // truncated to fit the buffer. Ignored on Linux, which has no bpf_hdr.
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame, [[maybe_unused]] uint32_t original_length) {
-#if defined(__APPLE__)
+#if !defined(__linux__)
         bpf_hdr header{};
         header.bh_hdrlen = static_cast<u_short>(BPF_WORDALIGN(sizeof(bpf_hdr)));
         header.bh_caplen = static_cast<bpf_u_int32>(frame.size());

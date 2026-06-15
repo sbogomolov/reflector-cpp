@@ -39,10 +39,22 @@ TEST(InterfaceAddressTest, ResolvesLoopbackIpv4) {
     EXPECT_EQ(addresses.mac, MacAddress{});  // loopback has no link-layer address
 }
 
-#if defined(__APPLE__)
+#if defined(__linux__)
 
-// macOS lo0 carries a link-local fe80::1, which the resolver prefers; verify the BSD-embedded
-// scope id (bytes 2-3) is cleared so the source is the canonical fe80::1.
+// Linux lo has only ::1 (no link-local); verify we resolve that loopback address — the lowest
+// Ipv6Rank fallback — rather than nothing, and don't fabricate an fe80::.
+TEST(InterfaceAddressTest, ResolvesLoopbackIpv6) {
+    const auto addresses = ResolveLoopback();
+    if (!addresses.v6) {
+        GTEST_SKIP() << "loopback has no IPv6 on this host";
+    }
+    EXPECT_EQ(*addresses.v6, IpAddress::LoopbackV6());
+}
+
+#else
+
+// macOS and FreeBSD lo0 carry a link-local fe80::1, which the resolver prefers; verify the
+// BSD-embedded scope id (bytes 2-3) is cleared so the source is the canonical fe80::1.
 TEST(InterfaceAddressTest, ResolvesLoopbackLinkLocalIpv6) {
     const auto addresses = ResolveLoopback();
     if (!addresses.v6) {
@@ -53,18 +65,6 @@ TEST(InterfaceAddressTest, ResolvesLoopbackLinkLocalIpv6) {
     EXPECT_EQ(std::to_integer<uint8_t>(bytes[1]) & 0xc0, 0x80);
     EXPECT_EQ(std::to_integer<uint8_t>(bytes[2]), 0);  // embedded scope id cleared
     EXPECT_EQ(std::to_integer<uint8_t>(bytes[3]), 0);
-}
-
-#elif defined(__linux__)
-
-// Linux lo has only ::1 (no link-local); verify we resolve that loopback address — the lowest
-// Ipv6Rank fallback — rather than nothing, and don't fabricate an fe80::.
-TEST(InterfaceAddressTest, ResolvesLoopbackIpv6) {
-    const auto addresses = ResolveLoopback();
-    if (!addresses.v6) {
-        GTEST_SKIP() << "loopback has no IPv6 on this host";
-    }
-    EXPECT_EQ(*addresses.v6, IpAddress::LoopbackV6());
 }
 
 #endif
