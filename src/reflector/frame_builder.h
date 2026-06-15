@@ -3,6 +3,7 @@
 #include "ip_address.h"
 #include "ip_endpoint.h"
 #include "mac_address.h"
+#include "platform.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -32,7 +33,7 @@ namespace reflector {
     uint8_t ttl,
     std::span<std::byte> out) noexcept;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 // Like BuildUdpFrame but with BSD DLT_NULL framing (a 4-byte host-order address family in place
 // of the Ethernet header, and no L2 MACs), as used on the macOS loopback interface (lo0). Linux
 // frames loopback as Ethernet, so this exists only on macOS.

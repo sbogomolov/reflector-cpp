@@ -1,6 +1,7 @@
 #include "default_packet_dispatcher.h"
 
 #include "logger.h"
+#include "platform.h"
 #include "util/delegate.h"
 
 #include <algorithm>
@@ -95,14 +96,14 @@ void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
     // for the rest of the drain, then loses its capture source in the sweep.
     dispatching_ = true;
 
-#if defined(__APPLE__)
-    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
-#elif defined(__linux__)
+#if defined(__linux__)
     for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
+#else
+    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
 #endif
         const auto packet = socket.Receive();
         if (!packet) {
-#if defined(__APPLE__)
+#if !defined(__linux__)
             if (socket.HasBufferedData()) {
                 // Drain all userland-buffered frames. kqueue/epoll only fire on kernel-side
                 // activity, so if we leave frames buffered they'll stall. Only macOS BPF

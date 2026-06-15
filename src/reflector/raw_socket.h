@@ -4,6 +4,7 @@
 #include "link_socket.h"
 #include "logger.h"
 #include "packet.h"
+#include "platform.h"
 #include "util/address_family_pair.h"
 #include "util/no_move.h"
 #include "util/unique_fd.h"
@@ -85,7 +86,7 @@ public:
     // on the next read event.
     [[nodiscard]] std::optional<Packet> Receive() noexcept override;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // True if there are unparsed bytes in the socket's userland buffer. macOS BPF batches
     // multiple frames per read() into our buffer; if the drain stops before the batch is
     // consumed, kqueue won't fire again (the kernel side is empty) and the remaining frames
@@ -116,7 +117,7 @@ private:
     [[nodiscard]] bool SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // Discards any unparsed bytes in the userland receive buffer. Called only by Close(), so a socket
     // that closes mid-batch never leaves a stale partial batch behind. The dispatcher fully drains each
     // read event (it loops while HasBufferedData), so there is no abandoned-drain path that needs this.
@@ -141,7 +142,7 @@ private:
     //   walked through the batch.
     std::vector<std::byte> receive_buffer_;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     size_t receive_buffer_filled_ = 0;
     size_t receive_buffer_offset_ = 0;
 

@@ -4,6 +4,7 @@
 #include "ip_endpoint.h"
 #include "mac_address.h"
 #include "packet.h"
+#include "platform.h"
 #include "util/registration.h"
 
 #include <cstddef>
@@ -37,7 +38,7 @@ public:
     // until the next Receive() on the same socket.
     [[nodiscard]] virtual std::optional<Packet> Receive() noexcept = 0;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // macOS BPF batches several frames into one read(); this lets the dispatcher keep draining the
     // userland buffer past the per-event cap while frames remain. Not on Linux, where AF_PACKET
     // delivers one frame per recv with no userland buffering.

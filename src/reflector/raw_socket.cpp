@@ -4,6 +4,7 @@
 #include "frame_builder.h"
 #include "ip_address.h"
 #include "mac_address.h"
+#include "platform.h"
 #include "protocol_constants.h"
 #include "util/byte_order.h"
 #include "util/fd_util.h"
@@ -28,10 +29,6 @@
 #include <unistd.h>
 #include <utility>
 
-#if !defined(__APPLE__) && !defined(__linux__)
-#error "RawSocket only supports macOS and Linux"
-#endif
-
 #if defined(__linux__)
 #include <linux/filter.h>
 #include <linux/if_ether.h>
@@ -43,7 +40,7 @@
 #ifndef PACKET_IGNORE_OUTGOING
 #define PACKET_IGNORE_OUTGOING 23
 #endif
-#elif defined(__APPLE__)
+#else
 #include <net/bpf.h>
 #include <net/ethernet.h>
 #include <sys/uio.h>
@@ -109,7 +106,7 @@ constexpr std::array<BpfInsn, 3> DROP_OUTGOING_PROLOGUE{{
 }};
 #endif
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 // DLT_NULL framing: 4-byte address family in host byte order (BSD loopback driver
 // convention), then the IP packet. The data layout is host-endian, but the classic
 // BPF VM's BPF_LD|BPF_W|BPF_ABS always interprets the loaded 4 bytes as big-endian
@@ -158,7 +155,7 @@ constexpr size_t DEFAULT_RECEIVE_BUFFER_SIZE = 4 * 1024;
 // caller ever exceeds it.
 constexpr size_t SEND_BUFFER_SIZE = 4 * 1024;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 // DLT_NULL framing: 4 bytes of address family in host byte order, then the IP packet.
 constexpr size_t LOOPBACK_FAMILY_SIZE = 4;
 #endif
@@ -229,7 +226,7 @@ RawSocket::RawSocket(const Interface& interface)
 
     logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_.Get());
 
-#elif defined(__APPLE__)
+#else
     for (int n = 0; n < 256 && !fd_; ++n) {
         const auto path = std::format("/dev/bpf{}", n);
         fd_.Reset(open(path.c_str(), O_RDWR));
@@ -382,7 +379,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
 #if defined(__linux__)
     const size_t length = BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst,
         payload, ttl, frame);
-#elif defined(__APPLE__)
+#else
     const size_t length = link_type_ == LinkType::Loopback
         ? BuildLoopbackUdpFrame(IpEndpoint{*source, src_port}, dst, payload, ttl, frame)
         : BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
@@ -401,7 +398,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     addr.sll_ifindex = static_cast<int>(interface_.Index());
     const auto sent = sendto(fd_.Get(), frame.data(), length, 0,
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
-#elif defined(__APPLE__)
+#else
     const auto sent = write(fd_.Get(), frame.data(), length);
 #endif
     if (sent < 0 || static_cast<size_t>(sent) != length) {
@@ -496,7 +493,7 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
     return true;
 }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 bool RawSocket::HasBufferedData() const noexcept {
     return receive_buffer_offset_ < receive_buffer_filled_;
 }
@@ -518,7 +515,7 @@ void RawSocket::Close() noexcept {
     join_fds_.V6().Reset();
     group_memberships_.V4().clear();
     group_memberships_.V6().clear();
-#if defined(__APPLE__)
+#if !defined(__linux__)
     ClearBuffer();
 #endif
 }
@@ -549,7 +546,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     }
     return ParseFrame({receive_buffer_.data(), static_cast<size_t>(bytes)});
 
-#elif defined(__APPLE__)
+#else
     if (receive_buffer_offset_ >= receive_buffer_filled_) {
         ssize_t bytes;
         do {
@@ -606,7 +603,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
     MacAddress dest_mac{};
     std::span<const std::byte> l3;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
     if (link_type_ == LinkType::Loopback) {
         // DLT_NULL: 4-byte address family in host byte order, then the IP packet. No L2,
         // so MACs stay default-constructed (all zeros) — same shape we see on Linux's lo.

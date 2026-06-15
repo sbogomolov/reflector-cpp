@@ -2,6 +2,7 @@
 
 #include "error.h"
 #include "logger.h"
+#include "platform.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -10,21 +11,17 @@
 #include <vector>
 #include <unistd.h>
 
-#if !defined(__APPLE__) && !defined(__linux__)
-#error "EventLoopDispatcher only supports macOS and Linux"
-#endif
-
-#if defined(__APPLE__)
-#include <sys/event.h>
-#elif defined(__linux__)
+#if defined(__linux__)
 #include <sys/epoll.h>
+#else
+#include <sys/event.h>
 #endif
 
 namespace {
 
 using namespace reflector;
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 timespec ToTimespec(std::chrono::milliseconds timeout) noexcept {
     return timespec{
         .tv_sec = static_cast<time_t>(timeout.count() / 1000),
@@ -43,10 +40,10 @@ Logger& GetLogger() noexcept {
 namespace reflector {
 
 EventLoopDispatcher::EventLoopDispatcher() {
-#if defined(__APPLE__)
-    event_fd_.Reset(kqueue());
-#elif defined(__linux__)
+#if defined(__linux__)
     event_fd_.Reset(epoll_create1(0));
+#else
+    event_fd_.Reset(kqueue());
 #endif
 
     if (!event_fd_) {
@@ -153,7 +150,23 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
         return false;
     }
 
-#if defined(__APPLE__)
+#if defined(__linux__)
+    epoll_event event{};
+    const auto event_count = epoll_wait(event_fd_.Get(), &event, 1, static_cast<int>(timeout.count()));
+    if (event_count < 0) {
+        if (errno == EINTR) {
+            // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
+            return false;
+        }
+        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
+        return false;
+    }
+    if (event_count == 0) {
+        return false;
+    }
+    const auto fd = event.data.fd;
+    const auto events = event.events;
+#else
     auto timeout_spec = ToTimespec(timeout);
     struct kevent event{};
     const auto event_count = kevent(event_fd_.Get(), nullptr, 0, &event, 1, &timeout_spec);
@@ -173,22 +186,6 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
         GetLogger().Error("Dispatcher read event failed for fd {}: {}", fd, event.data);
         return false;
     }
-#elif defined(__linux__)
-    epoll_event event{};
-    const auto event_count = epoll_wait(event_fd_.Get(), &event, 1, static_cast<int>(timeout.count()));
-    if (event_count < 0) {
-        if (errno == EINTR) {
-            // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
-            return false;
-        }
-        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
-        return false;
-    }
-    if (event_count == 0) {
-        return false;
-    }
-    const auto fd = event.data.fd;
-    const auto events = event.events;
 #endif
 
     const auto it = callbacks_.find(fd);
@@ -197,10 +194,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
         return false;
     }
 
-#if defined(__APPLE__)
-    const bool readable = event.filter == EVFILT_READ;
-    const bool writable = event.filter == EVFILT_WRITE;
-#elif defined(__linux__)
+#if defined(__linux__)
     // EPOLLERR/EPOLLHUP can arrive without EPOLLIN/EPOLLOUT (a failed connect surfaces as EPOLLERR,
     // often with no EPOLLOUT; a peer hangup as EPOLLHUP). Fold the error into READABLE only: read is
     // always armed, so the read handler is woken to recv() the EOF/error and tear down — the uniform
@@ -209,6 +203,9 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     const bool err = (events & (EPOLLERR | EPOLLHUP)) != 0;
     const bool readable = (events & EPOLLIN) != 0 || err;
     const bool writable = (events & EPOLLOUT) != 0;
+#else
+    const bool readable = event.filter == EVFILT_READ;
+    const bool writable = event.filter == EVFILT_WRITE;
 #endif
 
     // Read is always armed and always has a valid handler (Register requires one), so readability
@@ -335,7 +332,19 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
         return false;
     }
 
-#if defined(__APPLE__)
+#if defined(__linux__)
+    // epoll has no per-direction toggle — rewrite the whole mask (read always on). MOD an already-
+    // watched fd; on its first call (from Register) it is not in the set yet, so MOD returns ENOENT and
+    // we ADD.
+    epoll_event event{};
+    event.events = EPOLLIN | (enable_write ? EPOLLOUT : 0u);
+    event.data.fd = fd;
+    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_MOD, fd, &event) != 0
+        && (errno != ENOENT || epoll_ctl(event_fd_.Get(), EPOLL_CTL_ADD, fd, &event) != 0)) {
+        GetLogger().Error("Cannot set events for fd {}: {}", fd, Error::FromErrno());
+        return false;
+    }
+#else
     // Read is always armed; re-EV_ADD'ing an already-present filter is idempotent. The write filter is
     // EV_ADD'd only when arming — so EVFILT_WRITE is never EV_ADD'd on a BPF capture device (which
     // rejects it with EINVAL); disarming uses bare EV_DISABLE, tolerating ENOENT when it was never added.
@@ -351,18 +360,6 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
         GetLogger().Error("Cannot set write interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
-#elif defined(__linux__)
-    // epoll has no per-direction toggle — rewrite the whole mask (read always on). MOD an already-
-    // watched fd; on its first call (from Register) it is not in the set yet, so MOD returns ENOENT and
-    // we ADD.
-    epoll_event event{};
-    event.events = EPOLLIN | (enable_write ? EPOLLOUT : 0u);
-    event.data.fd = fd;
-    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_MOD, fd, &event) != 0
-        && (errno != ENOENT || epoll_ctl(event_fd_.Get(), EPOLL_CTL_ADD, fd, &event) != 0)) {
-        GetLogger().Error("Cannot set events for fd {}: {}", fd, Error::FromErrno());
-        return false;
-    }
 #endif
 
     GetLogger().Debug("Set events for fd {}: write {}", fd, enable_write);
@@ -375,7 +372,14 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
         return false;
     }
 
-#if defined(__APPLE__)
+#if defined(__linux__)
+    // ENOENT is benign: the kernel auto-removes a closed fd, so a DEL issued after the owner already
+    // closed it hits ENOENT (matching the kqueue branch below). Any other failure is a real error.
+    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
+        GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
+        return false;
+    }
+#else
     // Delete both filters. A filter can be absent — the write filter if write was never armed, or
     // either one if the fd was already closed (kqueue auto-removes a closed fd's filters) — so an
     // EV_DELETE returning ENOENT is benign; any other failure is a real error.
@@ -389,13 +393,6 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
         }
     }
     if (!ok) {
-        return false;
-    }
-#elif defined(__linux__)
-    // ENOENT is benign: the kernel auto-removes a closed fd, so a DEL issued after the owner already
-    // closed it hits ENOENT (matching the macOS branch above). Any other failure is a real error.
-    if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
-        GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
