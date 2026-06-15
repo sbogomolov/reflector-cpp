@@ -3,6 +3,7 @@
 #include "error.h"
 #include "interface.h"
 #include "logger.h"
+#include "platform.h"
 #include "util/fd_util.h"
 #include "util/narrow_cast.h"
 
@@ -25,13 +26,14 @@ Logger& GetLogger() noexcept {
 }
 
 // Make `fd` non-blocking and SIGPIPE-safe. On Linux SIGPIPE is suppressed per-send via MSG_NOSIGNAL, so
-// only the non-blocking flag is set here; on macOS there is no MSG_NOSIGNAL, so SO_NOSIGPIPE is set once.
+// only the non-blocking flag is set here; on the BSDs the send path passes no such flag, so SO_NOSIGPIPE
+// is set once here instead.
 [[nodiscard]] bool ConfigureFd(int fd) noexcept {
     if (!SetNonBlocking(fd)) {
         GetLogger().Error("Cannot set socket non-blocking: {}", Error::FromErrno());
         return false;
     }
-#if defined(__APPLE__)
+#if !defined(__linux__)
     const int on = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) != 0) {
         GetLogger().Error("Cannot set SO_NOSIGPIPE: {}", Error::FromErrno());
@@ -43,7 +45,9 @@ Logger& GetLogger() noexcept {
 
 // Pin egress to `egress_if` so the connect leaves via that interface even if a host route would
 // otherwise send it elsewhere (SO_BINDTODEVICE on Linux — needs CAP_NET_RAW; IP_BOUND_IF on macOS).
-[[nodiscard]] bool PinEgress(int fd, [[maybe_unused]] int family, const Interface& egress_if) noexcept {
+// FreeBSD has neither, so it relies on the caller's source-address bind (below) to steer egress.
+[[nodiscard]] bool PinEgress([[maybe_unused]] int fd, [[maybe_unused]] int family,
+        const Interface& egress_if) noexcept {
 #if defined(__linux__)
     const auto name = egress_if.Name();
     if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name.data(), narrow_cast<socklen_t>(name.size())) != 0) {
@@ -58,6 +62,13 @@ Logger& GetLogger() noexcept {
         GetLogger().Error("Cannot pin egress to interface index {}: {}", ifindex, Error::FromErrno());
         return false;
     }
+#else
+    // No egress-pin socket option on FreeBSD (no SO_BINDTODEVICE, no IP_BOUND_IF). Egress is steered by
+    // the source-address bind the caller performs before connect() (and, for link-local IPv6, the scope
+    // id in the destination sockaddr). Correct when the peer is on a directly-connected subnet of
+    // egress_if — the route to it then leaves via egress_if anyway; otherwise the routing table decides.
+    GetLogger().Debug("No egress-pin primitive; relying on source-address bind to reach via \"{}\"",
+        egress_if.Name());
 #endif
     return true;
 }
@@ -229,7 +240,7 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
         }
         return std::nullopt;
     }
-#if defined(__APPLE__)
+#if !defined(__linux__)
     // accept() does not inherit non-blocking; set it (+ SO_NOSIGPIPE). accept4 already did on Linux.
     if (!ConfigureFd(client)) {
         ::close(client);
@@ -299,8 +310,8 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
-#if defined(__APPLE__)
-    // A write to a still-connecting socket returns ENOTCONN on macOS (Linux returns EWOULDBLOCK, handled
+#if !defined(__linux__)
+    // A write to a still-connecting socket returns ENOTCONN on the BSDs (Linux returns EWOULDBLOCK, handled
     // above). Only while connecting does it mean "not ready yet": treat it as WouldBlock so the tail buffers
     // and the connect-completion writable edge flushes it, matching Linux. Gated on connecting_ so an
     // ENOTCONN on an established socket stays a real Error; a failed connect is still caught by FinishConnect.
@@ -345,7 +356,7 @@ IoResult TcpSocket::WriteSomeV(std::span<const std::span<const std::byte>> chunk
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
-#if defined(__APPLE__)
+#if !defined(__linux__)
     if (connecting_ && errno == ENOTCONN) {  // still-connecting socket — see WriteSome's note
         return {IoStatus::WouldBlock, 0};
     }

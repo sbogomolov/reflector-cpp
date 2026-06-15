@@ -1,6 +1,7 @@
 #include "reflector/application.h"
 #include "reflector/config/config.h"
 #include "reflector/logger.h"
+#include "reflector/util/narrow_cast.h"
 
 #include <cstdio>
 #include <csignal>
@@ -52,7 +53,9 @@ volatile std::sig_atomic_t g_wakeup_fd = -1;
 
 void SignalHandler(int) {
     g_stop_requested = 1;
-    const int wakeup_fd = g_wakeup_fd;
+    // std::sig_atomic_t is wider than int on some platforms (long on FreeBSD), so narrow explicitly.
+    // narrow_cast is a plain static_cast — async-signal-safe (no runtime check) for use in the handler.
+    const int wakeup_fd = reflector::narrow_cast<int>(g_wakeup_fd);
     if (wakeup_fd >= 0) {
         // write() is async-signal-safe; best-effort, so a full/not-ready pipe (the result we ignore) is
         // fine -- a byte already pending is enough to wake the loop, which then re-checks g_stop_requested.

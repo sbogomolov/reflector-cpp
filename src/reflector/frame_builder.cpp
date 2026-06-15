@@ -2,6 +2,7 @@
 
 #include "checksum.h"
 #include "logger.h"
+#include "platform.h"
 #include "protocol_constants.h"
 #include "util/byte_order.h"
 
@@ -138,7 +139,7 @@ size_t BuildUdpFrame(
     return frame_size;
 }
 
-#if defined(__APPLE__)
+#if !defined(__linux__)
 size_t BuildLoopbackUdpFrame(
     const IpEndpoint& src,
     const IpEndpoint& dst,

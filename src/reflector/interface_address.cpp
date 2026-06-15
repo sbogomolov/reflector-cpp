@@ -2,6 +2,7 @@
 
 #include "error.h"
 #include "logger.h"
+#include "platform.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -21,7 +22,7 @@
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <cerrno>
-#elif defined(__APPLE__)
+#else
 #include <ifaddrs.h>
 #include <net/if_dl.h>
 #include <netinet/in.h>
@@ -256,7 +257,7 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
 
 #pragma GCC diagnostic pop
 
-#elif defined(__APPLE__)
+#else
 
 // The interface's link-layer MAC from a sockaddr_dl, or a default (all-zero) MacAddress if it
 // has none. Reads straight out of the kernel-provided sockaddr rather than copying the whole
@@ -371,7 +372,7 @@ InterfaceAddresses ResolveInterfaceAddresses(unsigned interface_index) noexcept 
     return result;
 }
 
-#elif defined(__APPLE__)
+#else
 
 InterfaceAddresses ResolveInterfaceAddresses(std::string_view interface) noexcept {
     InterfaceAddresses result;

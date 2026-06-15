@@ -1,9 +1,9 @@
 #include "interface.h"
 
 #include "error.h"
+#include "platform.h"
 
 #include <format>
-
 #include <net/if.h>
 
 namespace reflector {
@@ -45,7 +45,7 @@ bool Interface::CanSend(IpAddress::Family family) const noexcept {
 void Interface::Refresh() noexcept {
 #if defined(__linux__)
     addresses_ = ResolveInterfaceAddresses(index_);
-#elif defined(__APPLE__)
+#else
     addresses_ = ResolveInterfaceAddresses(name_);
 #endif
     logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}", index_,

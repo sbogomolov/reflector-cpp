@@ -2,6 +2,7 @@
 
 #include "ip_address.h"
 #include "mac_address.h"
+#include "platform.h"
 
 #include <optional>
 #include <span>
@@ -37,7 +38,7 @@ void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddre
 // the kernel interface index on Linux (netlink), the interface name on macOS (getifaddrs).
 #if defined(__linux__)
 [[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(unsigned interface_index) noexcept;
-#elif defined(__APPLE__)
+#else
 [[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(std::string_view interface) noexcept;
 #endif
 

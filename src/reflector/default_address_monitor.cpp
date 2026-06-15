@@ -2,6 +2,7 @@
 
 #include "error.h"
 #include "logger.h"
+#include "platform.h"
 #include "util/fd_util.h"
 
 #include <algorithm>
@@ -14,14 +15,10 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#if !defined(__APPLE__) && !defined(__linux__)
-#error "AddressMonitor only supports macOS and Linux"
-#endif
-
 #if defined(__linux__)
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#elif defined(__APPLE__)
+#else
 #include <net/if.h>
 #include <net/route.h>
 #endif
@@ -94,7 +91,7 @@ bool DefaultAddressMonitor::Open() noexcept {
         GetLogger().Error("Cannot subscribe to netlink address groups: {}", Error::FromErrno());
         return false;
     }
-#elif defined(__APPLE__)
+#else
     fd_.Reset(socket(PF_ROUTE, SOCK_RAW, 0));
     if (!fd_) {
         GetLogger().Error("Cannot open route socket: {}", Error::FromErrno());
@@ -206,7 +203,7 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> 
 
 #pragma GCC diagnostic pop
 
-#elif defined(__APPLE__)
+#else
 
 void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
         std::vector<unsigned>& changed) const noexcept {
