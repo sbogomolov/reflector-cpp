@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
-project(reflector VERSION 0.5.1 LANGUAGES CXX)
+project(reflector VERSION 0.6.0 LANGUAGES CXX)
 include(CTest)
 
-if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
-    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}. Only Linux and macOS are supported.")
+if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"
+        OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD"))
+    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}. Only Linux, macOS, and FreeBSD are supported.")
 endif()
 
 # Standard library bits used here (std::println, std::expected, std::format) need a recent toolchain.
@@ -16,6 +17,11 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSIO
 endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# This project uses #include, not C++20 modules, so skip module dependency scanning. It's wasted work
+# regardless, and the Clang scan path needs clang-scan-deps, which FreeBSD's base clang doesn't ship
+# (only the llvm package does) — leaving it on makes the FreeBSD build fail with a NOTFOUND scanner.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(_reflector_sanitize_default ON)
@@ -31,16 +37,16 @@ option(REFLECTOR_ENABLE_DOCKER_TESTS "Enable Docker-backed build tests" OFF)
 option(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS "Enable the Docker-backed unit suite under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_VALGRIND_E2E_TESTS "Enable the Docker-backed e2e suite with the reflector under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
-option(REFLECTOR_STATIC "Statically link the reflector binaries (Linux only)" OFF)
+option(REFLECTOR_STATIC "Statically link the reflector binaries (Linux and FreeBSD)" OFF)
 
 # REFLECTOR_STATIC statically links every project target — the production binary (for a FROM-scratch
 # image and portable release binaries) and the test binary (so the suite exercises what ships). Linux
-# only (macOS has no static libSystem); incompatible with the ASan/UBSan runtime, so the sanitized
-# debug and the Valgrind runs stay dynamic. reflector resolves no hostnames (no NSS), so glibc -static
-# is self-contained — no "needs the shared libs at runtime" trap.
+# and FreeBSD only (macOS has no static libSystem); incompatible with the ASan/UBSan runtime, so the
+# sanitized debug and the Valgrind runs stay dynamic. reflector resolves no hostnames (no NSS), so a
+# -static binary is self-contained on both — no "needs the shared libs at runtime" trap.
 if(REFLECTOR_STATIC)
-    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        message(FATAL_ERROR "REFLECTOR_STATIC is Linux-only; macOS has no static libSystem.")
+    if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD"))
+        message(FATAL_ERROR "REFLECTOR_STATIC supports Linux and FreeBSD only; macOS has no static libSystem.")
     endif()
     if(REFLECTOR_SANITIZE)
         message(FATAL_ERROR "REFLECTOR_STATIC is incompatible with REFLECTOR_SANITIZE (ASan/UBSan need the dynamic runtime).")
