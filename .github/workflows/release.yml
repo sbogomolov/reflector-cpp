@@ -139,6 +139,55 @@ jobs:
           path: dist/reflector-${{ github.ref_name }}-${{ matrix.variant }}
           if-no-files-found: error
 
+  # FreeBSD has no native runner and Docker can't run a FreeBSD kernel, so build in a VM (vmactions).
+  # amd64 is KVM-accelerated; arm64 has no KVM on any GitHub-hosted runner, so it builds emulated on the
+  # (measurably faster) amd64 host. Static (REFLECTOR_STATIC) — verified to run across FreeBSD 13/14/15 —
+  # so one binary per arch, no per-major split.
+  binaries-freebsd:
+    name: Binary (freebsd-${{ matrix.arch }})
+    needs: verify-ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            vm_arch: x86_64
+          - arch: arm64
+            vm_arch: aarch64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build the static release binary in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: '14.2'
+          arch: ${{ matrix.vm_arch }}
+          usesh: true
+          prepare: |
+            pkg upgrade -y
+            pkg install -y cmake ninja git
+          run: |
+            cmake -S . -B build -G Ninja \
+              -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTING=OFF -D REFLECTOR_STATIC=ON
+            cmake --build build --target reflector_app
+            file build/reflector
+            file build/reflector | grep -q 'statically linked' \
+              || { echo "::error::reflector is not statically linked"; exit 1; }
+            mkdir -p dist
+            cp build/reflector "dist/reflector-${{ github.ref_name }}-freebsd-${{ matrix.arch }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: reflector-freebsd-${{ matrix.arch }}
+          path: dist/reflector-${{ github.ref_name }}-freebsd-${{ matrix.arch }}
+          if-no-files-found: error
+
   # Each arch builds on its own native runner (no emulation), pushes by digest, and the manifest job
   # stitches the digests into one multi-arch tag.
   image:
@@ -264,7 +313,7 @@ jobs:
 
   release:
     name: GitHub release
-    needs: [binaries, manifest]
+    needs: [binaries, binaries-freebsd, manifest]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
