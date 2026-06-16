@@ -26,11 +26,24 @@ Logger& GetLogger() noexcept {
     return logger;
 }
 
+// Peak resident set size in KiB via getrusage -- cross-platform (no /proc needed): Linux and FreeBSD
+// report ru_maxrss in KiB, macOS in bytes. Same high-water value as /proc VmHWM on Linux, with one path.
+size_t PeakRssKib() noexcept {
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+#if defined(__APPLE__)
+    return narrow_cast<size_t>(usage.ru_maxrss) / 1024;  // bytes -> KiB
+#else
+    return narrow_cast<size_t>(usage.ru_maxrss);         // already KiB
+#endif
+}
+
 #if defined(__linux__)
 
-// A "<key>: <N> kB" value from /proc/self/status, in KiB; nullopt if absent/unreadable. VmRSS is the
-// current resident set, VmHWM its peak (high-water) — the same kernel counters ps/getrusage report,
-// read here from one file so current and peak are consistent.
+// A "<key>: <N> kB" value from /proc/self/status, in KiB; nullopt if absent/unreadable. Used for VmRSS
+// (current resident set); the peak comes from getrusage instead, which is cross-platform.
 std::optional<size_t> StatusValueKib(const char* key) noexcept {
     std::FILE* file = std::fopen("/proc/self/status", "r");
     if (file == nullptr) {
@@ -64,17 +77,25 @@ std::optional<size_t> ReadByteCount(const char* path) noexcept {
     return matched == 1 ? std::optional<size_t>{narrow_cast<size_t>(bytes)} : std::nullopt;
 }
 
-// The container's cgroup v2 memory accounting — the figure RouterOS (and the OOM killer) sees: process
-// RSS plus page cache plus kernel/socket memory. Absent if this isn't cgroup v2 or /sys/fs/cgroup is
-// not mounted in the container.
+// The container's cgroup v2 memory accounting -- the figure RouterOS (and the OOM killer) sees: process
+// RSS plus page cache plus kernel/socket memory. The fields are the mutually-exclusive top-level
+// categories of memory.current; the remainder ("other", computed at log time) is per-cpu charge cache,
+// zswap, and anything else not broken out here. Absent if not cgroup v2 / not mounted in the container.
 struct CgroupMemory {
     bool available = false;
     size_t current = 0;          // bytes
     std::optional<size_t> peak;  // bytes; memory.peak needs kernel >= 5.19
-    size_t anon = 0;             // bytes — heap/stack (~ process anon RSS)
-    size_t file = 0;             // bytes — page cache
-    size_t sock = 0;             // bytes — socket buffers
-    size_t slab = 0;             // bytes — kernel slab (reclaimable + unreclaimable)
+    size_t anon = 0;             // heap/stack
+    size_t file = 0;             // page cache (includes shmem)
+    size_t sock = 0;             // socket buffers
+    size_t slab = 0;             // kernel slab (reclaimable + unreclaimable)
+    size_t pagetables = 0;       // page tables
+    size_t kernel_stack = 0;     // kernel stacks
+    size_t percpu = 0;           // per-cpu allocations
+    size_t vmalloc = 0;          // kernel vmalloc
+    size_t shmem = 0;            // tmpfs/shared memory (a subset of file)
+    size_t sec_pagetables = 0;   // secondary page tables (KVM/IOMMU)
+    size_t zswap = 0;            // compressed swap pool
 };
 
 // Fills `out` with the process's own cgroup v2 directory under /sys/fs/cgroup, derived from
@@ -126,16 +147,31 @@ CgroupMemory ReadCgroupMemory() noexcept {
         char key[64];
         unsigned long long value = 0;
         while (std::fscanf(file, "%63s %llu", key, &value) == 2) {
+            const size_t v = narrow_cast<size_t>(value);
             if (std::strcmp(key, "anon") == 0) {
-                mem.anon = narrow_cast<size_t>(value);
+                mem.anon = v;
             } else if (std::strcmp(key, "file") == 0) {
-                mem.file = narrow_cast<size_t>(value);
+                mem.file = v;
             } else if (std::strcmp(key, "sock") == 0) {
-                mem.sock = narrow_cast<size_t>(value);
+                mem.sock = v;
             } else if (std::strcmp(key, "slab_reclaimable") == 0) {
-                slab_reclaimable = narrow_cast<size_t>(value);
+                slab_reclaimable = v;
             } else if (std::strcmp(key, "slab_unreclaimable") == 0) {
-                slab_unreclaimable = narrow_cast<size_t>(value);
+                slab_unreclaimable = v;
+            } else if (std::strcmp(key, "pagetables") == 0) {
+                mem.pagetables = v;
+            } else if (std::strcmp(key, "kernel_stack") == 0) {
+                mem.kernel_stack = v;
+            } else if (std::strcmp(key, "percpu") == 0) {
+                mem.percpu = v;
+            } else if (std::strcmp(key, "vmalloc") == 0) {
+                mem.vmalloc = v;
+            } else if (std::strcmp(key, "shmem") == 0) {
+                mem.shmem = v;
+            } else if (std::strcmp(key, "sec_pagetables") == 0) {
+                mem.sec_pagetables = v;
+            } else if (std::strcmp(key, "zswap") == 0) {
+                mem.zswap = v;
             }
         }
         mem.slab = slab_reclaimable + slab_unreclaimable;
@@ -152,12 +188,20 @@ void LogCgroupMemory() {
     }
     const auto kib = [](size_t bytes) { return bytes / 1024; };
     if (cg.peak) {
-        GetLogger().Info("cgroup current={} KiB, peak={} KiB; anon={} KiB, file={} KiB, sock={} KiB, slab={} KiB",
-            kib(cg.current), kib(*cg.peak), kib(cg.anon), kib(cg.file), kib(cg.sock), kib(cg.slab));
+        GetLogger().Info("cgroup current={} KiB (peak {} KiB)", kib(cg.current), kib(*cg.peak));
     } else {
-        GetLogger().Info("cgroup current={} KiB; anon={} KiB, file={} KiB, sock={} KiB, slab={} KiB",
-            kib(cg.current), kib(cg.anon), kib(cg.file), kib(cg.sock), kib(cg.slab));
+        GetLogger().Info("cgroup current={} KiB", kib(cg.current));
     }
+    // The remainder of current after the named categories (shmem excluded -- it is part of file). With
+    // every additive category now broken out, `other` is essentially the per-cpu charge cache + rounding.
+    const size_t known = cg.anon + cg.file + cg.sock + cg.slab + cg.pagetables + cg.sec_pagetables
+        + cg.kernel_stack + cg.percpu + cg.vmalloc + cg.zswap;
+    const size_t other = cg.current > known ? cg.current - known : 0;
+    GetLogger().Info(
+        "cgroup breakdown (KiB): anon={} file={} sock={} slab={} pagetables={} sec_pagetables={} "
+        "kernel_stack={} percpu={} vmalloc={} shmem={} zswap={} other={}",
+        kib(cg.anon), kib(cg.file), kib(cg.sock), kib(cg.slab), kib(cg.pagetables), kib(cg.sec_pagetables),
+        kib(cg.kernel_stack), kib(cg.percpu), kib(cg.vmalloc), kib(cg.shmem), kib(cg.zswap), kib(other));
 }
 
 #endif  // __linux__
@@ -165,9 +209,9 @@ void LogCgroupMemory() {
 } // namespace
 
 void LogMemoryReport() {
+    const size_t peak = PeakRssKib();  // getrusage -- cross-platform high-water
 #if defined(__linux__)
     const size_t rss = StatusValueKib("VmRSS").value_or(0);
-    const size_t peak = StatusValueKib("VmHWM").value_or(0);
 #if defined(REFLECTOR_HAVE_MALLINFO2)
     const auto info = mallinfo2();
     GetLogger().Info(
@@ -178,14 +222,7 @@ void LogMemoryReport() {
 #endif
     LogCgroupMemory();
 #else
-    // Non-Linux (macOS/FreeBSD): no /proc or cgroup; report peak RSS via getrusage.
-    rusage usage{};
-    const size_t peak = getrusage(RUSAGE_SELF, &usage) != 0 ? 0
-#if defined(__APPLE__)
-        : static_cast<size_t>(usage.ru_maxrss) / 1024;  // bytes -> KiB
-#else
-        : static_cast<size_t>(usage.ru_maxrss);         // already KiB
-#endif
+    // Non-Linux (macOS/FreeBSD): no /proc or cgroup; getrusage still gives the peak RSS.
     GetLogger().Info("peak={} KiB (detailed RSS/heap/cgroup stats are glibc/Linux-only)", peak);
 #endif
 }
