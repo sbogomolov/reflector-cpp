@@ -21,9 +21,9 @@ MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
     LinkSocket& target_socket, const MdnsConfig& config)
         : DynamicFamilyReflector{LoggerName(config), source_socket.GetInterface(),
               target_socket.GetInterface(), FamilyCapability::PolicyOf(config)}
-        , source_socket_{source_socket}
-        , target_socket_{target_socket}
-        , packet_dispatcher_{packet_dispatcher}
+        , source_socket_{&source_socket}
+        , target_socket_{&target_socket}
+        , packet_dispatcher_{&packet_dispatcher}
         , config_mac_{config.mac} {
     if (!ValidateConfig(config)) {
         return;
@@ -71,15 +71,15 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
     // Program gate 2 so each interface actually receives the group's multicast. A failed join or
     // registration drops every token taken here when it leaves scope (auto-leave / auto-unregister),
     // so nothing is half-set-up; the family's setup is only populated on full success.
-    auto source_membership = source_socket_.JoinMulticastGroup(group);
-    auto target_membership = target_socket_.JoinMulticastGroup(group);
+    auto source_membership = source_socket_->JoinMulticastGroup(group);
+    auto target_membership = target_socket_->JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
         logger_.Error("Cannot reflect mdns {}: cannot join the group on both interfaces", group);
         return false;
     }
 
     // source -> target: relay queries, unfiltered (any client on source may ask).
-    auto source_registration = packet_dispatcher_.Register(source_socket_,
+    auto source_registration = packet_dispatcher_->Register(*source_socket_,
         PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT},
         CreateDelegate<&MdnsReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
@@ -88,7 +88,7 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
     }
 
     // target -> source: relay responses, optionally only from the configured device's MAC.
-    auto target_registration = packet_dispatcher_.Register(target_socket_,
+    auto target_registration = packet_dispatcher_->Register(*target_socket_,
         PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT, .source_mac = config_mac_},
         CreateDelegate<&MdnsReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
@@ -106,14 +106,14 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
 
 void MdnsReflector::OnSourcePacket(const Packet& packet) noexcept {
     if (ShouldRelay(packet, MdnsMessageKind::Query)) {
-        Relay(target_socket_, packet);
+        Relay(*target_socket_, packet);
     }
 }
 
 void MdnsReflector::OnTargetPacket(const Packet& packet) noexcept {
     // The source-MAC filter is applied by the dispatcher, not here.
     if (ShouldRelay(packet, MdnsMessageKind::Response)) {
-        Relay(source_socket_, packet);
+        Relay(*source_socket_, packet);
     }
 }
 

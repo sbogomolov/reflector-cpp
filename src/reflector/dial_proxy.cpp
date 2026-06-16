@@ -18,9 +18,9 @@ namespace reflector {
 DialProxy::DialProxy(Dispatcher& dispatcher, const Interface& source_if, const Interface& target_if,
     std::string logger_name)
         : logger_{std::move(logger_name)}
-        , dispatcher_{dispatcher}
-        , source_if_{source_if}
-        , target_if_{target_if}
+        , dispatcher_{&dispatcher}
+        , source_if_{&source_if}
+        , target_if_{&target_if}
         , eviction_timer_{dispatcher} {}
 
 std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& device) {
@@ -28,18 +28,18 @@ std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& d
 }
 
 void DialProxy::OnInterfaceChanged() noexcept {
-    const auto current = source_if_.SourceAddress(IpAddress::Family::V4);
+    const auto current = source_if_->SourceAddress(IpAddress::Family::V4);
 
     // A listener is stale when its bind address no longer matches source_if's current V4 source — the
     // address changed under it, or vanished (current == nullopt makes every listener stale). Drop the
-    // connections pinned to a stale endpoint FIRST: a Connection borrows Endpoint& and its dtor
+    // connections pinned to a stale endpoint FIRST: a Connection borrows an Endpoint* and its dtor
     // decrements that endpoint's active_connections, so erasing the endpoint with a live connection
-    // still pinned would dangle the reference. The predicate is the same on both sweeps, so a dropped
+    // still pinned would dangle the pointer. The predicate is the same on both sweeps, so a dropped
     // connection's endpoint is always among the endpoints dropped below.
     const auto is_stale = [&current](const Endpoint& endpoint) {
         return current != endpoint.listener.LocalEndpoint().addr;
     };
-    std::erase_if(connections_, [&](const auto& entry) { return is_stale(entry.second.endpoint); });
+    std::erase_if(connections_, [&](const auto& entry) { return is_stale(*entry.second.endpoint); });
     const auto dropped = std::erase_if(endpoints_, [&](const auto& entry) { return is_stale(entry.second); });
 
     if (dropped > 0) {
@@ -87,7 +87,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         return std::nullopt;
     }
 
-    auto listener = TcpSocket::Listen(source_if_, IpAddress::Family::V4);
+    auto listener = TcpSocket::Listen(*source_if_, IpAddress::Family::V4);
     if (!listener) {
         logger_.Error("Cannot proxy {}: failed to open a listener", device);  // Listen logged the cause
         return std::nullopt;
@@ -100,7 +100,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
     const auto [it, inserted] = endpoints_.try_emplace(device, device, role, std::move(*listener), now);
     auto& endpoint = it->second;
 
-    auto registration = dispatcher_.Register(listener_fd, CreateDelegate<&DialProxy::OnAccept>(this));
+    auto registration = dispatcher_->Register(listener_fd, CreateDelegate<&DialProxy::OnAccept>(this));
     if (!registration.IsValid()) {
         logger_.Error("Cannot proxy {}: failed to register the listener", device);
         endpoints_.erase(it);  // drops the listener (registration was never valid)
@@ -123,8 +123,8 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
 
 DialProxy::Connection::Connection(DialProxy& proxy, Endpoint& owning_endpoint, TcpSocket client_socket,
     TcpSocket upstream_socket, std::chrono::steady_clock::time_point connect_deadline)
-        : owner{proxy}
-        , endpoint{owning_endpoint}
+        : owner{&proxy}
+        , endpoint{&owning_endpoint}
         , client{std::move(client_socket)}
         , upstream{std::move(upstream_socket)}
         // `this` in a ctor init-list is the object's FINAL address — valid because try_emplace constructs the
@@ -134,11 +134,11 @@ DialProxy::Connection::Connection(DialProxy& proxy, Endpoint& owning_endpoint, T
         , c2u{CreateDelegate<&Connection::RewriteHost>(this)}
         , u2c{CreateDelegate<&Connection::RewriteRestAuthority>(this)}
         , deadline{connect_deadline} {
-    ++endpoint.active_connections;  // refcount against the endpoint; the dtor decrements (RAII eviction count)
+    ++endpoint->active_connections;  // refcount against the endpoint; the dtor decrements (RAII eviction count)
 }
 
 DialProxy::Connection::~Connection() noexcept {
-    --endpoint.active_connections;
+    --endpoint->active_connections;
 }
 
 void DialProxy::Connection::Abort() noexcept {
@@ -150,9 +150,9 @@ void DialProxy::Connection::Abort() noexcept {
 }
 
 void DialProxy::Connection::Sync(TcpSocket& sock) noexcept {
-    if (!owner.dispatcher_.SetWriteInterest(sock.Fd(), sock.WantsWrite())) {
-        owner.logger_.Error("Cannot set write interest for fd {} (device {}); aborting connection",
-            sock.Fd(), endpoint.device);
+    if (!owner->dispatcher_->SetWriteInterest(sock.Fd(), sock.WantsWrite())) {
+        owner->logger_.Error("Cannot set write interest for fd {} (device {}); aborting connection",
+            sock.Fd(), endpoint->device);
         Abort();
     }
 }
@@ -262,7 +262,7 @@ std::optional<IpEndpoint> DialProxy::Connection::RewriteRestAuthority(const IpEn
                               // re-enter EnsureRestListener (Listen+Register) to mint a listener the dropped
                               // message will never deliver.
     }
-    const auto authority = owner.EnsureRestListener(found);
+    const auto authority = owner->EnsureRestListener(found);
     if (!authority) {
         // Close-don't-forward: the device's authority can't be made routable, so drop the connection now.
         // Safe from inside Feed — Abort only drops the dispatcher Registrations (PollOnce copied the firing
@@ -298,7 +298,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 
-    auto upstream = TcpSocket::Connect(ep->device, &target_if_);
+    auto upstream = TcpSocket::Connect(ep->device, target_if_);
     if (!upstream) {
         logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;
@@ -316,11 +316,11 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     // Register both fds into LOCAL Registrations first; only on a clean pair do they move into the
     // Connection. The client is established at accept (WantsWrite() false); the upstream is connecting
     // (WantsWrite() true), so its writable edge is armed to learn of connect-completion.
-    auto client_reg = dispatcher_.Register(client_fd, Dispatcher::FdCallbacks{
+    auto client_reg = dispatcher_->Register(client_fd, Dispatcher::FdCallbacks{
         .read = CreateDelegate<&Connection::OnClientReadable>(&conn),
         .write = CreateDelegate<&Connection::OnClientWritable>(&conn),
         .write_armed = conn.client.WantsWrite()});
-    auto upstream_reg = dispatcher_.Register(upstream_fd, Dispatcher::FdCallbacks{
+    auto upstream_reg = dispatcher_->Register(upstream_fd, Dispatcher::FdCallbacks{
         .read = CreateDelegate<&Connection::OnUpstreamReadable>(&conn),
         .write = CreateDelegate<&Connection::OnUpstreamWritable>(&conn),
         .write_armed = conn.upstream.WantsWrite()});

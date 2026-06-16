@@ -72,9 +72,9 @@ HttpFraming::EndpointRewrite AsRewrite(Rewrite& rewrite) {
 // forwarding header then body — until Feed consumes nothing more, retaining the unconsumed tail. `out`
 // accumulates everything forwarded; `ok` goes false if Feed reports a malformed message.
 struct Driver {
-    explicit Driver(HttpFraming& f) : framing{f} {}
+    explicit Driver(HttpFraming& f) : framing{&f} {}
 
-    HttpFraming& framing;
+    HttpFraming* framing;
     std::string buffer;
     std::string out;
     bool ok = true;
@@ -86,7 +86,7 @@ struct Driver {
         buffer += chunk;
         std::string_view in{buffer};
         while (!in.empty()) {
-            const auto r = framing.Feed(in);
+            const auto r = framing->Feed(in);
             if (!r) {
                 ok = false;
                 return;

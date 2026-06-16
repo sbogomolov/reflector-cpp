@@ -26,9 +26,9 @@ SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
     LinkSocket& target_socket, const SsdpConfig& config)
         : DynamicFamilyReflector{LoggerName(config), source_socket.GetInterface(),
               target_socket.GetInterface(), FamilyCapability::PolicyOf(config)}
-        , source_socket_{source_socket}
-        , target_socket_{target_socket}
-        , packet_dispatcher_{packet_dispatcher}
+        , source_socket_{&source_socket}
+        , target_socket_{&target_socket}
+        , packet_dispatcher_{&packet_dispatcher}
         , config_mac_{config.mac}
         , eviction_timer_{packet_dispatcher.UnderlyingDispatcher()} {
     if (!ValidateConfig(config)) {
@@ -69,8 +69,8 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
     // is reflectable here, so the proxy always has a source_if V4 address to bind its listeners on. The
     // device speaks DIAL on target_if and the client reaches it on source_if (LOCATION rewrite direction).
     if (config.dial) {
-        dial_proxy_.emplace(packet_dispatcher_.UnderlyingDispatcher(), source_socket_.GetInterface(),
-            target_socket_.GetInterface(),
+        dial_proxy_.emplace(packet_dispatcher_->UnderlyingDispatcher(), source_socket_->GetInterface(),
+            target_socket_->GetInterface(),
             std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
     }
 
@@ -107,15 +107,15 @@ bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
     // Program gate 2 so each interface actually receives the group's multicast. A failed join or
     // registration drops every token taken here when it leaves scope; setup is populated only on
     // full success.
-    auto source_membership = source_socket_.JoinMulticastGroup(group);
-    auto target_membership = target_socket_.JoinMulticastGroup(group);
+    auto source_membership = source_socket_->JoinMulticastGroup(group);
+    auto target_membership = target_socket_->JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
         logger_.Error("Cannot reflect ssdp {}: cannot join the group on both interfaces", group);
         return false;
     }
 
     // source -> target: reflect searches, unfiltered (any client on source may search).
-    auto source_registration = packet_dispatcher_.Register(source_socket_,
+    auto source_registration = packet_dispatcher_->Register(*source_socket_,
         PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT},
         CreateDelegate<&SsdpReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
@@ -124,7 +124,7 @@ bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
     }
 
     // target -> source: reflect advertisements, optionally only from the configured device's MAC.
-    auto target_registration = packet_dispatcher_.Register(target_socket_,
+    auto target_registration = packet_dispatcher_->Register(*target_socket_,
         PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT, .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
@@ -170,7 +170,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 
     const uint16_t port = new_session ? new_session->reservation.Port()
                                                   : existing_session->reservation.Port();
-    if (!target_socket_.SendUdpMulticastDatagram(packet.header.dest, port,
+    if (!target_socket_->SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
         return;  // a new session's reservation + capture RAII-drop here
@@ -200,7 +200,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
             packet.header.source, sessions_.size());
         return std::nullopt;
     }
-    const auto& target_interface = target_socket_.GetInterface();
+    const auto& target_interface = target_socket_->GetInterface();
     const auto our_address = target_interface.SourceAddress(family);
     if (!our_address) {
         logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
@@ -212,7 +212,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         return std::nullopt;  // Create logged the cause
     }
     // Register the 200-OK capture before the reflect, so a fast responder's reply can't arrive first.
-    auto capture = packet_dispatcher_.Register(target_socket_,
+    auto capture = packet_dispatcher_->Register(*target_socket_,
         PacketFilter{.dest_ip = our_address, .dest_port = reservation->Port(), .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnUnicastResponse>(this));
     if (!capture.IsValid()) {
@@ -241,7 +241,7 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
     const auto payload = rewritten
         ? std::as_bytes(std::span<const char>{*rewritten})
         : packet.payload;
-    if (!source_socket_.SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
+    if (!source_socket_->SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
@@ -270,7 +270,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
     const auto payload = rewritten
         ? std::as_bytes(std::span<const char>{*rewritten})
         : packet.payload;
-    if (!source_socket_.SendUdpDatagram(session.searcher_mac, session.searcher,
+    if (!source_socket_->SendUdpDatagram(session.searcher_mac, session.searcher,
             packet.header.source.port, payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect SSDP response to searcher {}", session.searcher);
         return;

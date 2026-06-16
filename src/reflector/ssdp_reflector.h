@@ -90,9 +90,9 @@ private:
     // passes it, so expiry is driven without reading the real clock.
     void EvictExpired(std::chrono::steady_clock::time_point now) noexcept;
 
-    LinkSocket& source_socket_;
-    LinkSocket& target_socket_;
-    PacketDispatcher& packet_dispatcher_;  // retained so OnSourcePacket can register response captures
+    LinkSocket* source_socket_;
+    LinkSocket* target_socket_;
+    PacketDispatcher* packet_dispatcher_;  // retained so OnSourcePacket can register response captures
     std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response capture
     std::optional<DialProxy> dial_proxy_;  // the DIAL app proxy, engaged only when config.dial (IPv4-only)
     std::vector<Session> sessions_;

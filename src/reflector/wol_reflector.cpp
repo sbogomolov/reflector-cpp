@@ -21,7 +21,7 @@ std::string LoggerName(const WolConfig& config) {
 WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const WolConfig& config)
         : Reflector{LoggerName(config)}
-        , target_socket_{target_socket}
+        , target_socket_{&target_socket}
         , target_capability_{target_socket.GetInterface(), logger_, FamilyCapability::PolicyOf(config)} {
     if (!ValidateConfig(config)) {
         return;
@@ -39,7 +39,7 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
 }
 
 void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket, const WolConfig& config) {
-    const auto& target_interface = target_socket_.GetInterface();
+    const auto& target_interface = target_socket_->GetInterface();
     if (config.RequiresIPv4() && !target_interface.CanSend(IpAddress::Family::V4)) {
         logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv4",
             config.name, config.target_if);
@@ -156,9 +156,9 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
     const bool v4 = family == IpAddress::Family::V4;
     const auto destination = v4 ? IpAddress::BroadcastV4() : IpAddress::AllNodesLinkLocalV6();
     const bool sent = v4
-        ? target_socket_.SendUdpBroadcastDatagram(
+        ? target_socket_->SendUdpBroadcastDatagram(
               port, packet.header.source.port, packet.payload, packet.header.ttl)
-        : target_socket_.SendUdpMulticastDatagram(
+        : target_socket_->SendUdpMulticastDatagram(
               {destination, port}, packet.header.source.port, packet.payload, packet.header.ttl);
     if (!sent) {
         logger_.Error("Cannot reflect wol packet from {} to {}:{}",

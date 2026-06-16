@@ -50,9 +50,9 @@ private:
     [[nodiscard]] bool ShouldRelay(const Packet& packet, MdnsMessageKind kind) noexcept;
     void Relay(LinkSocket& egress, const Packet& packet) noexcept;
 
-    LinkSocket& source_socket_;
-    LinkSocket& target_socket_;
-    PacketDispatcher& packet_dispatcher_;  // retained for dynamic (re-)registration on address changes
+    LinkSocket* source_socket_;
+    LinkSocket* target_socket_;
+    PacketDispatcher* packet_dispatcher_;  // retained for dynamic (re-)registration on address changes
     std::optional<MacAddress> config_mac_;  // device-scoping filter for the target->source capture
 };
 
