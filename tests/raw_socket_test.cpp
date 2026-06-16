@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <optional>
 #include <poll.h>
@@ -101,7 +102,13 @@ public:
 #endif
         if (!valid_) {
             Destroy();
+            return;
         }
+        // A freshly-created veth/feth pair drops frames until both ends finish coming up: the kernel
+        // accepts an injected frame for transmission, but the device discards it while the carrier is
+        // still settling, with no retransmit. Wait for both ends to report running so a send-once test
+        // doesn't race that warm-up window.
+        WaitUntilRunning();
     }
 
     InterfacePair(const InterfacePair&) = delete;
@@ -117,6 +124,35 @@ private:
     static bool Run(const std::string& command) {
         // POSIX std::system returns the wait status; a command that exits 0 yields 0.
         return std::system((command + " >/dev/null 2>&1").c_str()) == 0;
+    }
+
+    // True once `ifname` is administratively up and the link layer reports it running (carrier up).
+    // getifaddrs is portable across Linux/macOS/FreeBSD and every interface appears in it (the flags
+    // are the same across an interface's entries), so one pass suffices.
+    static bool LinkRunning(const std::string& ifname) {
+        ifaddrs* addrs = nullptr;
+        if (::getifaddrs(&addrs) != 0) {
+            return false;
+        }
+        bool running = false;
+        for (const ifaddrs* it = addrs; it != nullptr; it = it->ifa_next) {
+            if (it->ifa_name != nullptr && ifname == it->ifa_name) {
+                running = (it->ifa_flags & IFF_UP) != 0 && (it->ifa_flags & IFF_RUNNING) != 0;
+                break;
+            }
+        }
+        ::freeifaddrs(addrs);
+        return running;
+    }
+
+    // Best-effort wait until both ends are running (see the constructor). If the budget elapses we
+    // proceed anyway, so a stuck link surfaces as a loud test failure rather than a silent skip.
+    void WaitUntilRunning() const {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+        while (!(LinkRunning(inject_) && LinkRunning(receive_))
+                && std::chrono::steady_clock::now() < deadline) {
+            ::poll(nullptr, 0, POLL_SLICE_MS);
+        }
     }
 
 #if !defined(__linux__)
