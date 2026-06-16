@@ -15,8 +15,41 @@ permissions:
   contents: read
 
 jobs:
+  # A fast-forward rebase-merge lands the PR's already-tested commit on main verbatim, so the push-to-main
+  # run would otherwise re-test the exact SHA the PR already validated. On push only, this gate checks
+  # whether a ci.yml run for this commit already succeeded via its pull request and, if so, skips the heavy
+  # jobs below -- the gate itself still succeeds, so release.yml's wait for a green ci.yml run on the commit
+  # still holds. Non-fast-forward merges and direct pushes to main have no prior run for the SHA, so the
+  # full suite runs. The gate runs only on push, so pull_request CI is never delayed by it.
+  gate:
+    name: Gate (skip if commit already passed)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Decide whether the heavy jobs should run
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          passed=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "pull_request")] | length' 2>/dev/null || echo 0)
+          if [ "${passed:-0}" -gt 0 ] 2>/dev/null; then
+            echo "Commit ${{ github.sha }} already passed CI via its pull request; skipping the heavy jobs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   unit:
     name: Unit (${{ matrix.variant }} ${{ matrix.build_type }})
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
@@ -135,6 +168,8 @@ jobs:
 
   freebsd:
     name: Unit (freebsd-amd64 ${{ matrix.build_type }})
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
@@ -181,6 +216,8 @@ jobs:
 
   docker-e2e:
     name: Docker e2e
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -205,6 +242,8 @@ jobs:
 
   valgrind-unit:
     name: Valgrind unit
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -249,6 +288,8 @@ jobs:
 
   valgrind-e2e:
     name: Valgrind e2e
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
