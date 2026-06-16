@@ -1,28 +1,53 @@
 # reflector
 
-Reflects link-local service traffic between two network interfaces. Useful when the devices that
-talk to each other live on different L2 segments that don't forward each other's broadcasts or
-multicasts — for example, a router bridging a wired LAN to a Wi-Fi network. Three protocols are
-supported today:
+Reflects link-local service traffic between two network interfaces. Useful when devices that need to
+talk to each other sit on different L2 segments that don't forward each other's broadcasts or
+multicasts — the classic case being a router with a wired LAN on one side and a Wi-Fi or IoT VLAN on
+the other, where (say) a phone on Wi-Fi can't discover or cast to a TV on the LAN.
+
+It reflects three link-local protocols, and layers an optional DIAL proxy on top of SSDP:
 
 - **Wake-on-LAN** — magic packets sent on one interface are re-emitted on another, so a sender can
   wake a host on a different segment.
-- **multicast DNS (mDNS)** — service discovery traffic is relayed between two interfaces, so clients
-  on one segment can discover responders on the other.
-- **SSDP (UPnP/DLNA)** — discovery traffic is relayed between two interfaces, so a caster on one
-  segment can find renderers (TVs, media servers) on the other.
+- **multicast DNS (mDNS)** — service-discovery traffic is relayed between the two interfaces, so
+  clients on one segment can discover responders on the other.
+- **SSDP (UPnP/DLNA)** — discovery traffic is relayed both ways, so a caster on one segment can find
+  renderers (TVs, media servers) on the other.
+- **DIAL proxy** *(optional, builds on SSDP)* — a "cast to TV" device serves its REST API only to its
+  own subnet; the proxy bridges that gap so a client on the other segment can actually launch apps on
+  it. It is not a separate reflector — it augments an SSDP entry, enabled with `dial = true`. See
+  [DIAL](#dial).
 
-By default, each reflector entry requires IPv4 handling and attempts IPv6 on a best-effort basis. If
-IPv4 cannot be initialized for an entry, startup fails; if only IPv6 cannot be initialized, IPv4
-keeps running. The per-protocol re-emit details are described under [Configuration](#configuration).
+Each named entry bridges one `source_if` → `target_if` interface pair and enables any combination of
+these. The same shape serves a single device (pin its `mac`) or a whole network (omit it).
+
+## Contents
+
+- [Platform support](#platform-support)
+- [Build](#build)
+- [Run](#run) — [privileges](#runtime-privileges), [Docker](#run-in-docker), [MikroTik](#on-mikrotik-routeros)
+- [Configuration](#configuration) — [env vars](#environment-variables), [`mac`](#the-mac-field), [`address_family`](#address_family), [per-protocol behavior](#per-protocol-behavior), [DIAL](#dial), [duplicate detection](#duplicate-detection)
+- [Tests](#tests)
+- [Release](#release)
+- [License](#license)
 
 ## Platform support
 
-Linux, macOS, and FreeBSD. The CI workflow runs the unit suite on Ubuntu 24.04 x64, Ubuntu 24.04 arm64, macOS 15, and FreeBSD 14 (amd64, in a QEMU VM), plus cross-compiled 32-bit ARM builds (`linux/arm/v7` and `linux/arm/v5`) whose unit suites run under QEMU; it also runs Docker build and e2e jobs on Ubuntu 24.04.
+reflector runs on **Linux, macOS, and FreeBSD**.
 
-The published multi-arch Docker image targets `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`. The 32-bit ARM variants let it run on MikroTik routers through the RouterOS *Container* feature: `arm/v7` for older ARMv7 devices (e.g. RB3011, RB4011, hAP ac2/ac3, CRS3xx), and `arm/v5` for the newer low-end ARMv5 boxes built on the EN7562CT SoC (hEX refresh, hEX S refresh, hAP ax S).
+**Docker** — a multi-arch image is published to `ghcr.io/sbogomolov/reflector` for `linux/amd64`,
+`linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`. The 32-bit ARM variants let it run directly on
+MikroTik routers through the RouterOS *Container* feature: `arm/v7` for older ARMv7 devices (e.g.
+RB3011, RB4011, hAP ac2/ac3, CRS3xx), and `arm/v5` for the low-end ARMv5 boxes built on the EN7562CT
+SoC (hEX refresh, hEX S refresh, hAP ax S).
 
-FreeBSD isn't a Docker target (Docker shares the host's Linux kernel), so each release additionally ships a standalone **static** FreeBSD binary for `amd64` and `arm64`. Built on FreeBSD 14, they are statically linked and run across FreeBSD 13, 14, and 15 (verified in CI).
+**FreeBSD** isn't a Docker target (Docker shares the host's Linux kernel), so each release also ships
+a standalone **static** binary for `amd64` and `arm64`. Built on FreeBSD 14, they run across FreeBSD
+13, 14, and 15 (verified in CI).
+
+CI runs the unit suite on Ubuntu 24.04 (x64 and arm64), macOS 15, and FreeBSD 14 (amd64, in a QEMU
+VM), plus the cross-compiled `linux/arm/v7` and `linux/arm/v5` builds whose unit suites run under
+QEMU; Docker build and e2e jobs run on Ubuntu 24.04.
 
 ## Build
 
@@ -59,21 +84,6 @@ Requires Docker with Buildx.
 ```
 
 The runtime image uses pinned Debian/distroless base image digests. By default, `./docker_build.sh` loads a single-platform image into the local Docker engine and tags it as `reflector:<version>` and `reflector:latest`. With `--push`, it publishes `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; override the destination with `--image`, or override architectures with `--platforms` for unusual deployment targets.
-
-## Release
-
-The project version in `CMakeLists.txt` is the single source of truth: `version.sh` extracts it, and
-`docker_build.sh` (image tag), `release.sh` (git tag), and the GitHub release name all derive from
-it. To cut a release:
-
-- Bump the project version in `CMakeLists.txt` and merge it to `origin/main`.
-- From a clean `main` in sync with `origin/main`, run `./release.sh`.
-
-`./release.sh` automates the rest: it verifies CI is green on the release commit, prints the detected
-version and asks for confirmation, tags `v<version>` and pushes it, creates the GitHub release (with
-generated notes), and publishes the Docker images with `./docker_build.sh --push`. The pushed tag is
-independently re-checked against `CMakeLists.txt` by the `Tag version check` workflow. Requires the
-GitHub CLI (`gh`, authenticated) and Docker.
 
 ## Run
 
@@ -180,7 +190,7 @@ On RouterOS, setting the container's environment variables is usually easier tha
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the three protocols. `log_level` is the only top-level setting:
+`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the protocols. `log_level` is the only top-level setting:
 
 ```toml
 log_level = "info"               # optional; one of debug | info | warning | error (default: info)
@@ -223,7 +233,7 @@ When a file and environment variables are both given they are merged: each contr
 
 ### The `mac` field
 
-`mac` is optional and, when set, names a single device — coherently across all three protocols, because a device's NIC MAC is both the target of its Wake-on-LAN magic packet and the L2 source of its mDNS/SSDP advertisements:
+`mac` is optional and, when set, names a single device — coherently across WoL, mDNS, and SSDP, because a device's NIC MAC is both the target of its Wake-on-LAN magic packet and the L2 source of its mDNS/SSDP advertisements:
 
 - **WoL** re-emits only magic packets whose payload targets `mac`.
 - **mDNS / SSDP** relay, in the target→source direction, only frames whose L2 source MAC is `mac` (exposing just that device); the source→target direction is never MAC-filtered. For SSDP the same filter scopes the proxied unicast `200 OK` replies — only `mac`'s responses are carried back to a searcher.
@@ -232,7 +242,9 @@ Omit `mac` for a network-level entry: WoL proxies every valid magic packet, and 
 
 ### `address_family`
 
-`"default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort; `"dual"` requires both; `"ipv4"` / `"ipv6"` use only one. It applies to every protocol the entry enables. mDNS and SSDP are bidirectional, so a handled family must have a source address on **both** interfaces (the target re-emits relayed queries/searches, the source re-emits relayed responses/advertisements). This condition is re-checked continuously at runtime (see [Reacting to address changes](#reacting-to-address-changes) below): a family is torn down if either interface loses its address and brought back up once both can send it again.
+`"default"` attempts both IPv4 and IPv6, requires IPv4, and treats IPv6 as best-effort; `"dual"` requires both; `"ipv4"` / `"ipv6"` use only one. It applies to every protocol the entry enables. A **required** family that can't be initialized for an entry fails startup; a best-effort one that can't (IPv6 under `"default"`) is skipped and the entry keeps running on the family it has.
+
+mDNS and SSDP are bidirectional, so a handled family must have a source address on **both** interfaces (the target re-emits relayed queries/searches, the source re-emits relayed responses/advertisements). This condition is re-checked continuously at runtime (see [Reacting to address changes](#reacting-to-address-changes) below): a family is torn down if either interface loses its address and brought back up once both can send it again.
 
 ### Reacting to address changes
 
@@ -328,6 +340,21 @@ ctest --test-dir build -L docker --output-on-failure
 ```
 
 `REFLECTOR_ENABLE_DOCKER_TESTS` adds a `docker`-labeled test that runs `docker_test.sh` (building the Debug or Release test image to match the build and running its unit suite in a container with `CAP_NET_ADMIN`). `REFLECTOR_ENABLE_E2E_TESTS` adds the e2e runner. `REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS` adds `Valgrind.Unit`, which runs the unit binary under Valgrind memcheck (a Debug, no-sanitizer build, since Valgrind and ASan are mutually exclusive); `REFLECTOR_ENABLE_VALGRIND_E2E_TESTS` adds `Valgrind.E2E`, which runs the e2e suite with the reflector under memcheck (the production Release binary built with `-ggdb3` for readable traces). All are labeled `docker`; the e2e tests are also labeled `e2e` and the valgrind tests `valgrind`, so `-L e2e` or `-L valgrind` selects just that coverage.
+
+## Release
+
+The project version in `CMakeLists.txt` is the single source of truth: `version.sh` extracts it, and
+`docker_build.sh` (image tag), `release.sh` (git tag), and the GitHub release name all derive from
+it. To cut a release:
+
+- Bump the project version in `CMakeLists.txt` and merge it to `origin/main`.
+- From a clean `main` in sync with `origin/main`, run `./release.sh`.
+
+`./release.sh` automates the rest: it verifies CI is green on the release commit, prints the detected
+version and asks for confirmation, tags `v<version>` and pushes it, creates the GitHub release (with
+generated notes), and publishes the Docker images with `./docker_build.sh --push`. The pushed tag is
+independently re-checked against `CMakeLists.txt` by the `Tag version check` workflow. Requires the
+GitHub CLI (`gh`, authenticated) and Docker.
 
 ## License
 
