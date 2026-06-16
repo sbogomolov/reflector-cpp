@@ -167,8 +167,8 @@ constexpr size_t LOOPBACK_FAMILY_SIZE = 4;
 
 RawSocket::RawSocket(const Interface& interface)
         : logger_{std::format("RawSocket:{}", interface.Name())}
-        , interface_{interface} {
-    if (!interface_.IsValid()) {
+        , interface_{&interface} {
+    if (!interface_->IsValid()) {
         logger_.Error("Cannot open capture socket: interface is invalid");
         return;
     }
@@ -215,7 +215,7 @@ RawSocket::RawSocket(const Interface& interface)
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
     addr.sll_protocol = htons(ETH_P_ALL);
-    addr.sll_ifindex = static_cast<int>(interface_.Index());
+    addr.sll_ifindex = static_cast<int>(interface_->Index());
     if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
         logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         Close();
@@ -242,7 +242,7 @@ RawSocket::RawSocket(const Interface& interface)
 
     ifreq ifr{};
     // ifr is zero-initialized and Interface guarantees Name().size() < IFNAMSIZ.
-    std::memcpy(ifr.ifr_name, interface_.Name().data(), interface_.Name().size());
+    std::memcpy(ifr.ifr_name, interface_->Name().data(), interface_->Name().size());
     if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
         logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
         Close();
@@ -328,7 +328,7 @@ RawSocket::RawSocket(const Interface& interface)
 
 RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept
         : logger_{std::format("RawSocket:{}", interface.Name())}
-        , interface_{interface}
+        , interface_{&interface}
         , fd_{owned_fd} {
     // Production sizes receive_buffer_ during setup (constant on Linux, BIOCGBLEN on macOS);
     // tests skip that path, so use the same default the Linux production uses — enough for
@@ -368,7 +368,7 @@ bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
 bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     const auto family = dst.addr.AddressFamily();
-    const auto source = interface_.SourceAddress(family);
+    const auto source = interface_->SourceAddress(family);
     if (!source) {
         logger_.Error("Cannot send to {}: interface has no source address for that family",
             dst.addr.ToString());
@@ -377,12 +377,12 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
 
     std::array<std::byte, SEND_BUFFER_SIZE> frame{};
 #if defined(__linux__)
-    const size_t length = BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst,
+    const size_t length = BuildUdpFrame(dst_mac, interface_->Mac(), IpEndpoint{*source, src_port}, dst,
         payload, ttl, frame);
 #else
     const size_t length = link_type_ == LinkType::Loopback
         ? BuildLoopbackUdpFrame(IpEndpoint{*source, src_port}, dst, payload, ttl, frame)
-        : BuildUdpFrame(dst_mac, interface_.Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
+        : BuildUdpFrame(dst_mac, interface_->Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
 #endif
     if (length == 0) {
         logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr.ToString(),
@@ -395,7 +395,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     // destination MAC already lives in the frame, so sll_addr/sll_halen stay zero.
     sockaddr_ll addr{};
     addr.sll_family = AF_PACKET;
-    addr.sll_ifindex = static_cast<int>(interface_.Index());
+    addr.sll_ifindex = static_cast<int>(interface_->Index());
     const auto sent = sendto(fd_.Get(), frame.data(), length, 0,
         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
 #else
@@ -434,7 +434,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     // (default) interface. The group goes in as a sockaddr; ToSockaddr also sets the BSD sockaddr
     // length field that the kernel requires for the embedded address here.
     group_req request{};
-    request.gr_interface = interface_.Index();
+    request.gr_interface = interface_->Index();
     group.ToSockaddr(request.gr_group, /*port=*/0);
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
@@ -447,7 +447,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     }
 
     memberships.emplace(group, 1);
-    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_.Index());
+    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_->Index());
     return MakeMembership(group);
 }
 
@@ -473,7 +473,7 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
     }
 
     group_req request{};
-    request.gr_interface = interface_.Index();
+    request.gr_interface = interface_->Index();
     group.ToSockaddr(request.gr_group, /*port=*/0);
     const int level = group.IsV6() ? IPPROTO_IPV6 : IPPROTO_IP;
     // Teardown-tolerant: when an interface loses its address the kernel drops the membership for

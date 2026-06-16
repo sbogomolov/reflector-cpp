@@ -57,7 +57,7 @@ public:
     [[nodiscard]] bool IsValid() const noexcept override { return fd_.IsValid(); }
     [[nodiscard]] int Fd() const noexcept override { return fd_.Get(); }
 
-    [[nodiscard]] const Interface& GetInterface() const noexcept override { return interface_; }
+    [[nodiscard]] const Interface& GetInterface() const noexcept override { return *interface_; }
 
     // Injects a UDP datagram out this interface as a raw L2 frame, building the Ethernet/IP/UDP
     // headers and checksums from the interface's cached source MAC/IP and writing the frame to the
@@ -125,7 +125,7 @@ private:
 #endif
 
     Logger logger_;
-    const Interface& interface_;
+    const Interface* interface_;
     UniqueFd fd_;
     // Per family: a dedicated unbound fd that holds that family's multicast memberships alive
     // (opened lazily on the first join, closed once the family has no joined group left), and the

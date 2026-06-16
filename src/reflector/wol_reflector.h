@@ -45,7 +45,7 @@ private:
     [[nodiscard]] bool HasRepeatedMac(std::span<const std::byte> payload) noexcept;
     void OnPacket(const Packet& packet) noexcept;
 
-    LinkSocket& target_socket_;
+    LinkSocket* target_socket_;
     // The target interface's per-family send capability, gated by the config's family policy.
     // Read live per packet, so an address change takes effect without re-creating the reflector
     // (a merely-used family is dropped quietly while the target can't send it); transition

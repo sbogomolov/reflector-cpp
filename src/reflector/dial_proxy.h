@@ -137,7 +137,7 @@ private:
         // c2u Host rewrite: the client reached the reflector listener, so its request Host is the reflector
         // authority; always rewrite it to the pinned `device` so the upstream sees itself as Host. The parsed
         // `found` authority is irrelevant — the request always targets the device.
-        std::optional<IpEndpoint> RewriteHost(const IpEndpoint&) noexcept { return endpoint.device; }
+        std::optional<IpEndpoint> RewriteHost(const IpEndpoint&) noexcept { return endpoint->device; }
 
         // u2c Application-URL/Location rewrite: the device names its OWN Rest authority, unroutable across the
         // reflector boundary, so mint (re-entrantly) a reflector Rest listener for it and rewrite to that. A
@@ -158,8 +158,8 @@ private:
         // fds shut down but still open) until the eviction timer reaps it and RAII closes the fds.
         void Abort() noexcept;
 
-        DialProxy& owner;  // reaches owner.dispatcher_ for Sync and owner.EnsureRestListener for the u2c rewrite
-        Endpoint& endpoint;  // the device's endpoint; ctor ++active_connections, dtor -- (eviction refcount)
+        DialProxy* owner;  // reaches owner->dispatcher_ for Sync and owner->EnsureRestListener for the u2c rewrite
+        Endpoint* endpoint;  // the device's endpoint; ctor ++active_connections, dtor -- (eviction refcount)
         TcpSocket client, upstream;
         HttpFraming c2u, u2c;
         StreamBuffer c2u_rx{MAX_RECV_BUFFER}, u2c_rx{MAX_RECV_BUFFER};
@@ -199,9 +199,9 @@ private:
     void EvictExpired(std::chrono::steady_clock::time_point now) noexcept;
 
     Logger logger_;  // "DialProxy:{name}:{src}->{tgt}" — passed in by SsdpReflector
-    Dispatcher& dispatcher_;
-    const Interface& source_if_;
-    const Interface& target_if_;
+    Dispatcher* dispatcher_;
+    const Interface* source_if_;
+    const Interface* target_if_;
 
     // Keyed by the device endpoint via std::hash<IpEndpoint>. Node-stable so a FindEndpointByListenerFd
     // result stays valid across an unrelated mint, and so OnAccept can re-enter EnsureRestListener (which
