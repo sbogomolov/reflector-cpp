@@ -190,15 +190,23 @@ private:
 
 using EnvParams = std::map<std::string, std::string, std::less<>>;
 
-// Environment values are strings, so a boolean must be spelled out. true/false mirror TOML; 1/0 are
-// accepted too since they are the natural booleans for shell/Docker env files.
-std::expected<bool, Error> ParseEnvBool(std::string_view name, std::string_view key, std::string_view value) {
+// true/1 -> true, false/0 -> false (case-insensitive); nullopt otherwise. The shared core of every
+// env boolean — env values are strings, so booleans are spelled out (true/false mirror TOML), with
+// 1/0 accepted as the natural shell/Docker booleans. Callers wrap it with a context-specific error.
+std::optional<bool> ParseBool(std::string_view value) {
     const auto lower = AsciiToLower(value);
     if (lower == "true" || lower == "1") {
         return true;
     }
     if (lower == "false" || lower == "0") {
         return false;
+    }
+    return std::nullopt;
+}
+
+std::expected<bool, Error> ParseEnvBool(std::string_view name, std::string_view key, std::string_view value) {
+    if (const auto parsed = ParseBool(value)) {
+        return *parsed;
     }
     return std::unexpected(Error{"entry \"{}\" {} must be true/false or 1/0; got \"{}\"", name, key, value});
 }
@@ -383,6 +391,7 @@ struct ConfigAccumulator {
     std::vector<MdnsConfig> mdns;
     std::vector<SsdpConfig> ssdp;
     std::optional<LogLevel> log_level;
+    std::optional<bool> debug_memory;
     std::vector<std::string> entry_names;
 
     std::optional<Error> AddEntry(const ConfigSource& source) {
@@ -424,8 +433,14 @@ std::optional<Error> ApplyToml(ConfigAccumulator& acc, std::string_view str) {
                 return std::move(level).error();
             }
             acc.log_level = *level;
+        } else if (key_name == "debug_memory") {
+            const auto field_value = value.value<bool>();
+            if (!field_value) {
+                return Error{"debug_memory must be a boolean"};
+            }
+            acc.debug_memory = *field_value;
         } else {
-            return Error{"unexpected top-level key: \"{}\" (expected an entry table or log_level)", key_name};
+            return Error{"unexpected top-level key: \"{}\" (expected an entry table, log_level, or debug_memory)", key_name};
         }
     }
     return std::nullopt;
@@ -442,8 +457,10 @@ bool IsAlnumTag(std::string_view tag) noexcept {
 std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> env_vars) {
     constexpr std::string_view prefix = "REFLECTOR_";
     constexpr std::string_view log_level_var = "REFLECTOR_LOG_LEVEL";
+    constexpr std::string_view debug_memory_var = "REFLECTOR_DEBUG_MEMORY";
 
     std::optional<std::string_view> log_level_value;
+    std::optional<std::string_view> debug_memory_value;
     // tag -> (lowercase param -> value). std::map gives a deterministic (sorted) entry order so that
     // duplicate-detection errors and tests don't depend on environ ordering.
     std::map<std::string, EnvParams, std::less<>> tags;
@@ -454,6 +471,10 @@ std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> en
         }
         if (var.key == log_level_var) {
             log_level_value = var.value;
+            continue;
+        }
+        if (var.key == debug_memory_var) {
+            debug_memory_value = var.value;
             continue;
         }
         const auto rest = var.key.substr(prefix.size());
@@ -469,6 +490,9 @@ std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> en
         if (AsciiToLower(tag) == "log") {
             return Error{"environment variable \"{}\": \"{}\" is a reserved tag (use REFLECTOR_LOG_LEVEL for the log level)", var.key, tag};
         }
+        if (AsciiToLower(tag) == "debug") {
+            return Error{"environment variable \"{}\": \"{}\" is a reserved tag (use REFLECTOR_DEBUG_MEMORY for the memory diagnostic)", var.key, tag};
+        }
         if (param.empty()) {
             return Error{"environment variable \"{}\" is missing a parameter name after the tag", var.key};
         }
@@ -481,6 +505,14 @@ std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> en
             return std::move(level).error();
         }
         acc.log_level = *level;
+    }
+
+    if (debug_memory_value) {
+        const auto parsed = ParseBool(*debug_memory_value);
+        if (!parsed) {
+            return Error{"REFLECTOR_DEBUG_MEMORY must be true/false or 1/0; got \"{}\"", *debug_memory_value};
+        }
+        acc.debug_memory = *parsed;
     }
 
     for (auto& [tag, params] : tags) {
@@ -545,6 +577,7 @@ std::expected<Config, Error> Config::Load(std::optional<std::string_view> toml_t
     config.mdns_configs_ = std::move(acc.mdns);
     config.ssdp_configs_ = std::move(acc.ssdp);
     config.log_level_ = acc.log_level.value_or(LogLevel::Info);
+    config.debug_memory_ = acc.debug_memory.value_or(false);
     if (config.ReflectorCount() == 0) {
         return std::unexpected(Error{"configuration must contain at least one reflector"});
     }

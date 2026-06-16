@@ -190,10 +190,11 @@ On RouterOS, setting the container's environment variables is usually easier tha
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the protocols. `log_level` is the only top-level setting:
+`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the protocols. The top-level settings are `log_level` and `debug_memory`:
 
 ```toml
 log_level = "info"               # optional; one of debug | info | warning | error (default: info)
+debug_memory = false             # optional; periodically log RSS + heap arena stats for footprint debugging (default false)
 
 [tv]
 source_if = "en0"                # required; interface to listen on (must differ from target_if)
@@ -216,7 +217,7 @@ Every setting can also come from the environment, which is convenient for contai
 - `<TAG>` ties one entry's parameters together — any alphanumeric string (`1`, `2`, `TV`, …). It also becomes the entry's name (and thus its log label) unless a `NAME` parameter overrides it.
 - `<PARAM>` is `NAME` or any field from the entry table above (`SOURCE_IF`, `TARGET_IF`, `MAC`, `WOL`, `MDNS`, `SSDP`, `DIAL`, `WOL_PORTS`, `ADDRESS_FAMILY`), case-insensitive.
 
-The only global is `REFLECTOR_LOG_LEVEL`, so `LOG` is a reserved tag. Booleans are `true`/`false` or `1`/`0`; `WOL_PORTS` is comma-separated (`7,9`). The `[tv]` entry above looks like this in the environment:
+The globals are `REFLECTOR_LOG_LEVEL` and `REFLECTOR_DEBUG_MEMORY`, so `LOG` and `DEBUG` are reserved tags. Booleans are `true`/`false` or `1`/`0`; `WOL_PORTS` is comma-separated (`7,9`). The `[tv]` entry above looks like this in the environment:
 
 ```sh
 REFLECTOR_LOG_LEVEL=info
@@ -229,7 +230,7 @@ REFLECTOR_TV_SSDP=true
 REFLECTOR_TV_DIAL=true
 ```
 
-When a file and environment variables are both given they are merged: each contributes entries to one combined configuration, and `REFLECTOR_LOG_LEVEL` overrides the file's `log_level`. The [duplicate detection](#duplicate-detection) below applies across both sources. An unknown `<PARAM>`, a non-alphanumeric or reserved tag, and a tag with no parameter are all rejected at startup.
+When a file and environment variables are both given they are merged: each contributes entries to one combined configuration, and `REFLECTOR_LOG_LEVEL` / `REFLECTOR_DEBUG_MEMORY` override the file's `log_level` / `debug_memory`. The [duplicate detection](#duplicate-detection) below applies across both sources. An unknown `<PARAM>`, a non-alphanumeric or reserved tag, and a tag with no parameter are all rejected at startup.
 
 ### The `mac` field
 

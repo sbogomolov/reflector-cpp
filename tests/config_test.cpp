@@ -2026,4 +2026,110 @@ wol = true
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Debug);
 }
 
+// --- debug_memory ---
+
+TEST(ConfigTest, DebugMemoryDefaultsToFalse) {
+    const auto config = Config::FromString(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_FALSE(config->DebugMemory());
+}
+
+TEST(ConfigTest, ParsesDebugMemoryTrue) {
+    const auto config = Config::FromString(R"(
+debug_memory = true
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_TRUE(config->DebugMemory());
+}
+
+TEST(ConfigTest, ParsesDebugMemoryFalse) {
+    const auto config = Config::FromString(R"(
+debug_memory = false
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_FALSE(config->DebugMemory());
+}
+
+TEST(ConfigTest, RejectsNonBoolDebugMemory) {
+    EXPECT_FALSE(Config::FromString(R"(
+debug_memory = "yes"
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)").has_value());
+}
+
+TEST(ConfigTest, EnvSetsDebugMemory) {
+    for (const auto* value : {"true", "1"}) {
+        const auto config = Config::Load(std::nullopt, Env({
+            {"REFLECTOR_DEBUG_MEMORY", value},
+            {"REFLECTOR_1_SOURCE_IF", "eth0"},
+            {"REFLECTOR_1_TARGET_IF", "eth1"},
+            {"REFLECTOR_1_WOL", "true"},
+        }));
+        ASSERT_TRUE(config.has_value()) << config.error().Message();
+        EXPECT_TRUE(config->DebugMemory());
+    }
+}
+
+TEST(ConfigTest, EnvDisablesDebugMemory) {
+    for (const auto* value : {"false", "0"}) {
+        const auto config = Config::Load(std::nullopt, Env({
+            {"REFLECTOR_DEBUG_MEMORY", value},
+            {"REFLECTOR_1_SOURCE_IF", "eth0"},
+            {"REFLECTOR_1_TARGET_IF", "eth1"},
+            {"REFLECTOR_1_WOL", "true"},
+        }));
+        ASSERT_TRUE(config.has_value()) << config.error().Message();
+        EXPECT_FALSE(config->DebugMemory());
+    }
+}
+
+TEST(ConfigTest, EnvRejectsInvalidDebugMemory) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_DEBUG_MEMORY", "maybe"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvRejectsReservedDebugTag) {
+    // A REFLECTOR_DEBUG_<x> other than the special-cased MEMORY must not be read as an entry "debug".
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_DEBUG_VERBOSE", "true"},
+        {"REFLECTOR_1_SOURCE_IF", "eth0"},
+        {"REFLECTOR_1_TARGET_IF", "eth1"},
+        {"REFLECTOR_1_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
+TEST(ConfigTest, EnvDebugMemoryOverridesFile) {
+    const auto config = Config::Load(R"(
+debug_memory = false
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({{"REFLECTOR_DEBUG_MEMORY", "true"}}));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_TRUE(config->DebugMemory());
+}
+
 }  // namespace reflector

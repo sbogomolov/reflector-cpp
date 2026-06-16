@@ -7,13 +7,16 @@
 #include "interface.h"
 #include "link_socket.h"
 #include "reflector.h"
+#include "timer.h"
 #include "util/no_move.h"
 #include "util/unique_fd.h"
 
+#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -103,6 +106,10 @@ private:
     // poll; the loop's stop_requested check ends the run. Level-triggered, so drain fully.
     void OnWakeup(int fd) noexcept;
 
+    // The periodic callback of memory_timer_ (debug_memory only): logs RSS and, on glibc, the heap
+    // arena breakdown. The timer's fire-time argument is unused.
+    void ReportMemory(std::chrono::steady_clock::time_point) noexcept;
+
     InterfaceFactory interface_factory_;
     SocketFactory socket_factory_;
 
@@ -120,6 +127,11 @@ private:
     DefaultPacketDispatcher packet_dispatcher_{*dispatcher_};
     std::vector<std::unique_ptr<Reflector>> reflectors_;
     std::unique_ptr<AddressMonitor> address_monitor_;
+
+    // Periodic RSS/heap-stats logger, engaged only when config.DebugMemory() is set (a deployment
+    // footprint diagnostic). Holds a timer registration bound to `this` on dispatcher_, so it must
+    // tear down before dispatcher_ — it does, being declared after it.
+    std::optional<Timer> memory_timer_;
 
     // Signal-wakeup self-pipe (best-effort; populated by PrepareSignalWakeup, otherwise empty). Declared
     // last so it tears down first: wakeup_reg_ unregisters from dispatcher_ while it is still alive, then

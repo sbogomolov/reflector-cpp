@@ -39,6 +39,9 @@ public:
     [[nodiscard]] const std::vector<MdnsConfig>& MdnsConfigs() const noexcept { return mdns_configs_; }
     [[nodiscard]] const std::vector<SsdpConfig>& SsdpConfigs() const noexcept { return ssdp_configs_; }
     [[nodiscard]] LogLevel MinLogLevel() const noexcept { return log_level_; }
+    // When set, the application periodically logs its RSS and (on glibc) heap arena stats — a
+    // deployment diagnostic for tracking footprint where no shell is available. Off by default.
+    [[nodiscard]] bool DebugMemory() const noexcept { return debug_memory_; }
 
 private:
     // Test-only: builds a Config programmatically, bypassing TOML parsing.
@@ -53,6 +56,7 @@ private:
     std::vector<MdnsConfig> mdns_configs_;
     std::vector<SsdpConfig> ssdp_configs_;
     LogLevel log_level_ = LogLevel::Info;
+    bool debug_memory_ = false;
 };
 
 } // namespace reflector
@@ -73,7 +77,7 @@ struct std::formatter<reflector::Config, char>
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::Config& c, FmtContext& ctx) const
     {
-        std::format_to(ctx.out(), "{{log_level: {}, wol: [", c.MinLogLevel());
+        std::format_to(ctx.out(), "{{log_level: {}, debug_memory: {}, wol: [", c.MinLogLevel(), c.DebugMemory());
         bool first = true;
         for (const auto& wol_config : c.WolConfigs()) {
             if (first) {
