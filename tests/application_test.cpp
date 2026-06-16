@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <memory>
@@ -174,6 +175,32 @@ TEST_F(ApplicationTest, SharesOneSocketPerInterfaceAcrossConfigs) {
     // The shared source fd is watched exactly once, however many reflectors register on it.
     EXPECT_EQ(dispatcher_->RegistrationCount(), 1);
     EXPECT_TRUE(dispatcher_->IsWatching(Socket("src")->fd));
+}
+
+TEST_F(ApplicationTest, StartsMemoryReportTimerWhenDebugMemoryEnabled) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {7}))
+        .DebugMemory(true)
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    // A WoL-only config starts no timers of its own, so the periodic memory report is the only one.
+    EXPECT_EQ(dispatcher_->TimerCount(), 1u);
+    // Firing it exercises the ReportMemory callback (reads /proc + mallinfo2 on glibc); must not crash.
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+}
+
+TEST_F(ApplicationTest, NoMemoryReportTimerByDefault) {
+    auto app = MakeApp();
+    const Config config = TestConfigBuilder{}
+        .Add(MakeWolConfig("tv", "src", "dst", {7}))
+        .Build();
+
+    ASSERT_TRUE(app.Configure(config));
+
+    EXPECT_EQ(dispatcher_->TimerCount(), 0u);
 }
 
 TEST_F(ApplicationTest, CreatesDistinctSocketsForDistinctInterfaces) {

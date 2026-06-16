@@ -14,6 +14,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_message.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/memory_report.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/port_reservation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ssdp_message.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_reflector.cpp

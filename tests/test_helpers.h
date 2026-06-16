@@ -59,6 +59,11 @@ public:
         return *this;
     }
 
+    TestConfigBuilder& DebugMemory(bool enabled) {
+        config_.debug_memory_ = enabled;
+        return *this;
+    }
+
     [[nodiscard]] Config Build() const { return config_; }
 
 private:

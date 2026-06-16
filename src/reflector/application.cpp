@@ -5,6 +5,7 @@
 #include "event_loop_dispatcher.h"
 #include "logger.h"
 #include "mdns_reflector.h"
+#include "memory_report.h"
 #include "raw_socket.h"
 #include "ssdp_reflector.h"
 #include "util/delegate.h"
@@ -13,6 +14,7 @@
 
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <string_view>
@@ -27,6 +29,8 @@ Logger& GetLogger() noexcept {
     static Logger logger{"Application"};
     return logger;
 }
+// How often the memory diagnostic logs once debug_memory is enabled.
+constexpr std::chrono::seconds MEMORY_REPORT_INTERVAL{60};
 } // namespace
 
 namespace reflector {
@@ -121,6 +125,13 @@ bool Application::Configure(const Config& config) {
     if (ConfigureReflectors<WolReflector>(config.WolConfigs(), "wol")
         && ConfigureReflectors<MdnsReflector>(config.MdnsConfigs(), "mdns")
         && ConfigureReflectors<SsdpReflector>(config.SsdpConfigs(), "ssdp")) {
+        if (config.DebugMemory()) {
+            GetLogger().Info("Memory diagnostics enabled; reporting RSS/heap every {}s",
+                MEMORY_REPORT_INTERVAL.count());
+            LogMemoryReport();  // a baseline at startup, then every interval via the timer
+            memory_timer_.emplace(*dispatcher_);
+            memory_timer_->Start(MEMORY_REPORT_INTERVAL, CreateDelegate<&Application::ReportMemory>(this));
+        }
         return true;
     }
     // Fail closed: drop any reflectors wired before the failure so a config error never leaves a
@@ -186,6 +197,10 @@ void Application::OnWakeup(int fd) noexcept {
     std::array<std::byte, 64> scratch{};
     while (::read(fd, scratch.data(), scratch.size()) > 0) {
     }
+}
+
+void Application::ReportMemory(std::chrono::steady_clock::time_point) noexcept {
+    LogMemoryReport();
 }
 
 void Application::Run(const volatile std::sig_atomic_t& stop_requested) {
