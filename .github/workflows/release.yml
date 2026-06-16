@@ -11,8 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  # ci.yml ran on the push to main; tag-version-check.yml runs on this tag push. Gate the release on
-  # both being green for the commit -- poll each, waiting if a tag was pushed before CI finished.
+  # Fail fast on a version mismatch before the (possibly long) CI wait: check the tag matches the project
+  # version first, then gate the release on ci.yml being green for this commit (poll it, waiting if the
+  # tag was pushed before CI finished).
   verify-ci:
     name: Verify CI + tag check
     runs-on: ubuntu-24.04
@@ -20,28 +21,42 @@ jobs:
     permissions:
       actions: read
     steps:
-      - name: Wait for the required workflows to pass on this commit
+      # A version tag must match the project version in CMakeLists.txt, so the git tag, the published
+      # image (docker_build.sh reads the same value), and the GitHub release name can never disagree.
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Verify tag matches CMakeLists version
+        run: |
+          version="$(./version.sh)"
+          expected="v${version}"
+          if [ "${GITHUB_REF_NAME}" != "${expected}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match CMakeLists version (expected ${expected}). Bump CMakeLists.txt or retag."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} matches CMakeLists version ${version}."
+
+      - name: Wait for CI to pass on this commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           sha='${{ github.sha }}'
-          for wf in ci.yml tag-version-check.yml; do
-            ok=
-            for _ in $(seq 1 90); do  # job timeout-minutes is the real ceiling
-              run=$(gh api "repos/${{ github.repository }}/actions/workflows/$wf/runs?head_sha=$sha&per_page=1" \
-                --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"')
-              case "${run%%|*}" in
-                completed)
-                  if [ "${run##*|}" = success ]; then ok=1; break; fi
-                  echo "::error::$wf concluded '${run##*|}' on $sha"; exit 1 ;;
-                "") echo "No $wf run for $sha yet; waiting..." ;;
-                *)  echo "$wf is '${run%%|*}'; waiting..." ;;
-              esac
-              sleep 20
-            done
-            [ -n "$ok" ] || { echo "::error::Timed out waiting for $wf on $sha"; exit 1; }
-            echo "$wf passed on $sha."
+          wf=ci.yml
+          ok=
+          for _ in $(seq 1 90); do  # job timeout-minutes is the real ceiling
+            run=$(gh api "repos/${{ github.repository }}/actions/workflows/$wf/runs?head_sha=$sha&per_page=1" \
+              --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")"')
+            case "${run%%|*}" in
+              completed)
+                if [ "${run##*|}" = success ]; then ok=1; break; fi
+                echo "::error::$wf concluded '${run##*|}' on $sha"; exit 1 ;;
+              "") echo "No $wf run for $sha yet; waiting..." ;;
+              *)  echo "$wf is '${run%%|*}'; waiting..." ;;
+            esac
+            sleep 20
           done
+          [ -n "$ok" ] || { echo "::error::Timed out waiting for $wf on $sha"; exit 1; }
+          echo "$wf passed on $sha."
 
   binaries:
     name: Binary (${{ matrix.variant }})
