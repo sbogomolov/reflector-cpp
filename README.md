@@ -351,11 +351,13 @@ it. To cut a release:
 - Bump the project version in `CMakeLists.txt` and merge it to `origin/main`.
 - From a clean `main` in sync with `origin/main`, run `./release.sh`.
 
-`./release.sh` automates the rest: it verifies CI is green on the release commit, prints the detected
-version and asks for confirmation, tags `v<version>` and pushes it, creates the GitHub release (with
-generated notes), and publishes the Docker images with `./docker_build.sh --push`. The pushed tag is
-independently re-checked against `CMakeLists.txt` by the `Tag version check` workflow. Requires the
-GitHub CLI (`gh`, authenticated) and Docker.
+`./release.sh` does only the local half: it waits for CI (`ci.yml`) to pass on the release commit,
+prints the detected version and asks for confirmation, then tags `v<version>` and pushes it. Pushing
+the tag hands off to the `release.yml` workflow, which does everything else — it re-checks CI and that
+the tag matches `CMakeLists.txt`, builds the per-arch binaries (Linux amd64/arm64/armv7/armv5, macOS
+arm64, FreeBSD amd64/arm64), publishes the multi-arch image to GHCR, and creates the GitHub release
+with the binaries and their `SHA256SUMS` attached and generated notes. `release.sh` needs only the
+GitHub CLI (`gh`, authenticated) for its CI check; nothing else runs locally.
 
 ## License
 
