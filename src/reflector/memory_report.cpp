@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <string>
 #include <sys/resource.h>
 
 #if defined(__GLIBC__)
@@ -78,30 +79,51 @@ std::optional<size_t> ReadByteCount(const char* path) noexcept {
 }
 
 // The container's cgroup v2 memory accounting -- the figure RouterOS (and the OOM killer) sees: process
-// RSS plus page cache plus kernel/socket memory. The fields are the mutually-exclusive top-level
-// categories of memory.current; the remainder ("other", computed at log time) is per-cpu charge cache,
-// zswap, and anything else not broken out here. Absent if not cgroup v2 / not mounted in the container.
+// RSS plus page cache plus kernel/socket memory. The memory.stat fields are top-level categories of
+// current; each is nullopt when the kernel does not emit that line, so a field this kernel omits ("n/a")
+// stays distinct from a real 0. The remainder ("other", computed at log time) is current minus the
+// additive categories. Absent if not cgroup v2 / not mounted in the container.
 struct CgroupMemory {
     bool available = false;
-    size_t current = 0;          // bytes
-    std::optional<size_t> peak;  // bytes; memory.peak needs kernel >= 5.19
-    size_t anon = 0;             // heap/stack
-    size_t file = 0;             // page cache (includes shmem)
-    size_t sock = 0;             // socket buffers
-    size_t slab = 0;             // kernel slab (reclaimable + unreclaimable)
-    size_t pagetables = 0;       // page tables
-    size_t kernel_stack = 0;     // kernel stacks
-    size_t percpu = 0;           // per-cpu allocations
-    size_t vmalloc = 0;          // kernel vmalloc
-    size_t shmem = 0;            // tmpfs/shared memory (a subset of file)
-    size_t sec_pagetables = 0;   // secondary page tables (KVM/IOMMU)
-    size_t zswap = 0;            // compressed swap pool
+    size_t current = 0;  // bytes; the memory.stat fields below are bytes too
+    std::optional<size_t> peak;  // memory.peak needs kernel >= 5.19
+    std::optional<size_t> anon;
+    std::optional<size_t> file;  // page cache; includes shmem
+    std::optional<size_t> sock;
+    std::optional<size_t> slab_reclaimable;
+    std::optional<size_t> slab_unreclaimable;
+    std::optional<size_t> pagetables;
+    std::optional<size_t> sec_pagetables;  // KVM/IOMMU
+    std::optional<size_t> kernel_stack;
+    std::optional<size_t> percpu;
+    std::optional<size_t> vmalloc;
+    std::optional<size_t> shmem;  // subset of file -> excluded from the known-sum
+    std::optional<size_t> zswap;
 };
 
-// Fills `out` with the process's own cgroup v2 directory under /sys/fs/cgroup, derived from
-// /proc/self/cgroup ("0::<path>"). Inside a container the path is the namespaced root "/" (so the mount
-// root); on a bare host it's the service/session sub-cgroup. false if not cgroup v2 / unreadable.
+// True if `path` exists and is readable.
+bool FileExists(const char* path) noexcept {
+    std::FILE* file = std::fopen(path, "r");
+    if (file == nullptr) {
+        return false;
+    }
+    std::fclose(file);
+    return true;
+}
+
+// Fills `out` with the cgroup v2 directory to read memory accounting from, chosen deterministically.
+// memory.current/memory.stat exist only on non-root cgroups, and inside a cgroup namespace the cgroup2
+// mount roots at the namespace root. So if /sys/fs/cgroup itself has memory.current we are namespaced (a
+// container): the mount root is a delegated cgroup whose recursive accounting covers the whole namespace
+// -- the figure the OOM killer enforces -- so read it, regardless of which leaf the process was moved into
+// (e.g. RouterOS's /init, whose own accounting is empty because charges do not migrate). Otherwise
+// /sys/fs/cgroup is the true host root (no accounting files), so read the process's own cgroup from
+// /proc/self/cgroup ("0::<path>"). false if not cgroup v2 / unreadable.
 bool CgroupDir(char* out, size_t out_size) noexcept {
+    if (FileExists("/sys/fs/cgroup/memory.current")) {
+        std::snprintf(out, out_size, "/sys/fs/cgroup");
+        return true;
+    }
     std::FILE* file = std::fopen("/proc/self/cgroup", "r");
     if (file == nullptr) {
         return false;
@@ -112,7 +134,6 @@ bool CgroupDir(char* out, size_t out_size) noexcept {
         if (std::strncmp(line, "0::", 3) == 0) {  // the cgroup v2 unified-hierarchy entry
             char* path = line + 3;
             path[std::strcspn(path, "\n")] = '\0';  // drop the trailing newline
-            // The namespaced root is "/", which maps to the mount root; otherwise append the sub-path.
             std::snprintf(out, out_size, "/sys/fs/cgroup%s", std::strcmp(path, "/") == 0 ? "" : path);
             found = true;
             break;
@@ -142,8 +163,6 @@ CgroupMemory ReadCgroupMemory() noexcept {
     std::snprintf(path, sizeof(path), "%s/memory.stat", dir);
     std::FILE* file = std::fopen(path, "r");
     if (file != nullptr) {
-        size_t slab_reclaimable = 0;
-        size_t slab_unreclaimable = 0;
         char key[64];
         unsigned long long value = 0;
         while (std::fscanf(file, "%63s %llu", key, &value) == 2) {
@@ -155,11 +174,13 @@ CgroupMemory ReadCgroupMemory() noexcept {
             } else if (std::strcmp(key, "sock") == 0) {
                 mem.sock = v;
             } else if (std::strcmp(key, "slab_reclaimable") == 0) {
-                slab_reclaimable = v;
+                mem.slab_reclaimable = v;
             } else if (std::strcmp(key, "slab_unreclaimable") == 0) {
-                slab_unreclaimable = v;
+                mem.slab_unreclaimable = v;
             } else if (std::strcmp(key, "pagetables") == 0) {
                 mem.pagetables = v;
+            } else if (std::strcmp(key, "sec_pagetables") == 0) {
+                mem.sec_pagetables = v;
             } else if (std::strcmp(key, "kernel_stack") == 0) {
                 mem.kernel_stack = v;
             } else if (std::strcmp(key, "percpu") == 0) {
@@ -168,13 +189,10 @@ CgroupMemory ReadCgroupMemory() noexcept {
                 mem.vmalloc = v;
             } else if (std::strcmp(key, "shmem") == 0) {
                 mem.shmem = v;
-            } else if (std::strcmp(key, "sec_pagetables") == 0) {
-                mem.sec_pagetables = v;
             } else if (std::strcmp(key, "zswap") == 0) {
                 mem.zswap = v;
             }
         }
-        mem.slab = slab_reclaimable + slab_unreclaimable;
         std::fclose(file);
     }
     return mem;
@@ -187,21 +205,29 @@ void LogCgroupMemory() {
         return;
     }
     const auto kib = [](size_t bytes) { return bytes / 1024; };
+    std::string head = "current=" + std::to_string(kib(cg.current));
     if (cg.peak) {
-        GetLogger().Info("cgroup current={} KiB (peak {} KiB)", kib(cg.current), kib(*cg.peak));
-    } else {
-        GetLogger().Info("cgroup current={} KiB", kib(cg.current));
+        head += " (peak=" + std::to_string(kib(*cg.peak)) + ")";
     }
-    // The remainder of current after the named categories (shmem excluded -- it is part of file). With
-    // every additive category now broken out, `other` is essentially the per-cpu charge cache + rounding.
-    const size_t known = cg.anon + cg.file + cg.sock + cg.slab + cg.pagetables + cg.sec_pagetables
-        + cg.kernel_stack + cg.percpu + cg.vmalloc + cg.zswap;
+    // Each field's value in KiB, or "n/a" when the kernel does not emit that memory.stat line.
+    const auto kib_opt = [](std::optional<size_t> bytes) {
+        return bytes ? std::to_string(*bytes / 1024) : std::string{"n/a"};
+    };
+    // The remainder of current after the additive categories (shmem excluded -- it is part of file). An
+    // absent field counts as 0 here, so a row of n/a is exactly why `other` stays large on a sparse kernel.
+    const auto val = [](std::optional<size_t> b) { return b.value_or(size_t{0}); };
+    const size_t known = val(cg.anon) + val(cg.file) + val(cg.sock) + val(cg.slab_reclaimable)
+        + val(cg.slab_unreclaimable) + val(cg.pagetables) + val(cg.sec_pagetables) + val(cg.kernel_stack)
+        + val(cg.percpu) + val(cg.vmalloc) + val(cg.zswap);
     const size_t other = cg.current > known ? cg.current - known : 0;
     GetLogger().Info(
-        "cgroup breakdown (KiB): anon={} file={} sock={} slab={} pagetables={} sec_pagetables={} "
-        "kernel_stack={} percpu={} vmalloc={} shmem={} zswap={} other={}",
-        kib(cg.anon), kib(cg.file), kib(cg.sock), kib(cg.slab), kib(cg.pagetables), kib(cg.sec_pagetables),
-        kib(cg.kernel_stack), kib(cg.percpu), kib(cg.vmalloc), kib(cg.shmem), kib(cg.zswap), kib(other));
+        "cgroup (KiB) {} | breakdown: anon={} file={} (shmem={}) sock={} slab_reclaimable={} "
+        "slab_unreclaimable={} pagetables={} sec_pagetables={} kernel_stack={} percpu={} vmalloc={} "
+        "zswap={} other={}",
+        head, kib_opt(cg.anon), kib_opt(cg.file), kib_opt(cg.shmem), kib_opt(cg.sock),
+        kib_opt(cg.slab_reclaimable), kib_opt(cg.slab_unreclaimable), kib_opt(cg.pagetables),
+        kib_opt(cg.sec_pagetables), kib_opt(cg.kernel_stack), kib_opt(cg.percpu), kib_opt(cg.vmalloc),
+        kib_opt(cg.zswap), kib(other));
 }
 
 #endif  // __linux__
