@@ -15,19 +15,22 @@ permissions:
   contents: read
 
 jobs:
-  # A fast-forward rebase-merge lands the PR's already-tested commit on main verbatim, so the push-to-main
-  # run would otherwise re-test the exact SHA the PR already validated. On push only, this gate checks
-  # whether a ci.yml run for this commit already succeeded via its pull request and, if so, skips the heavy
-  # jobs below -- the gate itself still succeeds, so release.yml's wait for a green ci.yml run on the commit
-  # still holds. Non-fast-forward merges and direct pushes to main have no prior run for the SHA, so the
-  # full suite runs. The gate runs only on push, so pull_request CI is never delayed by it.
+  # "Rebase and merge" rewrites the committer, so the commit that lands on main gets a fresh SHA even when
+  # its tree (the file snapshot) and parent are identical to the PR head CI already validated -- matching on
+  # the commit SHA therefore never skips. This gate matches on the tree instead: on push only, if a
+  # pull_request ci.yml run already passed for a commit with the same tree, the build/test result is
+  # guaranteed identical, so it skips the heavy jobs below. The gate itself still succeeds, so release.yml's
+  # wait for a green ci.yml run on the commit still holds. A merge rebased onto a moved main (different tree)
+  # and direct pushes to main match no prior tree, so the full suite runs. The gate runs only on push, so
+  # pull_request CI is never delayed by it.
   gate:
-    name: Gate (skip if commit already passed)
+    name: Gate (skip if this tree already passed CI)
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: read
+      contents: read
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
@@ -36,15 +39,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          passed=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.event == "pull_request")] | length' 2>/dev/null || echo 0)
-          if [ "${passed:-0}" -gt 0 ] 2>/dev/null; then
-            echo "Commit ${{ github.sha }} already passed CI via its pull request; skipping the heavy jobs."
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
+          repo="${{ github.repository }}"
+          tree=$(gh api "repos/$repo/git/commits/${{ github.sha }}" --jq '.tree.sha' 2>/dev/null || true)
+          if [ -z "$tree" ]; then
+            echo "Could not resolve the tree for ${{ github.sha }}; running the full suite."
             echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Distinct head SHAs of recent successful pull_request CI runs, most-recent first (so a just-merged
+          # PR matches on the first iteration). The PR head commit stays fetchable after the branch is
+          # deleted -- it is retained as refs/pull/<n>/head.
+          candidates=$(gh api \
+            "repos/$repo/actions/workflows/ci.yml/runs?status=success&event=pull_request&per_page=50" \
+            --jq '.workflow_runs[].head_sha' 2>/dev/null | awk 'NF && !seen[$0]++' || true)
+          for sha in $candidates; do
+            t=$(gh api "repos/$repo/git/commits/$sha" --jq '.tree.sha' 2>/dev/null || true)
+            if [ -n "$t" ] && [ "$t" = "$tree" ]; then
+              echo "Tree $tree already passed CI via pull-request commit $sha; skipping the heavy jobs."
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "No prior passing run for tree $tree; running the full suite."
+          echo "run=true" >> "$GITHUB_OUTPUT"
 
   unit:
     name: Unit (${{ matrix.variant }} ${{ matrix.build_type }})
