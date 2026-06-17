@@ -26,6 +26,9 @@ add_library(reflector STATIC
 )
 reflector_configure_project_target(reflector)
 target_include_directories(reflector PUBLIC ${PROJECT_SOURCE_DIR}/src)
+# PUBLIC: public headers (dispatcher.h, packet.h, ...) include util/delegate.h, which pulls in
+# <delegate/delegate.h>, so consumers of the reflector library need the delegate include path too.
+target_link_libraries(reflector PUBLIC delegate::delegate)
 target_link_libraries(reflector PRIVATE tomlplusplus::tomlplusplus)
 target_compile_definitions(reflector PRIVATE TOML_EXCEPTIONS=0)
 
