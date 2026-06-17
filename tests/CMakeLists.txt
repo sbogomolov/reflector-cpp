@@ -4,7 +4,6 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/application_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/checksum_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_test.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/delegate_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/dial_proxy_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/error_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/event_loop_dispatcher_test.cpp

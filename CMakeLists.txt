@@ -158,6 +158,14 @@ FetchContent_Declare(tomlplusplus
 )
 FetchContent_MakeAvailable(tomlplusplus)
 
+# Delegate is maintained in its own repository. For local development against a local checkout (e.g.
+# when changing both repos together), point at it with -D FETCHCONTENT_SOURCE_DIR_DELEGATE=/path/to/delegate.
+FetchContent_Declare(delegate
+    GIT_REPOSITORY https://github.com/sbogomolov/delegate.git
+    GIT_TAG v0.1.0
+)
+FetchContent_MakeAvailable(delegate)
+
 add_executable(reflector_app)
 set_property(TARGET reflector_app PROPERTY OUTPUT_NAME reflector)
 reflector_configure_project_target(reflector_app)
