@@ -24,7 +24,7 @@ jobs:
       # A version tag must match the project version in CMakeLists.txt, so the git tag, the published
       # image (docker_build.sh reads the same value), and the GitHub release name can never disagree.
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Verify tag matches CMakeLists version
         run: |
@@ -103,7 +103,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Linux dependencies
         if: matrix.platform == 'linux'
@@ -175,7 +175,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Build the static release binary in a FreeBSD VM
         uses: vmactions/freebsd-vm@v1
@@ -234,7 +234,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
