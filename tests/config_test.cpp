@@ -745,7 +745,7 @@ wol_ports = [65536]
 
 TEST(ConfigTest, RejectsDuplicateEntryName) {
     // TOML itself rejects two tables with the same name, which is why the parser needs no name
-    // dedup of its own (see the comment on AppendWol).
+    // dedup of its own (see the comment on AppendConfig).
     EXPECT_FALSE(Config::FromString(R"(
 [reflectors.tv]
 source_if = "eth0"
@@ -1174,7 +1174,7 @@ address_family = "ipv4"
     EXPECT_EQ(config->WolConfigs().front().address_family, AddressFamily::IPv4);
 }
 
-// --- per-protocol Verify reached through the parser (AppendMdns / AppendSsdp call their own
+// --- per-protocol Verify reached through the parser (AppendConfig runs each protocol's own
 //     MdnsConfig::Verify / SsdpConfig::Verify, independent of WoL) ---
 
 TEST(ConfigTest, RejectsMdnsMissingSourceIf) {
@@ -1267,7 +1267,7 @@ wol_ports = [9, 40000]
 )").has_value());
 }
 
-// --- mDNS dedup matrix (AppendMdns is independent of AppendWol) ---
+// --- mDNS dedup matrix (AppendConfig dedups mdns_configs independently of WoL) ---
 
 TEST(ConfigTest, RejectsMdnsDuplicateMacTriple) {
     EXPECT_FALSE(Config::FromString(R"(
@@ -1384,7 +1384,7 @@ address_family = "ipv4"
 )").has_value());
 }
 
-// --- SSDP dedup matrix (AppendSsdp is independent of AppendWol / AppendMdns) ---
+// --- SSDP dedup matrix (AppendConfig dedups ssdp_configs independently of WoL / mDNS) ---
 
 TEST(ConfigTest, RejectsSsdpDuplicateMacTriple) {
     EXPECT_FALSE(Config::FromString(R"(
@@ -1668,7 +1668,7 @@ dial = "yes"
 
 TEST(ConfigTest, RejectsDialWithIpv6OnlyFamilyFromToml) {
     // The IPv4-only rejection (struct-level Verify is tested separately) also fires through the parser:
-    // AppendSsdp runs Verify before appending, so a dial+ipv6 entry is rejected, not stored.
+    // AppendConfig runs Verify before appending, so a dial+ipv6 entry is rejected, not stored.
     const auto config = Config::FromString(R"(
 [reflectors.tv]
 source_if = "lan"
