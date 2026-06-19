@@ -416,12 +416,24 @@ std::optional<Error> ApplyToml(ConfigAccumulator& acc, std::string_view str) {
     const auto root_table = std::move(parsed).table();
     for (const auto& [key, value] : root_table) {
         const auto key_name = ToStringView(key);
-        // A top-level table is a reflector entry (its key is the entry name); the lone known scalar
-        // is log_level; any other top-level scalar is a mistyped setting.
-        if (const auto* entry_table = value.as_table()) {
-            const TomlSource source{key_name, *entry_table};
-            if (auto error = acc.AddEntry(source)) {
-                return error;
+        // Reflector entries live under the `reflectors` map ([reflectors.<name>]); log_level and
+        // debug_memory are the top-level scalars. A top-level table other than `reflectors` (a bare
+        // [tv]) is a pre-0.7 entry and is rejected by the final branch.
+        if (key_name == "reflectors") {
+            const auto* reflectors_table = value.as_table();
+            if (!reflectors_table) {
+                return Error{"reflectors must be a table of [reflectors.<name>] entries"};
+            }
+            for (const auto& [entry_key, entry_value] : *reflectors_table) {
+                const auto entry_name = ToStringView(entry_key);
+                const auto* entry_table = entry_value.as_table();
+                if (!entry_table) {
+                    return Error{"reflector \"{}\" must be a table ([reflectors.{}])", entry_name, entry_name};
+                }
+                const TomlSource source{entry_name, *entry_table};
+                if (auto error = acc.AddEntry(source)) {
+                    return error;
+                }
             }
         } else if (key_name == "log_level") {
             const auto field_value = value.value<std::string_view>();
@@ -440,7 +452,7 @@ std::optional<Error> ApplyToml(ConfigAccumulator& acc, std::string_view str) {
             }
             acc.debug_memory = *field_value;
         } else {
-            return Error{"unexpected top-level key: \"{}\" (expected an entry table, log_level, or debug_memory)", key_name};
+            return Error{"unexpected top-level key: \"{}\" (expected reflectors, log_level, or debug_memory)", key_name};
         }
     }
     return std::nullopt;

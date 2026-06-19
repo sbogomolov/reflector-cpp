@@ -33,7 +33,7 @@ std::string TomlWithLogLevel(std::string_view log_level) {
     toml += log_level;
     toml += R"("
 
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -141,7 +141,7 @@ TEST(ConfigTest, VerifyRejectsEmptyPorts) {
 
 TEST(ConfigTest, ParsesSingleProtocolEntry) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -164,13 +164,13 @@ wol = true
 
 TEST(ConfigTest, ParsesMultipleEntries) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:00:00:00:00:0a"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:00:00:00:00:0b"
 source_if = "eth2"
 target_if = "eth3"
@@ -187,7 +187,7 @@ wol = true
 
 TEST(ConfigTest, ParsesExplicitWolPorts) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -199,7 +199,7 @@ wol_ports = [7, 9, 4000]
 
 TEST(ConfigTest, ParsesAddressFamily) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -211,7 +211,7 @@ address_family = "ipv6"
 
 TEST(ConfigTest, ExpandsAllThreeProtocolsFromOneEntry) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -230,7 +230,7 @@ ssdp = true
 
 TEST(ConfigTest, ExpandsWolAndMdns) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 wol = true
@@ -244,7 +244,7 @@ mdns = true
 
 TEST(ConfigTest, ExpandsWolAndSsdp) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 wol = true
@@ -258,7 +258,7 @@ ssdp = true
 
 TEST(ConfigTest, ExpandsMdnsAndSsdp) {
     const auto config = Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -272,7 +272,7 @@ ssdp = true
 
 TEST(ConfigTest, SharedFieldsPropagateToEachEnabledProtocol) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -310,7 +310,7 @@ address_family = "dual"
 
 TEST(ConfigTest, NetworkEntryHasNoMac) {
     const auto config = Config::FromString(R"(
-[net]
+[reflectors.net]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -323,7 +323,7 @@ ssdp = true
 
 TEST(ConfigTest, AcceptsMissingMac) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -336,7 +336,7 @@ wol = true
 
 TEST(ConfigTest, LogLevelDefaultsToInfo) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -379,7 +379,7 @@ TEST(ConfigTest, ParsesLogLevelAlongsideEntries) {
     const auto config = Config::FromString(R"(
 log_level = "debug"
 
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 wol = true
@@ -397,7 +397,7 @@ TEST(ConfigTest, RejectsNonStringLogLevel) {
     EXPECT_FALSE(Config::FromString(R"(
 log_level = 5
 
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -438,7 +438,7 @@ TEST(ConfigTest, ReadsAndParsesFileConfig) {
         std::ofstream file{path};
         ASSERT_TRUE(file);
         file << R"(
-[file]
+[reflectors.file]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -475,7 +475,7 @@ TEST(ConfigTest, RejectsUnknownTopLevelScalar) {
     EXPECT_FALSE(Config::FromString(R"(
 log_levle = "debug"
 
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -486,7 +486,7 @@ wol = true
 
 TEST(ConfigTest, RejectsEntryEnablingNoProtocol) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 )").has_value());
@@ -494,7 +494,7 @@ target_if = "eth1"
 
 TEST(ConfigTest, RejectsWolPortsWithoutWol) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 mdns = true
@@ -504,7 +504,7 @@ wol_ports = [7, 9]
 
 TEST(ConfigTest, RejectsNonBooleanProtocolFlag) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = "yes"
@@ -513,7 +513,7 @@ wol = "yes"
 
 TEST(ConfigTest, RejectsMissingSourceIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 target_if = "eth1"
 wol = true
 )").has_value());
@@ -521,7 +521,7 @@ wol = true
 
 TEST(ConfigTest, RejectsMissingTargetIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 wol = true
 )").has_value());
@@ -529,7 +529,7 @@ wol = true
 
 TEST(ConfigTest, RejectsSameInterfaces) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth0"
 wol = true
@@ -539,7 +539,7 @@ wol = true
 TEST(ConfigTest, RejectsEmptyName) {
     // The entry name is the table key; an empty key fails the per-protocol Verify (name required).
     EXPECT_FALSE(Config::FromString(R"(
-[""]
+[reflectors.""]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -549,7 +549,7 @@ wol = true
 TEST(ConfigTest, RejectsEmptyNameMdns) {
     // Same invariant via MdnsConfig::Verify (empty name reaches a different protocol's check).
     EXPECT_FALSE(Config::FromString(R"(
-[""]
+[reflectors.""]
 source_if = "eth0"
 target_if = "eth1"
 mdns = true
@@ -559,7 +559,7 @@ mdns = true
 TEST(ConfigTest, RejectsEmptyNameSsdp) {
     // Same invariant via SsdpConfig::Verify.
     EXPECT_FALSE(Config::FromString(R"(
-[""]
+[reflectors.""]
 source_if = "eth0"
 target_if = "eth1"
 ssdp = true
@@ -568,7 +568,7 @@ ssdp = true
 
 TEST(ConfigTest, RejectsUnknownEntryField) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -578,7 +578,7 @@ extra = "x"
 
 TEST(ConfigTest, RejectsNonStringField) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = 123
 target_if = "eth1"
 wol = true
@@ -589,7 +589,7 @@ wol = true
 
 TEST(ConfigTest, RejectsInvalidMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "not-a-mac"
 source_if = "eth0"
 target_if = "eth1"
@@ -599,7 +599,7 @@ wol = true
 
 TEST(ConfigTest, RejectsTooShortMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "00:11:22:33:44"
 source_if = "eth0"
 target_if = "eth1"
@@ -609,7 +609,7 @@ wol = true
 
 TEST(ConfigTest, RejectsNonHexMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "GG:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -619,7 +619,7 @@ wol = true
 
 TEST(ConfigTest, RejectsDashSeparatedMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "00-11-22-33-44-55"
 source_if = "eth0"
 target_if = "eth1"
@@ -629,7 +629,7 @@ wol = true
 
 TEST(ConfigTest, RejectsEmptyMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = ""
 source_if = "eth0"
 target_if = "eth1"
@@ -639,7 +639,7 @@ wol = true
 
 TEST(ConfigTest, AcceptsUppercaseMac) {
     EXPECT_TRUE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "B0:37:95:C5:60:BE"
 source_if = "en0"
 target_if = "lo0"
@@ -649,7 +649,7 @@ wol = true
 
 TEST(ConfigTest, AcceptsLowercaseMac) {
     EXPECT_TRUE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = "b0:37:95:c5:60:be"
 source_if = "en0"
 target_if = "lo0"
@@ -661,7 +661,7 @@ wol = true
 
 TEST(ConfigTest, RejectsUnknownAddressFamily) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -671,7 +671,7 @@ address_family = "ipx"
 
 TEST(ConfigTest, RejectsNonStringAddressFamily) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -683,7 +683,7 @@ address_family = 4
 
 TEST(ConfigTest, RejectsEmptyPortsArray) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -693,7 +693,7 @@ wol_ports = []
 
 TEST(ConfigTest, RejectsNonArrayPorts) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -703,7 +703,7 @@ wol_ports = "7"
 
 TEST(ConfigTest, RejectsNonIntegerPort) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -713,7 +713,7 @@ wol_ports = ["7"]
 
 TEST(ConfigTest, RejectsPortZeroFromToml) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -723,7 +723,7 @@ wol_ports = [0]
 
 TEST(ConfigTest, RejectsDuplicatePorts) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -733,7 +733,7 @@ wol_ports = [7, 9, 7]
 
 TEST(ConfigTest, RejectsOutOfRangePort) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -747,12 +747,12 @@ TEST(ConfigTest, RejectsDuplicateEntryName) {
     // TOML itself rejects two tables with the same name, which is why the parser needs no name
     // dedup of its own (see the comment on AppendWol).
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[tv]
+[reflectors.tv]
 source_if = "eth2"
 target_if = "eth3"
 wol = true
@@ -761,13 +761,13 @@ wol = true
 
 TEST(ConfigTest, RejectsDuplicateMacSourceTargetTriple) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -777,12 +777,12 @@ wol = true
 
 TEST(ConfigTest, RejectsDuplicateUnfilteredSourceTargetRule) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -791,12 +791,12 @@ wol = true
 
 TEST(ConfigTest, RejectsSpecificRuleOverlappedByUnfilteredRule) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -806,13 +806,13 @@ wol = true
 
 TEST(ConfigTest, AcceptsSameMacWithDifferentTargets) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth2"
@@ -824,13 +824,13 @@ wol = true
 
 TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDisjointPorts) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 wol_ports = [7]
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -843,12 +843,12 @@ wol_ports = [9]
 
 TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentSources) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth2"
 target_if = "eth1"
@@ -860,12 +860,12 @@ wol = true
 
 TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentTargets) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth2"
@@ -879,14 +879,14 @@ wol = true
 // is not a duplicate — it is just the long form of one "dual" rule.
 TEST(ConfigTest, AcceptsIdenticalRuleWithDisjointAddressFamilies) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 address_family = "ipv4"
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -900,14 +900,14 @@ address_family = "ipv6"
 // "default" handles IPv4 too, so it overlaps an ipv4-only rule on the same triple.
 TEST(ConfigTest, RejectsOverlappingRuleWhenDefaultCoversIpv4) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 address_family = "default"
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
@@ -920,13 +920,13 @@ TEST(ConfigTest, RejectsDuplicateIpv6OnlyRules) {
     // Two ipv6-only rules on the same triple collide via the IPv6 disjunct of AddressFamiliesOverlap
     // (the IPv4 disjunct is false for both) -- the mirror of the default/ipv4 case above.
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 address_family = "ipv6"
 
-[b]
+[reflectors.b]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -938,12 +938,12 @@ address_family = "ipv6"
 
 TEST(ConfigTest, RejectsDuplicateMdnsRuleAcrossEntries) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -952,12 +952,12 @@ mdns = true
 
 TEST(ConfigTest, RejectsDuplicateSsdpRuleAcrossEntries) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -968,12 +968,12 @@ TEST(ConfigTest, AcceptsOverlappingDifferentProtocolsAcrossEntries) {
     // Same source/target, but one entry does WoL and the other mDNS — different protocol vectors,
     // so no dedup collision.
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 wol = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -985,12 +985,12 @@ mdns = true
 
 TEST(ConfigTest, AcceptsDisjointEntries) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "guest"
 ssdp = true
@@ -1003,7 +1003,7 @@ ssdp = true
 
 TEST(ConfigTest, ExpandsMdnsOnly) {
     const auto config = Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -1022,7 +1022,7 @@ mdns = true
 
 TEST(ConfigTest, ExpandsSsdpOnly) {
     const auto config = Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1043,7 +1043,7 @@ ssdp = true
 
 TEST(ConfigTest, ExplicitFalseFlagDoesNotEnable) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = false
@@ -1056,7 +1056,7 @@ mdns = true
 
 TEST(ConfigTest, AllExplicitFalseRejected) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = false
@@ -1069,7 +1069,7 @@ ssdp = false
 
 TEST(ConfigTest, WolPortsFullyReplaceDefaults) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1081,7 +1081,7 @@ wol_ports = [40000]
 
 TEST(ConfigTest, AcceptsMaxPort) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1093,7 +1093,7 @@ wol_ports = [65535]
 
 TEST(ConfigTest, RejectsNegativePort) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1103,9 +1103,20 @@ wol_ports = [-1]
 
 // --- top-level key classification ---
 
-TEST(ConfigTest, LogLevelAsTableIsEntryNotScalar) {
-    // A [log_level] table is classified as an entry (table wins over the scalar name), so it is sent
-    // to ReadEntry and rejected for enabling no protocol — not parsed as the log_level setting.
+TEST(ConfigTest, RejectsTopLevelEntryTable) {
+    // The pre-0.7 form: a bare [tv] table at the top level. Entries now live only under
+    // [reflectors.<name>], so a top-level table other than `reflectors` is an unexpected key.
+    EXPECT_FALSE(Config::FromString(R"(
+[tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)").has_value());
+}
+
+TEST(ConfigTest, RejectsLogLevelAsTable) {
+    // log_level is a top-level scalar; a [log_level] table is rejected (must be a string), not read
+    // as a reflector entry.
     EXPECT_FALSE(Config::FromString(R"(
 [log_level]
 source_if = "eth0"
@@ -1113,11 +1124,26 @@ target_if = "eth1"
 )").has_value());
 }
 
+TEST(ConfigTest, RejectsReflectorsScalar) {
+    // `reflectors` must be a table of entries, not a scalar.
+    EXPECT_FALSE(Config::FromString(R"(
+reflectors = "oops"
+)").has_value());
+}
+
+TEST(ConfigTest, RejectsNonTableReflectorEntry) {
+    // A non-table value inside the reflectors map (here a scalar) is not a valid entry.
+    EXPECT_FALSE(Config::FromString(R"(
+[reflectors]
+tv = "oops"
+)").has_value());
+}
+
 // --- non-string field types ---
 
 TEST(ConfigTest, RejectsNonStringMac) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 mac = 123
 source_if = "eth0"
 target_if = "eth1"
@@ -1127,7 +1153,7 @@ wol = true
 
 TEST(ConfigTest, RejectsNonStringTargetIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = 123
 wol = true
@@ -1138,7 +1164,7 @@ wol = true
 
 TEST(ConfigTest, ParsesAddressFamilyIpv4) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1153,7 +1179,7 @@ address_family = "ipv4"
 
 TEST(ConfigTest, RejectsMdnsMissingSourceIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 target_if = "iot"
 mdns = true
 )").has_value());
@@ -1161,7 +1187,7 @@ mdns = true
 
 TEST(ConfigTest, RejectsMdnsMissingTargetIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 mdns = true
 )").has_value());
@@ -1169,7 +1195,7 @@ mdns = true
 
 TEST(ConfigTest, RejectsMdnsSameInterfaces) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 target_if = "lan"
 mdns = true
@@ -1178,7 +1204,7 @@ mdns = true
 
 TEST(ConfigTest, RejectsSsdpMissingSourceIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 target_if = "iot"
 ssdp = true
 )").has_value());
@@ -1186,7 +1212,7 @@ ssdp = true
 
 TEST(ConfigTest, RejectsSsdpMissingTargetIf) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 ssdp = true
 )").has_value());
@@ -1194,7 +1220,7 @@ ssdp = true
 
 TEST(ConfigTest, RejectsSsdpSameInterfaces) {
     EXPECT_FALSE(Config::FromString(R"(
-[disc]
+[reflectors.disc]
 source_if = "lan"
 target_if = "lan"
 ssdp = true
@@ -1207,13 +1233,13 @@ TEST(ConfigTest, AcceptsDistinctConcreteMacsSameTriple) {
     // Two different concrete MACs on the same source/target/ports do not collide: MacSelectionsOverlap
     // is false only when both are set and unequal.
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:66"
 source_if = "eth0"
 target_if = "eth1"
@@ -1227,13 +1253,13 @@ TEST(ConfigTest, RejectsPartialPortOverlap) {
     // Sharing a single port (9) is enough to collide — PortsOverlap is any-shared-element, not set
     // equality.
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 wol_ports = [7, 9]
 
-[b]
+[reflectors.b]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1245,13 +1271,13 @@ wol_ports = [9, 40000]
 
 TEST(ConfigTest, RejectsMdnsDuplicateMacTriple) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -1261,12 +1287,12 @@ mdns = true
 
 TEST(ConfigTest, RejectsMdnsSpecificOverlappedByUnfiltered) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -1276,13 +1302,13 @@ mdns = true
 
 TEST(ConfigTest, AcceptsMdnsDistinctMacs) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:66"
 source_if = "lan"
 target_if = "iot"
@@ -1294,12 +1320,12 @@ mdns = true
 
 TEST(ConfigTest, AcceptsMdnsDifferentSources) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 source_if = "lan2"
 target_if = "iot"
 mdns = true
@@ -1310,12 +1336,12 @@ mdns = true
 
 TEST(ConfigTest, AcceptsMdnsDifferentTargets) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot2"
 mdns = true
@@ -1326,13 +1352,13 @@ mdns = true
 
 TEST(ConfigTest, AcceptsMdnsDisjointAddressFamilies) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 address_family = "ipv4"
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -1344,13 +1370,13 @@ address_family = "ipv6"
 
 TEST(ConfigTest, RejectsMdnsDefaultOverlapsIpv4) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 mdns = true
 address_family = "default"
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 mdns = true
@@ -1362,13 +1388,13 @@ address_family = "ipv4"
 
 TEST(ConfigTest, RejectsSsdpDuplicateMacTriple) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -1378,12 +1404,12 @@ ssdp = true
 
 TEST(ConfigTest, RejectsSsdpSpecificOverlappedByUnfiltered) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
@@ -1393,13 +1419,13 @@ ssdp = true
 
 TEST(ConfigTest, AcceptsSsdpDistinctMacs) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 mac = "00:11:22:33:44:55"
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 mac = "00:11:22:33:44:66"
 source_if = "lan"
 target_if = "iot"
@@ -1411,12 +1437,12 @@ ssdp = true
 
 TEST(ConfigTest, AcceptsSsdpDifferentSources) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 source_if = "lan2"
 target_if = "iot"
 ssdp = true
@@ -1427,12 +1453,12 @@ ssdp = true
 
 TEST(ConfigTest, AcceptsSsdpDifferentTargets) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot2"
 ssdp = true
@@ -1443,13 +1469,13 @@ ssdp = true
 
 TEST(ConfigTest, AcceptsSsdpDisjointAddressFamilies) {
     const auto config = Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 address_family = "ipv4"
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1461,13 +1487,13 @@ address_family = "ipv6"
 
 TEST(ConfigTest, RejectsSsdpDefaultOverlapsIpv4) {
     EXPECT_FALSE(Config::FromString(R"(
-[a]
+[reflectors.a]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
 address_family = "default"
 
-[b]
+[reflectors.b]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1573,7 +1599,7 @@ TEST(ConfigTest, SsdpFormatterPrintsMacAndDialFalse) {
 TEST(ConfigTest, ConfigFormatterRendersAllSections) {
     const auto config = Config::FromString(R"(
 log_level = "warning"
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 wol = true
@@ -1590,7 +1616,7 @@ ssdp = true
 
 TEST(ConfigTest, ParsesSsdpDialFlagFromToml) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1603,7 +1629,7 @@ dial = true
 
 TEST(ConfigTest, SsdpDialDefaultsFalse) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1618,7 +1644,7 @@ TEST(ConfigTest, RejectsDialWithoutSsdp) {
     // dial-without-ssdp branch; asserting on "dial" ensures the dial-specific error fired (the
     // no-protocol message also contains "ssdp", so a "ssdp" assertion would pass via the wrong path).
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 wol = true
@@ -1630,7 +1656,7 @@ dial = true
 
 TEST(ConfigTest, RejectsNonBooleanDial) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1644,7 +1670,7 @@ TEST(ConfigTest, RejectsDialWithIpv6OnlyFamilyFromToml) {
     // The IPv4-only rejection (struct-level Verify is tested separately) also fires through the parser:
     // AppendSsdp runs Verify before appending, so a dial+ipv6 entry is rejected, not stored.
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "lan"
 target_if = "iot"
 ssdp = true
@@ -1945,7 +1971,7 @@ TEST(ConfigTest, EnvRejectsEmptyConfiguration) {
 
 TEST(ConfigTest, MergeCombinesFileAndEnvEntries) {
     const auto config = Config::Load(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1963,7 +1989,7 @@ wol = true
 
 TEST(ConfigTest, MergeDetectsCrossSourceDuplicate) {
     const auto config = Config::Load(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1977,7 +2003,7 @@ wol = true
 
 TEST(ConfigTest, MergeDetectsDuplicateNameAcrossSources) {
     const auto config = Config::Load(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -1993,7 +2019,7 @@ wol = true
 TEST(ConfigTest, EnvLogLevelOverridesFile) {
     const auto config = Config::Load(R"(
 log_level = "error"
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2005,7 +2031,7 @@ wol = true
 TEST(ConfigTest, FileLogLevelKeptWhenEnvUnset) {
     const auto config = Config::Load(R"(
 log_level = "warning"
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2017,7 +2043,7 @@ wol = true
 TEST(ConfigTest, EnvLogLevelSetsWhenFileOmitsIt) {
     // File contributes an entry but no log_level; the env supplies it (sole setter, not an override).
     const auto config = Config::Load(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2030,7 +2056,7 @@ wol = true
 
 TEST(ConfigTest, DebugMemoryDefaultsToFalse) {
     const auto config = Config::FromString(R"(
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2042,7 +2068,7 @@ wol = true
 TEST(ConfigTest, ParsesDebugMemoryTrue) {
     const auto config = Config::FromString(R"(
 debug_memory = true
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2054,7 +2080,7 @@ wol = true
 TEST(ConfigTest, ParsesDebugMemoryFalse) {
     const auto config = Config::FromString(R"(
 debug_memory = false
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2066,7 +2092,7 @@ wol = true
 TEST(ConfigTest, RejectsNonBoolDebugMemory) {
     EXPECT_FALSE(Config::FromString(R"(
 debug_memory = "yes"
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
@@ -2123,7 +2149,7 @@ TEST(ConfigTest, EnvRejectsReservedDebugTag) {
 TEST(ConfigTest, EnvDebugMemoryOverridesFile) {
     const auto config = Config::Load(R"(
 debug_memory = false
-[tv]
+[reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true

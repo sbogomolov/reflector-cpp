@@ -1,19 +1,19 @@
 log_level = "debug"
 
-[wol-mac]
+[reflectors.wol-mac]
 source_if = "wol_src"
 target_if = "wol_dst"
 mac = "02:42:ac:11:00:09"
 wol = true
 wol_ports = [40009]
 
-[wol-any]
+[reflectors.wol-any]
 source_if = "wol_src"
 target_if = "wol_dst"
 wol = true
 wol_ports = [40011]
 
-[discovery]
+[reflectors.discovery]
 source_if = "wol_src"
 target_if = "wol_dst"
 mdns = true
