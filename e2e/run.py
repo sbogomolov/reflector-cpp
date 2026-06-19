@@ -841,8 +841,8 @@ class DockerDial(DockerE2E):
         super().__init__(args, shim)
         self.dial = case
         # The DIAL reflector loads a config with a single DIAL entry. The shared config's any-MAC
-        # [discovery] entry also reflects SSDP, which would double-reflect the device's 200 OK (only one
-        # copy rewritten) -- so the DIAL case gets its own config to keep the relayed reply unambiguous.
+        # [reflectors.discovery] entry also reflects SSDP, which would double-reflect the device's 200 OK
+        # (only one copy rewritten) -- so the DIAL case gets its own config to keep the relayed reply unambiguous.
         self.config_path = E2E_DIR / "config-dial.toml"
         self.device_container = f"{self.prefix}-device"
         self.client_container = f"{self.prefix}-client"

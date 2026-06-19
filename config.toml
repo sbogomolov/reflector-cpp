@@ -3,7 +3,7 @@
 
 # A single device: bridge its Wake-on-LAN, mDNS, and SSDP. The one mac is the device's NIC MAC —
 # the WoL magic-packet target and the L2 source of its mDNS/SSDP advertisements.
-[tv]
+[reflectors.tv]
 source_if = "en0"
 target_if = "lo0"
 mac = "B0:37:95:C5:60:BE"  # optional; omit to bridge the whole network
@@ -14,7 +14,7 @@ ssdp = true
 
 # A whole network (no mac): reflect all mDNS/SSDP discovery in both directions, on its own
 # interface pair (entries sharing source_if + target_if and a protocol would collide).
-[guest-discovery]
+[reflectors.guest-discovery]
 source_if = "en1"
 target_if = "en2"
 mdns = true

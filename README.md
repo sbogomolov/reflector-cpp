@@ -176,7 +176,7 @@ Logs are timestamped in UTC by default; pass `-e TZ=Europe/Berlin` (any zoneinfo
 The `arm64`, `arm/v7`, and `arm/v5` variants let the reflector run on the router itself through the RouterOS *Container* feature, bridging two of the router's VLANs without a separate host. Since it has to see both segments, give the container **two `veth` interfaces, one bridged into each VLAN**, and name them as the entry's `source_if` / `target_if`:
 
 ```toml
-[livingroom-tv]
+[reflectors.livingroom-tv]
 source_if = "veth-lan"   # veth bridged into the LAN VLAN
 target_if = "veth-iot"   # veth bridged into the IoT VLAN
 mac       = "B0:37:95:C5:60:BE"   # optional; target a specific device (omit for the whole VLAN)
@@ -190,13 +190,13 @@ On RouterOS, setting the container's environment variables is usually easier tha
 
 ## Configuration
 
-`config.toml` contains optional top-level settings plus at least one reflector entry. An entry is a named table — its name is the label used in logs — describing one `source_if` → `target_if` bridge that enables any combination of the protocols. The top-level settings are `log_level` and `debug_memory`:
+`config.toml` contains optional top-level settings plus at least one reflector entry. Entries are tables under `reflectors`, keyed by name (`[reflectors.<name>]`) — the name is the label used in logs — each describing one `source_if` → `target_if` bridge that enables any combination of the protocols. The top-level settings are `log_level` and `debug_memory`:
 
 ```toml
 log_level = "info"               # optional; one of debug | info | warning | error (default: info)
 debug_memory = false             # optional; periodically log RSS + heap arena stats for footprint debugging (default false)
 
-[tv]
+[reflectors.tv]
 source_if = "en0"                # required; interface to listen on (must differ from target_if)
 target_if = "lo0"                # required; interface to emit reflected traffic on
 mac       = "B0:37:95:C5:60:BE"  # optional; the device's MAC (see below). Omit for a whole network.
@@ -217,7 +217,7 @@ Every setting can also come from the environment, which is convenient for contai
 - `<TAG>` ties one entry's parameters together — any alphanumeric string (`1`, `2`, `TV`, …). It also becomes the entry's name (and thus its log label) unless a `NAME` parameter overrides it.
 - `<PARAM>` is `NAME` or any field from the entry table above (`SOURCE_IF`, `TARGET_IF`, `MAC`, `WOL`, `MDNS`, `SSDP`, `DIAL`, `WOL_PORTS`, `ADDRESS_FAMILY`), case-insensitive.
 
-The globals are `REFLECTOR_LOG_LEVEL` and `REFLECTOR_DEBUG_MEMORY`, so `LOG` and `DEBUG` are reserved tags. Booleans are `true`/`false` or `1`/`0`; `WOL_PORTS` is comma-separated (`7,9`). The `[tv]` entry above looks like this in the environment:
+The globals are `REFLECTOR_LOG_LEVEL` and `REFLECTOR_DEBUG_MEMORY`, so `LOG` and `DEBUG` are reserved tags. Booleans are `true`/`false` or `1`/`0`; `WOL_PORTS` is comma-separated (`7,9`). The `[reflectors.tv]` entry above looks like this in the environment:
 
 ```sh
 REFLECTOR_LOG_LEVEL=info

@@ -4,7 +4,7 @@ log_level = "debug"
 # v4 and v6 independently. The address-change cases knock out one (interface, family) at a time and prove
 # via real traffic that only that family's reflection stops, then resumes once the address returns.
 
-[wol]
+[reflectors.wol]
 source_if = "wol_src"
 target_if = "wol_dst"
 mac = "02:42:ac:11:00:09"
@@ -12,7 +12,7 @@ wol = true
 wol_ports = [40009]
 address_family = "dual"
 
-[discovery]
+[reflectors.discovery]
 source_if = "wol_src"
 target_if = "wol_dst"
 mdns = true
