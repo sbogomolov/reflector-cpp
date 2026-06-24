@@ -1,7 +1,7 @@
 # Builds the reflector with debug symbols and NO sanitizers (ASan and valgrind are mutually
 # exclusive), then packages it under valgrind. Used by soak.py to leak-check the daemon under a
 # sustained mDNS/SSDP flood. Build from the repo root: docker build -f e2e/valgrind/Dockerfile .
-ARG DEBIAN=docker.io/library/debian:trixie-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
+ARG DEBIAN=docker.io/library/debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2
 
 FROM ${DEBIAN} AS build
 RUN apt-get update \
