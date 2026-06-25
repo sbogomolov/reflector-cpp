@@ -38,6 +38,7 @@ option(REFLECTOR_ENABLE_VALGRIND_UNIT_TESTS "Enable the Docker-backed unit suite
 option(REFLECTOR_ENABLE_VALGRIND_E2E_TESTS "Enable the Docker-backed e2e suite with the reflector under Valgrind memcheck" OFF)
 option(REFLECTOR_ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
 option(REFLECTOR_STATIC "Statically link the reflector binaries (Linux and FreeBSD)" OFF)
+option(REFLECTOR_STRIP "Strip the reflector executable's symbol table (for shipped release artifacts)" OFF)
 
 # REFLECTOR_STATIC statically links every project target — the production binary (for a FROM-scratch
 # image and portable release binaries) and the test binary (so the suite exercises what ships). Linux
@@ -71,6 +72,15 @@ set(_reflector_release_compile_options)
 if(NOT CMAKE_CXX_FLAGS_RELEASE MATCHES "(^|[ \t])-O3($|[ \t])")
     list(APPEND _reflector_release_compile_options $<$<CONFIG:Release>:-O3>)
 endif()
+# Emit each function/datum into its own section so the section-GC link (below) can drop the unreferenced
+# ones -- chiefly unused libstdc++/tomlplusplus template instantiations dragged into the static link.
+# Behaviour-neutral; Release-only to keep Debug builds fast. Universally accepted; a no-op where unused
+# (macOS's ld64 dead-strips at the atom level -- measured byte-identical output with or without), so no
+# need to gate them off Darwin.
+list(APPEND _reflector_release_compile_options
+    $<$<CONFIG:Release>:-ffunction-sections>
+    $<$<CONFIG:Release>:-fdata-sections>
+)
 
 include(CheckIPOSupported)
 check_ipo_supported(RESULT _reflector_ipo_supported OUTPUT _reflector_ipo_error)
@@ -170,6 +180,30 @@ add_executable(reflector_app)
 set_property(TARGET reflector_app PROPERTY OUTPUT_NAME reflector)
 reflector_configure_project_target(reflector_app)
 target_link_libraries(reflector_app PRIVATE reflector)
+
+# Size reductions for the final executable (the shipped artifact). --gc-sections drops the sections left
+# unreferenced thanks to -ffunction-sections/-fdata-sections above -- chiefly unused libstdc++/tomlplusplus
+# template instantiations. Behaviour-neutral for a static, dlopen-free binary; macOS's ld64 spells it
+# -dead_strip. Executable only -- the static lib has no link step, and the test binary is left alone so
+# --gc-sections never meets gtest's static test registration.
+target_link_options(reflector_app PRIVATE
+    $<$<AND:$<CONFIG:Release>,$<NOT:$<PLATFORM_ID:Darwin>>>:-Wl,--gc-sections>
+    $<$<AND:$<CONFIG:Release>,$<PLATFORM_ID:Darwin>>:-Wl,-dead_strip>
+)
+
+# Strip the symbol table -- a large fraction of a static C++ binary's size. Opt-in (REFLECTOR_STRIP) so
+# dev/test and the Valgrind builds keep their symbols; the production image and the release-binary jobs
+# turn it on. GNU/lld's link-time -s strips the linker's own output (cross-safe); ld64 has no link-time
+# full strip, so post-build strip the native macOS build instead.
+if(REFLECTOR_STRIP)
+    if(APPLE)
+        add_custom_command(TARGET reflector_app POST_BUILD
+            COMMAND "${CMAKE_STRIP}" -x "$<TARGET_FILE:reflector_app>"
+            VERBATIM)
+    else()
+        target_link_options(reflector_app PRIVATE -s)
+    endif()
+endif()
 
 add_subdirectory(src)
 
