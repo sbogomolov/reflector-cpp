@@ -52,6 +52,7 @@ RUN --mount=type=cache,target=/src/build/_deps,sharing=locked \
         -D BUILD_TESTING=OFF \
         -D REFLECTOR_SANITIZE=OFF \
         -D REFLECTOR_STATIC=ON \
+        -D REFLECTOR_STRIP=ON \
     && cmake --build build --target reflector_app
 
 # Build the test binary only — do NOT run ctest here. docker build can't grant CAP_NET_ADMIN,

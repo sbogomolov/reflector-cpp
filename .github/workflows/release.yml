@@ -125,6 +125,7 @@ jobs:
             -D CMAKE_BUILD_TYPE=Release \
             -D BUILD_TESTING=OFF \
             -D REFLECTOR_STATIC=$static \
+            -D REFLECTOR_STRIP=ON \
             ${{ matrix.cmake_args }}
         env:
           CC: ${{ matrix.cc }}
@@ -188,7 +189,7 @@ jobs:
             pkg install -y cmake ninja git
           run: |
             cmake -S . -B build -G Ninja \
-              -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTING=OFF -D REFLECTOR_STATIC=ON
+              -D CMAKE_BUILD_TYPE=Release -D BUILD_TESTING=OFF -D REFLECTOR_STATIC=ON -D REFLECTOR_STRIP=ON
             cmake --build build --target reflector_app
             file build/reflector
             file build/reflector | grep -q 'statically linked' \
