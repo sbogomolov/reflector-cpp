@@ -131,8 +131,8 @@ DialProxy::Connection::Connection(DialProxy& proxy, Endpoint& owning_endpoint, T
         // node in place. c2u rewrites the client request's Host to the pinned device; u2c rewrites the device
         // response's Application-URL/Location to a freshly-minted reflector Rest listener (dropping the
         // connection if the mint fails).
-        , c2u{CreateDelegate<&Connection::RewriteHost>(this)}
-        , u2c{CreateDelegate<&Connection::RewriteRestAuthority>(this)}
+        , c2u{CreateDelegate<&Connection::RewriteHost>(this), HttpFraming::MessageType::Request}
+        , u2c{CreateDelegate<&Connection::RewriteRestAuthority>(this), HttpFraming::MessageType::Response}
         , deadline{connect_deadline} {
     ++endpoint->active_connections;  // refcount against the endpoint; the dtor decrements (RAII eviction count)
 }

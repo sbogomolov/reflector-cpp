@@ -161,7 +161,7 @@ TEST(HttpFramingTest, RewritesPortLessApplicationUrl) {
     // A device whose REST server is on port 80 advertises a port-less Application-URL; it is still parsed
     // (port 80 implied) and rewritten to the reflector listener.
     RecordingRewrite rewrite{Device(80), Reflector(54321)};
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read("HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80/apps\r\nContent-Length: 0\r\n\r\n");
     EXPECT_TRUE(d.ok);
@@ -171,7 +171,7 @@ TEST(HttpFramingTest, RewritesPortLessApplicationUrl) {
 
 TEST(HttpFramingTest, ForwardsUnchangedWhenNothingIsRewritten) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     const std::string msg{
         "HTTP/1.1 200 OK\r\n"
@@ -187,7 +187,7 @@ TEST(HttpFramingTest, HeaderIsRewrittenCopyBodyIsAZeroCopySliceOfInput) {
     // Locks the two-view contract: `header` is the rewritten copy (in HttpFraming's scratch), `body` points
     // straight into the fed input, and `consumed` covers the whole message.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     const std::string msg =
         "HTTP/1.1 200 OK\r\n"
         "Application-URL: http://10.1.3.80:36866/apps\r\n"
@@ -206,7 +206,7 @@ TEST(HttpFramingTest, HeaderIsRewrittenCopyBodyIsAZeroCopySliceOfInput) {
 
 TEST(HttpFramingTest, IncompleteHeaderConsumesNothing) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     const auto r = framing.Feed(
         "HTTP/1.1 200 OK\r\n"
         "Application-URL: http://10.1.3");
@@ -218,7 +218,7 @@ TEST(HttpFramingTest, IncompleteHeaderConsumesNothing) {
 
 TEST(HttpFramingTest, ReassemblesHeaderBlockSplitAcrossFeeds) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -245,7 +245,7 @@ TEST(HttpFramingContentLengthTest, RewritesApplicationUrlAndForwardsBodyVerbatim
         "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
 
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
 
@@ -265,7 +265,7 @@ TEST(HttpFramingContentLengthTest, MatchesApplicationUrlHeaderNameCaseInsensitiv
         "application-url: http://10.1.3.80:36866/apps\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out,
@@ -276,7 +276,7 @@ TEST(HttpFramingContentLengthTest, MatchesApplicationUrlHeaderNameCaseInsensitiv
 
 TEST(HttpFramingContentLengthTest, ReassemblesBodySplitAcrossFeeds) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -291,7 +291,7 @@ TEST(HttpFramingContentLengthTest, ReassemblesBodySplitAcrossFeeds) {
 
 TEST(HttpFramingContentLengthTest, ContinuingBodyFeedCarriesNoHeader) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     const auto r1 = framing.Feed(
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: 5\r\n\r\n"
@@ -314,7 +314,7 @@ TEST(HttpFramingMiscTest, ForwardsABodyLargerThanTheHeaderCap) {
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_TRUE(d.ok);
@@ -329,7 +329,7 @@ TEST(HttpFramingChunkedTest, RewritesUppercaseLocationAndForwardsChunksVerbatim)
         "1a\r\n<service><ok>true</ok></s>\r\n"
         "0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
 
@@ -343,7 +343,7 @@ TEST(HttpFramingChunkedTest, RewritesUppercaseLocationAndForwardsChunksVerbatim)
 
 TEST(HttpFramingChunkedTest, ReassemblesChunkBoundariesSplitAcrossFeeds) {
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -367,7 +367,7 @@ TEST(HttpFramingMiscTest, RewritesRequestHostFromReflectorToDevice) {
         "Host: 192.168.1.2:40000\r\n"
         "Connection: keep-alive\r\n\r\n";
     HostRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Request);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out,
@@ -386,7 +386,7 @@ TEST(HttpFramingMiscTest, RefusesOversizedHeaderBlock) {
         "X-Pad: ";
     message.append(3 * 1024, 'a');  // exceeds the header cap, no terminating blank line
     HostRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Request);
     Driver d{framing};
     d.Read(message);
     EXPECT_FALSE(d.ok);
@@ -402,7 +402,7 @@ TEST(HttpFramingMiscTest, FramesTwoPipelinedKeepAliveMessages) {
         "HTTP/1.1 204 No Content\r\n"
         "Application-URL: http://10.1.3.80:36866/apps\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(first + second);
     EXPECT_EQ(d.out,
@@ -420,7 +420,7 @@ TEST(HttpFramingTest, EmitsAMessageThenCarriesAPartialNextHeader) {
     // rewritten. The first read forwards msg1 and leaves msg2's partial header unconsumed (it stays in the
     // owner's buffer); the second read completes and rewrites msg2.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -454,7 +454,7 @@ TEST(HttpFramingTest, RewritesMultipleAuthorityHeadersInOneMessage) {
         "Location: http://10.1.3.80:36866/apps/YouTube\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out,
@@ -478,7 +478,7 @@ TEST(HttpFramingTest, ScanDoesNotShortCircuitWhenAnEarlierHeaderIsAccepted) {
         "Location: http://10.1.3.80:40000/apps/YouTube\r\n"   // NOT owned -> declined, left verbatim
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;  // only swaps 10.1.3.80:36866
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     const auto r = framing.Feed(message);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->consumed, message.size());  // the whole message consumed despite the second decline
@@ -501,7 +501,7 @@ TEST(HttpFramingTest, LeavesAuthorityUnchangedWhenRewriteDeclines) {
         "Application-URL: http://10.1.3.80:9999/apps\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;  // only swaps 10.1.3.80:36866
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out, message);
@@ -517,7 +517,7 @@ TEST(HttpFramingTest, LeavesHostnameUrlAuthorityUnchanged) {
         "Application-URL: http://dial.example.com:36866/apps\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out, message);
@@ -532,7 +532,7 @@ TEST(HttpFramingTest, LeavesNonHttpUrlsUnchanged) {
         "Application-URL: https://10.1.3.80:36866/apps\r\n"
         "Content-Length: 0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out, message);
@@ -544,7 +544,7 @@ TEST(HttpFramingChunkedTest, ChunkedTakesPrecedenceOverContentLength) {
     // (deliberately wrong) Content-Length must not bound the body — a following pipelined message proves msg1
     // ended at the chunk terminator, since only then is msg2 framed and its Application-URL rewritten.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -571,7 +571,7 @@ TEST(HttpFramingChunkedTest, TreatsChunkedCodingCaseInsensitivelyInACodingList) 
     // RFC 7230: the transfer-coding name is case-insensitive and chunked may end a coding list. "gzip, CHUNKED"
     // must frame as chunked — otherwise the chunk bytes would be misread as the next message's header.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -594,7 +594,7 @@ TEST(HttpFramingChunkedTest, DropsChunkExtensionsWhenSizingButForwardsThemVerbat
         "3;name=value\r\nabc\r\n"
         "0\r\n\r\n";
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_EQ(d.out, message);
@@ -604,7 +604,7 @@ TEST(HttpFramingMiscTest, RefusesMalformedContentLength) {
     // A Content-Length whose value isn't a number is malformed: reject the message so the owner closes, rather
     // than guess a body length.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -617,7 +617,7 @@ TEST(HttpFramingMiscTest, RefusesContentLengthWithTrailingJunk) {
     // and frame a 5-byte body, mis-parsing the trailing "abc" as the next message. Require the whole value to
     // be the number: reject so the owner closes (matching ParseAuthority's port strictness).
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -629,7 +629,7 @@ TEST(HttpFramingMiscTest, AcceptsContentLengthWithTrailingWhitespace) {
     // Trailing OWS after the number is legal (RFC 7230 §3.2.4) and must NOT be mistaken for junk: the value is
     // still 5, and the body frames normally.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -641,7 +641,7 @@ TEST(HttpFramingMiscTest, AcceptsContentLengthWithTrailingWhitespace) {
 TEST(HttpFramingMiscTest, RefusesMalformedChunkSize) {
     // A chunk-size line that isn't valid hex is malformed: reject so the owner closes.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -657,7 +657,7 @@ TEST(HttpFramingMiscTest, RefusesOversizedChunkSizeLine) {
         "Transfer-Encoding: chunked\r\n\r\n";
     message.append(300, 'a');  // a chunk-size line well past MAX_CHUNK_LINE_BYTES (256), no CRLF
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_FALSE(d.ok);
@@ -668,7 +668,7 @@ TEST(HttpFramingTest, RewritesMultipleHeadersThenFramesTheNextMessage) {
     // body, then a second message follows. The next message must frame from the right offset — consumed
     // tracks the original input bytes, not the grown rewritten header.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -694,7 +694,7 @@ TEST(HttpFramingChunkedTest, FramesMultipleChunksThenTheNextMessage) {
     // and trailing CRLF must be consumed in turn, the 0-chunk must end the body, and only then is the next
     // message's header framed and rewritten.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -721,7 +721,7 @@ TEST(HttpFramingChunkedTest, ForwardsChunkedTrailersVerbatim) {
     // A trailer section after the last chunk (RFC 7230 §4.1) is relayed opaquely: forwarded byte-for-byte,
     // the empty line ends the body, and a following pipelined message is then framed and its URL rewritten.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -751,7 +751,7 @@ TEST(HttpFramingChunkedTest, ReassemblesChunkedTrailerSplitAcrossFeeds) {
     // The trailer section can arrive in arbitrary fragments — mid trailer-field line, and mid the closing
     // CRLF. The framer holds an unterminated line for the next feed and still forwards everything verbatim.
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(
         "HTTP/1.1 200 OK\r\n"
@@ -779,10 +779,94 @@ TEST(HttpFramingMiscTest, RefusesOversizedTrailerLine) {
         "0\r\n";
     message.append(HttpFraming::MAX_TRAILER_LINE_BYTES + 1, 'a');  // a trailer line past the cap, no CRLF
     UrlRewrite rewrite;
-    HttpFraming framing(AsRewrite(rewrite));
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
     Driver d{framing};
     d.Read(message);
     EXPECT_FALSE(d.ok);
+}
+
+TEST(HttpFramingCloseDelimitedTest, StreamsResponseWithNoLengthAsBodyUntilClose) {
+    // A response with neither Content-Length nor chunked encoding (HTTP/1.0, or HTTP/1.1 Connection: close) is
+    // close-delimited (RFC 7230 §3.3.3 rule 7): the body streams opaquely across feeds with no in-band end —
+    // the owner ends it at connection close. The header is still rewritten; body bytes that resemble a new
+    // status line stay body, never re-framed (the mis-framing bug this fixes).
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.0 200 OK\r\n"
+        "Application-URL: http://10.1.3.80:36866/apps\r\n\r\n"
+        "<dial>part1");
+    d.Read("HTTP/1.1 still body\r\npart2");  // header-looking bytes inside the body stay body
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.out,
+        "HTTP/1.0 200 OK\r\n"
+        "Application-URL: http://192.168.1.2:54321/apps\r\n\r\n"
+        "<dial>part1HTTP/1.1 still body\r\npart2");
+    ASSERT_EQ(rewrite.seen.size(), 1u);  // only the real header's Application-URL — the body is never re-scanned
+}
+
+TEST(HttpFramingCloseDelimitedTest, RequestWithNoLengthIsBodylessNotCloseDelimited) {
+    // A request with neither Content-Length nor chunked encoding has a zero-length body (RFC 7230 §3.3.3
+    // rule 6) — NOT close-delimited. Two pipelined requests must both frame; a close-delimited first would
+    // swallow the second as its body.
+    HostRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Request);
+    Driver d{framing};
+    d.Read(
+        "GET /a HTTP/1.1\r\nHost: 192.168.1.2:40000\r\n\r\n"
+        "GET /b HTTP/1.1\r\nHost: 192.168.1.2:40000\r\n\r\n");
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.out,
+        "GET /a HTTP/1.1\r\nHost: 10.1.3.80:1461\r\n\r\n"
+        "GET /b HTTP/1.1\r\nHost: 10.1.3.80:1461\r\n\r\n");
+    EXPECT_EQ(rewrite.seen.size(), 2u);  // both framed — the first request was not close-delimited
+}
+
+TEST(HttpFramingCloseDelimitedTest, BodylessStatusResponsesAreNotCloseDelimited) {
+    // 1xx/204/304 responses are bodyless even with no Content-Length (RFC 7230 §3.3.3 rule 1), so they must
+    // NOT be treated as close-delimited: a following pipelined response on the same connection still frames.
+    const auto check = [](std::string_view status_line) {
+        UrlRewrite rewrite;
+        HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+        Driver d{framing};
+        d.Read(std::string{status_line} +
+            "\r\nApplication-URL: http://10.1.3.80:36866/apps\r\n\r\n"
+            "HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80:36866/apps\r\nContent-Length: 0\r\n\r\n");
+        EXPECT_TRUE(d.ok) << status_line;
+        EXPECT_EQ(rewrite.seen.size(), 2u) << status_line;  // both framed — the status did not swallow #2 as body
+    };
+    check("HTTP/1.1 204 No Content");
+    check("HTTP/1.1 304 Not Modified");
+    check("HTTP/1.1 100 Continue");
+}
+
+TEST(HttpFramingCloseDelimitedTest, BodylessStatusWithContentLengthHasNoBody) {
+    // RFC 7230 §3.3.3 rule 1 overrides the framing headers: a 304 that (wrongly) carries a Content-Length is
+    // still bodyless. The CL must frame no phantom body, or it would swallow the start of the next response.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 304 Not Modified\r\n"
+        "Application-URL: http://10.1.3.80:36866/apps\r\n"
+        "Content-Length: 50\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80:36866/apps\r\nContent-Length: 0\r\n\r\n");
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(rewrite.seen.size(), 2u);  // both framed — the 304's Content-Length framed no body
+}
+
+TEST(HttpFramingCloseDelimitedTest, ExplicitZeroContentLengthResponseIsNotCloseDelimited) {
+    // Content-Length: 0 is an explicit empty body, distinct from the "no length header" case — it must stay
+    // bodyless, so a following pipelined response frames rather than being swallowed.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80:36866/apps\r\nContent-Length: 0\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nApplication-URL: http://10.1.3.80:36866/apps\r\nContent-Length: 0\r\n\r\n");
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(rewrite.seen.size(), 2u);  // both framed — CL:0 is bodyless, not close-delimited
 }
 
 }  // namespace reflector

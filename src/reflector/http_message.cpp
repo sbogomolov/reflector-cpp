@@ -22,6 +22,25 @@ Logger& GetLogger() noexcept {
     return logger;
 }
 
+// The numeric status code of a response start line ("HTTP/x.y SP code SP reason"), or 0 if it can't be read.
+// Only used to spot the bodyless statuses, so a 0 just means "treat as an ordinary-bodied response".
+int ParseStatusCode(std::string_view start_line) {
+    const size_t sp = start_line.find(' ');
+    if (sp == std::string_view::npos) {
+        return 0;
+    }
+    const std::string_view code_field = TrimLeadingSpace(start_line.substr(sp + 1));
+    int code = 0;
+    const auto* const end = code_field.data() + code_field.size();
+    return std::from_chars(code_field.data(), end, code).ec == std::errc{} ? code : 0;
+}
+
+// A 1xx, 204, or 304 response has no body whatever the framing headers say (RFC 7230 §3.3.3 rule 1), so it
+// must not be taken for a close-delimited body.
+bool StatusForbidsBody(int code) {
+    return (code >= 100 && code < 200) || code == 204 || code == 304;
+}
+
 } // namespace
 
 namespace reflector {
@@ -60,8 +79,8 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
     return Authority{IpEndpoint{*addr, port}, auth_start, auth_len};
 }
 
-HttpFraming::HttpFraming(EndpointRewrite rewrite)
-    : rewrite_{std::move(rewrite)} {
+HttpFraming::HttpFraming(EndpointRewrite rewrite, MessageType type)
+    : rewrite_{std::move(rewrite)}, type_{type} {
     header_.reserve(MAX_HEADER_BYTES);
 }
 
@@ -72,6 +91,11 @@ bool HttpFraming::ScanAndRewriteHeader() {
     size_t content_length = 0;
     bool has_content_length = false;
     bool chunked = false;
+    // A response's status line can make it bodyless whatever the framing headers say (rule 1); read the code
+    // so a 1xx/204/304 is forced bodyless below, ahead of the Content-Length / chunked / close-delimited
+    // branches. Requests carry no status code, so this stays false for them.
+    const bool bodyless_status = type_ == MessageType::Response
+        && StatusForbidsBody(ParseStatusCode(std::string_view{header_}.substr(0, header_.find(CRLF))));
     size_t pos = 0;
     while (pos < header_.size()) {
         const std::string_view header_view{header_};
@@ -120,12 +144,22 @@ bool HttpFraming::ScanAndRewriteHeader() {
         pos = eol + CRLF.size();
     }
 
-    if (chunked) {
+    if (bodyless_status) {
+        // 1xx/204/304: no body whatever the framing headers say (RFC 7230 §3.3.3 rule 1). This precedes — and
+        // overrides — the Content-Length / chunked / close-delimited branches, so a stray Content-Length on
+        // such a response can't frame a phantom body that swallows the next response.
+        phase_ = Phase::Header;
+    } else if (chunked) {
         phase_ = Phase::BodyChunked;
         chunk_remaining_ = 0;
     } else if (has_content_length && content_length > 0) {
         phase_ = Phase::BodyContentLength;
         body_remaining_ = content_length;
+    } else if (type_ == MessageType::Response && !has_content_length) {
+        // A response with neither Content-Length nor chunked encoding runs until the connection closes
+        // (RFC 7230 §3.3.3 rule 7): stream the body opaquely until the owner sees EOF. A same-shape request
+        // is bodyless instead (rule 6) — the branch below.
+        phase_ = Phase::BodyUntilClose;
     } else {
         phase_ = Phase::Header;  // bodyless: the message ends at the header
     }
@@ -235,6 +269,13 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             }
             break;  // a trailer field: keep scanning the next line in this same feed
         }
+        case BodyUntilClose:
+            // Close-delimited (RFC 7230 §3.3.3 rule 7): no length, no chunk frame. Forward all input as body,
+            // opaquely; the message has no in-band end, so the owner ends it when the connection closes. The
+            // phase never returns to Header — there is no next message on a close-delimited connection.
+            pos = input.size();
+            stop = true;
+            break;
         }
     }
 
