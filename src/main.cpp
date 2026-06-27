@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <csignal>
+#include <signal.h>
 #include <exception>
 #include <optional>
 #include <string>
@@ -64,6 +65,19 @@ void SignalHandler(int) {
     }
 }
 
+// Registers SignalHandler for SIGINT/SIGTERM with SA_RESTART, so the kernel auto-restarts a
+// send/recv/read/write interrupted by one of them: the data path never observes EINTR and so never
+// loops on it. Only epoll_wait/kevent (never restarted regardless of SA_RESTART) still surface EINTR,
+// handled in EventLoopDispatcher::PollOnce. sigaction, not std::signal, because signal()'s restart
+// semantics are platform- and feature-macro-dependent (System V vs BSD); we want SA_RESTART guaranteed.
+void InstallSignalHandler(int signal_number) {
+    struct sigaction action{};
+    action.sa_handler = SignalHandler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    sigaction(signal_number, &action, nullptr);
+}
+
 void ConfigureStdoutBuffering() noexcept {
     if (!isatty(fileno(stdout))) {
         // Docker and service managers capture stdout through a pipe; line buffering keeps log lines visible before shutdown.
@@ -73,8 +87,8 @@ void ConfigureStdoutBuffering() noexcept {
 
 int Run(int argc, char* argv[]) {
     ConfigureStdoutBuffering();
-    std::signal(SIGINT, SignalHandler);
-    std::signal(SIGTERM, SignalHandler);
+    InstallSignalHandler(SIGINT);
+    InstallSignalHandler(SIGTERM);
 
     reflector::Logger logger("main");
     if (argc > 2) {

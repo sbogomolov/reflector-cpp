@@ -140,9 +140,6 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
     while (true) {
         const auto needed = recv(fd, buffer.data(), buffer.size(), MSG_PEEK | MSG_TRUNC);
         if (needed < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
             GetLogger().Error("Cannot read netlink dump reply: {}", Error::FromErrno());
             return false;
         }
@@ -152,9 +149,6 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
 
         const auto received = recv(fd, buffer.data(), buffer.size(), 0);
         if (received < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
             GetLogger().Error("Cannot read netlink dump reply: {}", Error::FromErrno());
             return false;
         }

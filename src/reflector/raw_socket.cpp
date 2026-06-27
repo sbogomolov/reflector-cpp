@@ -528,10 +528,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
 #if defined(__linux__)
     // MSG_TRUNC makes recv report the frame's real length even when it exceeds the buffer, so a
     // frame that didn't fit is detectable (bytes > buffer) instead of being silently truncated.
-    ssize_t bytes;
-    do {
-        bytes = recv(fd_.Get(), receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
-    } while (bytes < 0 && errno == EINTR);
+    const ssize_t bytes = recv(fd_.Get(), receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
     if (bytes < 0) {
         if (IsWouldBlockErrno(errno)) {
             return std::nullopt;
@@ -548,10 +545,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
 
 #else
     if (receive_buffer_offset_ >= receive_buffer_filled_) {
-        ssize_t bytes;
-        do {
-            bytes = read(fd_.Get(), receive_buffer_.data(), receive_buffer_.size());
-        } while (bytes < 0 && errno == EINTR);
+        const ssize_t bytes = read(fd_.Get(), receive_buffer_.data(), receive_buffer_.size());
         if (bytes < 0) {
             if (IsWouldBlockErrno(errno)) {
                 return std::nullopt;
