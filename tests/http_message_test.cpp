@@ -717,10 +717,9 @@ TEST(HttpFramingChunkedTest, FramesMultipleChunksThenTheNextMessage) {
     ASSERT_EQ(rewrite.seen.size(), 1u);  // only msg2's Application-URL — proves msg1 ended at the 0-chunk
 }
 
-TEST(HttpFramingMiscTest, RefusesChunkedTrailers) {
-    // The framer relays bodies opaquely and has no trailer scanner, so a trailer field after the last chunk
-    // (where a bare closing CRLF is expected) is refused — the owner closes rather than forward a mis-framed
-    // stream.
+TEST(HttpFramingChunkedTest, ForwardsChunkedTrailersVerbatim) {
+    // A trailer section after the last chunk (RFC 7230 §4.1) is relayed opaquely: forwarded byte-for-byte,
+    // the empty line ends the body, and a following pipelined message is then framed and its URL rewritten.
     UrlRewrite rewrite;
     HttpFraming framing(AsRewrite(rewrite));
     Driver d{framing};
@@ -729,7 +728,60 @@ TEST(HttpFramingMiscTest, RefusesChunkedTrailers) {
         "Transfer-Encoding: chunked\r\n\r\n"
         "5\r\nhello\r\n"
         "0\r\n"
+        "X-Checksum: abc123\r\n"
+        "X-Signature: deadbeef\r\n\r\n"
+        "HTTP/1.1 200 OK\r\n"
+        "Application-URL: http://10.1.3.80:36866/apps\r\n"
+        "Content-Length: 0\r\n\r\n");
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.out,
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "5\r\nhello\r\n"
+        "0\r\n"
+        "X-Checksum: abc123\r\n"
+        "X-Signature: deadbeef\r\n\r\n"
+        "HTTP/1.1 200 OK\r\n"
+        "Application-URL: http://192.168.1.2:54321/apps\r\n"
+        "Content-Length: 0\r\n\r\n");
+    ASSERT_EQ(rewrite.seen.size(), 1u);  // only msg2's Application-URL — proves the trailers ended msg1 cleanly
+}
+
+TEST(HttpFramingChunkedTest, ReassemblesChunkedTrailerSplitAcrossFeeds) {
+    // The trailer section can arrive in arbitrary fragments — mid trailer-field line, and mid the closing
+    // CRLF. The framer holds an unterminated line for the next feed and still forwards everything verbatim.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite));
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "5\r\nhello\r\n"
+        "0\r\n"
+        "X-Che");               // trailer field split mid-line
+    d.Read("cksum: abc123\r");  // line continues; its own CRLF is split across this feed and the next
+    d.Read("\n\r");             // field CRLF completes, and the closing CRLF is split too
+    d.Read("\n");               // closing CRLF completes — the empty line ends the body
+    EXPECT_TRUE(d.ok);
+    EXPECT_EQ(d.out,
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "5\r\nhello\r\n"
+        "0\r\n"
         "X-Checksum: abc123\r\n\r\n");
+}
+
+TEST(HttpFramingMiscTest, RefusesOversizedTrailerLine) {
+    // A trailer line that never reaches its CRLF is bounded like the chunk-size line: past the cap, reject.
+    std::string message =
+        "HTTP/1.1 200 OK\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "0\r\n";
+    message.append(HttpFraming::MAX_TRAILER_LINE_BYTES + 1, 'a');  // a trailer line past the cap, no CRLF
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite));
+    Driver d{framing};
+    d.Read(message);
     EXPECT_FALSE(d.ok);
 }
 

@@ -42,6 +42,8 @@ public:
     static constexpr size_t MAX_RECV_BUFFER = 4 * 1024;
     static_assert(MAX_RECV_BUFFER > HttpFraming::MAX_HEADER_BYTES,
         "the receive buffer must exceed the header cap, or the always-armed reader livelocks otherwise");
+    static_assert(MAX_RECV_BUFFER > HttpFraming::MAX_TRAILER_LINE_BYTES,
+        "the receive buffer must exceed the trailer-line cap too (same livelock invariant as the header cap)");
 
     // Concurrent proxied client<->device pairs; a new accept past this is dropped. The cap that grows with
     // concurrent fetches (source clients x devices) and the only one with per-connection memory (two recv
