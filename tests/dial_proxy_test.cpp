@@ -934,7 +934,9 @@ TEST_F(DialProxyForwardTest, TwoMessagesBackToBackDrainInOrder) {
     ASSERT_NE(oc.id, 0u);
 
     const std::string_view first = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nfoo";
-    const std::string_view second = "HTTP/1.1 204 No Content\r\nContent-Length: 4\r\n\r\nbeef";
+    // A second bodied response — a normal 200, not a 204: a 204/304 is bodyless regardless of Content-Length
+    // (RFC 7230 §3.3.3 rule 1), so framing a body on one would be invalid (see the framer's status handling).
+    const std::string_view second = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbeef";
     std::string both;
     both.append(first);
     both.append(second);
@@ -1440,8 +1442,9 @@ TEST_F(DialProxyRewriteTest, MultiMessageDrainOnSingleEdge) {
     const std::string first = std::format(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", tricky_body.size(), tricky_body);
     const std::string_view second_body = "beef";
+    // A normal 200, not a 204: a bodyless status (RFC 7230 §3.3.3 rule 1) can't carry a Content-Length body.
     const std::string second = std::format(
-        "HTTP/1.1 204 No Content\r\nContent-Length: {}\r\n\r\n{}", second_body.size(), second_body);
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", second_body.size(), second_body);
     const std::string both = first + second;
 
     const std::span<const std::byte> bytes{

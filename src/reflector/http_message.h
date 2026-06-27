@@ -35,14 +35,15 @@ struct Authority {
 // fed input. Each Feed yields at most one message's worth — a complete header plus as much of its body as
 // arrived — so the owner loops Feed over its buffer until consumed == 0 (need more bytes), then reads more.
 //
-// Body framing covers exactly what DIAL needs: a Content-Length body, a Transfer-Encoding: chunked body, or
-// no body. A message carrying NEITHER header is treated as bodyless (the message ends at the blank line).
-// KNOWN LIMITATION: that means a close-delimited response (RFC 7230 §3.3.3 rule 7 — a response with no
-// Content-Length and no chunked encoding, whose body runs until the connection closes) is mis-framed: its
-// header forwards, then its body bytes are parsed as the next message's header and the connection is dropped
-// as malformed. Real DIAL device servers send Content-Length (or chunked), so this does not arise in
-// practice; a device that relied on close-delimiting would need a Phase that streams the body until EOF
-// (and status-line awareness for the always-bodyless 1xx/204/304 and HEAD-response cases). Out of scope here.
+// Body framing follows RFC 7230 §3.3.3 for what DIAL needs: a Content-Length body, a Transfer-Encoding:
+// chunked body, no body, or — for a response — a close-delimited body (no Content-Length and no chunked
+// encoding, the body running until the connection closes; rule 7, Phase::BodyUntilClose, ended by the owner
+// on EOF). Direction matters, so the framer is told its MessageType and reads the response status: a request
+// with neither framing header is bodyless (rule 6), and a 1xx/204/304 response is bodyless whatever headers
+// it carries (rule 1).
+// KNOWN LIMITATION: a response to a HEAD request is bodyless even with a Content-Length, but the framer can't
+// tell — that needs the paired request method, which lives in the opposite direction's framer. DIAL issues no
+// HEAD, so this does not arise; correlating the request method across the two framers is out of scope here.
 class HttpFraming {
 public:
     // Called once per rewritable authority header — Host (requests), Application-URL / Location
@@ -76,15 +77,21 @@ public:
     // <= MAX_HEADER_BYTES so the DIAL receive buffer, which already exceeds that, bounds it too.
     static constexpr size_t MAX_TRAILER_LINE_BYTES = 1024;
 
-    explicit HttpFraming(EndpointRewrite rewrite);
+    // Which side this framer parses. Only a response can be close-delimited — a body that runs until the
+    // connection closes (RFC 7230 §3.3.3 rule 7). A request with no Content-Length and no chunked encoding is
+    // bodyless (rule 6), so the framer must know its direction. DialProxy builds one of each per connection.
+    enum class MessageType : uint8_t { Request, Response };
+
+    HttpFraming(EndpointRewrite rewrite, MessageType type);
 
     // Feed a contiguous view of the owner's buffered bytes. nullopt = a malformed or over-cap message (the
     // owner closes); otherwise the forwardable Output.
     [[nodiscard]] std::optional<Output> Feed(std::string_view input);
 
 private:
-    // Accumulating the start line + header block, or streaming a body of a known shape.
-    enum class Phase : uint8_t { Header, BodyContentLength, BodyChunked, BodyChunkedDone };
+    // Accumulating the start line + header block, or streaming a body of a known shape. BodyUntilClose is the
+    // close-delimited response body (no Content-Length, no chunking): streamed opaquely until the close.
+    enum class Phase : uint8_t { Header, BodyContentLength, BodyChunked, BodyChunkedDone, BodyUntilClose };
 
     // Rewrites the authority headers in header_ in place and sets the body phase from its framing; returns
     // false on a malformed header. header_ holds exactly the header block, so it scans [0, header_.size()).
@@ -93,6 +100,7 @@ private:
     EndpointRewrite rewrite_;
 
     Phase phase_ = Phase::Header;
+    MessageType type_;              // request vs response: only a response can be close-delimited
     std::string header_;            // the current message's rewritten header (header views point in here)
     size_t body_remaining_ = 0;     // Content-Length bytes still to forward
     size_t chunk_remaining_ = 0;    // current chunk DATA(+CRLF) still to forward
