@@ -206,30 +206,34 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             }
             pos = eol + CRLF.size();
             if (chunk_size == 0) {
-                phase_ = BodyChunkedDone;
-                chunk_remaining_ = CRLF.size();  // the blank line closing the chunked body
+                phase_ = BodyChunkedDone;  // an optional trailer section + the closing CRLF remain
             } else {
                 chunk_remaining_ = chunk_size + CRLF.size();  // chunk DATA + its terminating CRLF
             }
             break;
         }
         case BodyChunkedDone: {
-            // A chunked body closes with a bare CRLF. A trailer field (RFC 7230) would appear here instead;
-            // this framer relays bodies opaquely and has no trailer scanner, so a non-CRLF close is refused
-            // rather than silently mis-framed as the next message. The CRLF may itself be split across feeds.
-            while (chunk_remaining_ > 0 && pos < input.size()) {
-                if (input[pos] != CRLF[CRLF.size() - chunk_remaining_]) {
-                    GetLogger().Error("chunked body not closed by CRLF (chunked trailers are unsupported)");
+            // After the last chunk (RFC 7230 §4.1) comes an optional trailer section then the closing CRLF:
+            // *(trailer-field CRLF) CRLF. Relayed opaquely (no trailer parsing) -- forward each complete line
+            // and end the body at the empty line. A line without its CRLF (including a split closing CRLF) is
+            // left for the next feed, capped so a peer dribbling an endless line can't grow the buffer.
+            const size_t eol = input.find(CRLF, pos);
+            if (eol == std::string_view::npos) {
+                if (input.size() - pos > MAX_TRAILER_LINE_BYTES) {
+                    GetLogger().Error("chunked trailer line exceeds the {}-byte cap with no terminator",
+                                      MAX_TRAILER_LINE_BYTES);
                     return std::nullopt;
                 }
-                ++pos;
-                --chunk_remaining_;
+                stop = true;  // incomplete line: leave it for the next feed
+                break;
             }
-            if (chunk_remaining_ == 0) {
-                phase_ = Header;
+            const bool empty_line = eol == pos;
+            pos = eol + CRLF.size();  // forward this line (a trailer field, or the closing empty line) opaquely
+            if (empty_line) {
+                phase_ = Header;  // the empty line ends the trailer section and the chunked body
+                stop = true;
             }
-            stop = true;
-            break;
+            break;  // a trailer field: keep scanning the next line in this same feed
         }
         }
     }

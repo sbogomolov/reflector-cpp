@@ -71,6 +71,11 @@ public:
     // The same unterminated-line guard for a chunk-size line (a hex length + optional chunk extensions).
     static constexpr size_t MAX_CHUNK_LINE_BYTES = 256;
 
+    // The same guard for one trailer field after the last chunk (RFC 7230 §4.1), relayed opaquely. Roomier
+    // than a chunk-size line because a trailer value can be sizable (e.g. a base64 signature digest). Kept
+    // <= MAX_HEADER_BYTES so the DIAL receive buffer, which already exceeds that, bounds it too.
+    static constexpr size_t MAX_TRAILER_LINE_BYTES = 1024;
+
     explicit HttpFraming(EndpointRewrite rewrite);
 
     // Feed a contiguous view of the owner's buffered bytes. nullopt = a malformed or over-cap message (the
@@ -90,7 +95,7 @@ private:
     Phase phase_ = Phase::Header;
     std::string header_;            // the current message's rewritten header (header views point in here)
     size_t body_remaining_ = 0;     // Content-Length bytes still to forward
-    size_t chunk_remaining_ = 0;    // current chunk DATA(+CRLF), or the closing CRLF, still to forward
+    size_t chunk_remaining_ = 0;    // current chunk DATA(+CRLF) still to forward
 };
 
 } // namespace reflector
