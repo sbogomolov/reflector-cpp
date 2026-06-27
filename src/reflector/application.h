@@ -57,8 +57,9 @@ public:
 
     // Sets up a self-pipe and registers its read end with the dispatcher, returning the write fd a signal
     // handler writes one byte to in order to break the blocking poll immediately -- the loop then re-checks
-    // stop_requested and exits, instead of waiting up to one poll interval. Also robust to a SA_RESTART
-    // handler (signal()'s default on Linux) that would otherwise restart the poll rather than surface EINTR.
+    // stop_requested and exits, instead of waiting up to one poll interval. The byte -- not the poll
+    // returning EINTR -- is what breaks the wait, so shutdown stays prompt even on a platform whose
+    // blocking poll restarts after a signal instead of surfacing EINTR.
     // Best-effort: returns -1 (after logging a warning) if the pipe or its registration cannot be set up,
     // leaving shutdown bounded by the poll interval. Call once, after Configure, before Run. Production
     // wiring only -- the other tests never call it, so their dispatcher-registration counts are unperturbed.

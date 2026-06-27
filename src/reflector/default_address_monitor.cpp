@@ -141,9 +141,6 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     while (true) {
         const auto received = recv(fd_.Get(), buffer.data(), buffer.size(), 0);
         if (received < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
             if (IsWouldBlockErrno(errno)) {
                 break;  // drained
             }
