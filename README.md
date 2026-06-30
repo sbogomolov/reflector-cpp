@@ -1,5 +1,13 @@
 # reflector
 
+> [!IMPORTANT]
+> **This project has been rewritten in Rust.**
+> [**reflector-rs**](https://github.com/sbogomolov/reflector-rs) reached full feature parity and is now where
+> all development happens — by the time you read this it may well have features this C++ version lacks. This
+> implementation still works and remains available, but new deployments should prefer reflector-rs.
+>
+> Image tags below `0.8.0` are this C++ version; `0.8.0` and later are the Rust rewrite.
+
 Reflects link-local service traffic between two network interfaces. Useful when devices that need to
 talk to each other sit on different L2 segments that don't forward each other's broadcasts or
 multicasts — the classic case being a router with a wired LAN on one side and a Wi-Fi or IoT VLAN on
