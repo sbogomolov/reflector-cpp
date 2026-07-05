@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -241,6 +242,10 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             pos = eol + CRLF.size();
             if (chunk_size == 0) {
                 phase_ = BodyChunkedDone;  // an optional trailer section + the closing CRLF remain
+            } else if (chunk_size > std::numeric_limits<size_t>::max() - CRLF.size()) {
+                // A near-SIZE_MAX size (hostile/buggy device) would wrap the addition below and misframe.
+                GetLogger().Error("chunk size {:#x} too large to frame", chunk_size);
+                return std::nullopt;
             } else {
                 chunk_remaining_ = chunk_size + CRLF.size();  // chunk DATA + its terminating CRLF
             }

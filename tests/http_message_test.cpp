@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <format>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -648,6 +650,36 @@ TEST(HttpFramingMiscTest, RefusesMalformedChunkSize) {
         "Transfer-Encoding: chunked\r\n\r\n"
         "zz\r\n");
     EXPECT_FALSE(d.ok);
+}
+
+TEST(HttpFramingMiscTest, RefusesChunkSizeThatWouldOverflowTheFramer) {
+    // SIZE_MAX and SIZE_MAX-1 parse as valid hex, but adding the chunk's trailing CRLF would wrap
+    // chunk_remaining_ to 1 or 0 and desynchronize the framer: reject so the owner closes.
+    for (const size_t chunk_size : {std::numeric_limits<size_t>::max(),
+                                    std::numeric_limits<size_t>::max() - 1}) {
+        UrlRewrite rewrite;
+        HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+        Driver d{framing};
+        d.Read(std::format("HTTP/1.1 200 OK\r\n"
+                           "Transfer-Encoding: chunked\r\n\r\n"
+                           "{:x}\r\n",
+                           chunk_size));
+        EXPECT_FALSE(d.ok);
+    }
+}
+
+TEST(HttpFramingChunkedTest, AcceptsTheLargestFrameableChunkSize) {
+    // SIZE_MAX-2 is the boundary: chunk DATA + CRLF fits size_t exactly, so the guard must not
+    // over-reject it and the chunk bytes stream through opaquely.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(std::format("HTTP/1.1 200 OK\r\n"
+                       "Transfer-Encoding: chunked\r\n\r\n"
+                       "{:x}\r\ndata",
+                       std::numeric_limits<size_t>::max() - 2));
+    EXPECT_TRUE(d.ok);
+    EXPECT_TRUE(d.out.ends_with("data"));
 }
 
 TEST(HttpFramingMiscTest, RefusesOversizedChunkSizeLine) {
