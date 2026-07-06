@@ -54,9 +54,26 @@ void AppendAddrMessage(std::vector<std::byte>& out, uint16_t type, uint32_t inte
     std::memcpy(out.data() + start + sizeof(nlmsghdr), &message, sizeof(message));
 }
 
+// Appends one netlink link message (nlmsghdr + ifinfomsg) of the given type carrying ifi_index —
+// the shape a MAC or link-state change arrives in.
+void AppendLinkMessage(std::vector<std::byte>& out, uint16_t type, int interface_index) {
+    nlmsghdr header{};
+    header.nlmsg_len = reflector::narrow_cast<uint32_t>(sizeof(nlmsghdr) + sizeof(ifinfomsg));
+    header.nlmsg_type = type;
+    ifinfomsg message{};
+    message.ifi_index = interface_index;
+
+    const size_t start = out.size();
+    out.resize(start + header.nlmsg_len);
+    std::memcpy(out.data() + start, &header, sizeof(header));
+    std::memcpy(out.data() + start + sizeof(nlmsghdr), &message, sizeof(message));
+}
+
 constexpr uint16_t ADDR_MESSAGE = RTM_NEWADDR;
 constexpr uint16_t DELETED_ADDR_MESSAGE = RTM_DELADDR;
-constexpr uint16_t NON_ADDR_MESSAGE = RTM_NEWLINK;
+constexpr uint16_t LINK_MESSAGE = RTM_NEWLINK;
+constexpr uint16_t REMOVED_LINK_MESSAGE = RTM_DELLINK;
+constexpr uint16_t UNRELATED_MESSAGE = RTM_NEWROUTE;
 
 #else
 
@@ -75,9 +92,24 @@ void AppendAddrMessage(std::vector<std::byte>& out, unsigned char type, uint16_t
     std::memcpy(out.data() + start, &message, sizeof(message));
 }
 
+// Appends one PF_ROUTE link message (if_msghdr, the RTM_IFINFO shape) carrying ifm_index.
+void AppendLinkMessage(std::vector<std::byte>& out, unsigned char type, uint16_t interface_index) {
+    if_msghdr message{};
+    message.ifm_msglen = static_cast<unsigned short>(sizeof(if_msghdr));
+    message.ifm_version = RTM_VERSION;
+    message.ifm_type = type;
+    message.ifm_index = interface_index;
+
+    const size_t start = out.size();
+    out.resize(start + sizeof(if_msghdr));
+    std::memcpy(out.data() + start, &message, sizeof(message));
+}
+
 constexpr unsigned char ADDR_MESSAGE = RTM_NEWADDR;
 constexpr unsigned char DELETED_ADDR_MESSAGE = RTM_DELADDR;
-constexpr unsigned char NON_ADDR_MESSAGE = RTM_IFINFO;
+constexpr unsigned char LINK_MESSAGE = RTM_IFINFO;
+constexpr unsigned char REMOVED_LINK_MESSAGE = RTM_IFINFO;  // one link-change type covers both
+constexpr unsigned char UNRELATED_MESSAGE = RTM_ADD;
 
 #endif
 
@@ -204,18 +236,63 @@ TEST_F(DefaultAddressMonitorTest, CoalescesAcrossReads) {
     EXPECT_EQ(sink.changed, (std::vector<unsigned>{8}));
 }
 
-TEST_F(DefaultAddressMonitorTest, IgnoresNonAddressMessages) {
+TEST_F(DefaultAddressMonitorTest, ReportsLinkChanges) {
+    // A MAC or link-state change arrives as a link message, not an address one; it must refresh
+    // that interface too, or injected frames keep the stale cached MAC.
     auto monitor = MakeMonitor();
     ASSERT_TRUE(StartWatching(monitor));
     std::vector<std::byte> messages;
-    AppendAddrMessage(messages, NON_ADDR_MESSAGE, 3);
+    AppendLinkMessage(messages, LINK_MESSAGE, 9);
+    AppendLinkMessage(messages, REMOVED_LINK_MESSAGE, 2);
+
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{9, 2}));
+}
+
+TEST_F(DefaultAddressMonitorTest, CoalescesAddressAndLinkChangesForOneInterface) {
+    auto monitor = MakeMonitor();
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, ADDR_MESSAGE, 3);
+    AppendLinkMessage(messages, LINK_MESSAGE, 3);  // same interface: one callback, not two
+    AppendLinkMessage(messages, LINK_MESSAGE, 5);
+
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{3, 5}));
+}
+
+TEST_F(DefaultAddressMonitorTest, IgnoresUnrelatedMessages) {
+    auto monitor = MakeMonitor();
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, UNRELATED_MESSAGE, 3);  // a route message: not an addr/link change
     AppendAddrMessage(messages, ADDR_MESSAGE, 4);
-    AppendAddrMessage(messages, NON_ADDR_MESSAGE, 6);
+    AppendAddrMessage(messages, UNRELATED_MESSAGE, 6);
 
     Write(messages);
     FireReadable();
 
     EXPECT_EQ(sink.changed, (std::vector<unsigned>{4}));
+}
+
+TEST_F(DefaultAddressMonitorTest, NeverForwardsIndexZero) {
+    // 0 names no interface (kernel indices are >= 1) and is the overflow path's refresh-all
+    // sentinel — a stray 0 in a kernel message must not masquerade as it.
+    auto monitor = MakeMonitor();
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, ADDR_MESSAGE, 0);
+    AppendLinkMessage(messages, LINK_MESSAGE, 0);
+    AppendAddrMessage(messages, ADDR_MESSAGE, 6);
+
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{6}));
 }
 
 TEST_F(DefaultAddressMonitorTest, IgnoresSpuriousWakeWithNoData) {

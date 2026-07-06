@@ -12,9 +12,10 @@
 namespace reflector {
 
 // Production AddressMonitor. Linux uses a NETLINK_ROUTE socket subscribed to the IPv4/IPv6 address
-// groups; macOS uses a PF_ROUTE socket. The notification socket is opened at construction; the fd
-// is registered with the Dispatcher in Start(). The monitor owns that registration, so it must be
-// destroyed before the Dispatcher it was given.
+// groups and the link group (a MAC change is a link event, not an address one); macOS uses a
+// PF_ROUTE socket. The notification socket is opened at construction; the fd is registered with
+// the Dispatcher in Start(). The monitor owns that registration, so it must be destroyed before
+// the Dispatcher it was given.
 class DefaultAddressMonitor : public AddressMonitor, NoMove {
 public:
     explicit DefaultAddressMonitor(Dispatcher& dispatcher);
