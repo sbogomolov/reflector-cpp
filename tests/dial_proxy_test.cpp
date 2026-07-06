@@ -45,10 +45,15 @@ struct FakeDevice {
     TcpSocket listener;
     IpEndpoint endpoint;
 
-    static FakeDevice Make() {
+    // nullopt when the loopback listen fails (no such environment is expected, but dereferencing
+    // the disengaged optional here turned that into a bad-free instead of a test failure).
+    static std::optional<FakeDevice> Make() {
         const FakeInterface loopback;  // defaults: v4 source 127.0.0.1; only read during the call
         auto listener = TcpSocket::Listen(loopback, IpAddress::Family::V4);
         EXPECT_TRUE(listener.has_value());
+        if (!listener) {
+            return std::nullopt;
+        }
         const auto endpoint = listener->LocalEndpoint();
         return FakeDevice{std::move(*listener), endpoint};
     }
@@ -525,11 +530,12 @@ TEST_F(DialProxyTest, PromotionRefusedWhenRestCapIsFull) {
 //    established client is not.
 TEST_F(DialProxyTest, AcceptCreatesConnectionAndRegistersBothFds) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     ASSERT_GE(listener_fd, 0);
 
     const int client_fd = ConnectRawClient(*authority);
@@ -553,11 +559,12 @@ TEST_F(DialProxyTest, AcceptCreatesConnectionAndRegistersBothFds) {
 // place for the UAF-safe deferred reap.
 TEST_F(DialProxyTest, AbortShutsDownTheClientPromptlyButLeavesTheNodeForEviction) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
 
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
@@ -586,11 +593,12 @@ TEST_F(DialProxyTest, AbortShutsDownTheClientPromptlyButLeavesTheNodeForEviction
 // 2. The egress-pinned connect completes on the upstream writable edge: phase flips to Open.
 TEST_F(DialProxyTest, EgressPinnedConnectCompletesOnWritableEdge) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
 
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
@@ -615,11 +623,12 @@ TEST_F(DialProxyTest, EgressPinnedConnectCompletesOnWritableEdge) {
 //    pending and the device empty on both platforms.
 TEST_F(DialProxyTest, QueuedRequestFlushesOnConnectCompletion) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
 
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
@@ -642,9 +651,9 @@ TEST_F(DialProxyTest, QueuedRequestFlushesOnConnectCompletion) {
 
     // Accept the device-side socket (poll the listener: accept readiness can lag the connect) and read
     // the forwarded request as it arrives.
-    pollfd lpoll{.fd = device.listener.Fd(), .events = POLLIN, .revents = 0};
+    pollfd lpoll{.fd = device->listener.Fd(), .events = POLLIN, .revents = 0};
     ASSERT_GT(::poll(&lpoll, 1, 5000), 0) << "device listener never became acceptable";
-    auto device_side = device.listener.Accept();
+    auto device_side = device->listener.Accept();
     ASSERT_TRUE(device_side.has_value());
     EXPECT_EQ(ReadExactly(*device_side, sizeof(request) - 1),
         std::string_view(request, sizeof(request) - 1));
@@ -709,11 +718,12 @@ TEST_F(DialProxyTest, ConnectFailureTearsDownTheConnection) {
 // 5. At MAX_CONNECTIONS a further accept is dropped: no new Connection, the surplus client closed.
 TEST_F(DialProxyTest, DropsNewAcceptAtMaxConnections) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
 
     std::vector<int> client_fds;
     for (size_t i = 0; i < DialProxy::MAX_CONNECTIONS; ++i) {
@@ -752,11 +762,12 @@ TEST_F(DialProxyTest, DropsNewAcceptAtMaxConnections) {
 //    Reachable in production via a transient target-interface address change.
 TEST_F(DialProxyTest, TargetInterfaceWithoutIpv4DropsTheAccept) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
 
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     const auto registrations_before = dispatcher.RegistrationCount();  // just the listener fd
 
     const int client_fd = ConnectRawClient(*authority);
@@ -830,7 +841,11 @@ protected:
     // the assembled ends, or asserts/returns a half-built struct on failure (the caller ASSERTs id != 0).
     OpenConnection OpenOne(DialProxy& proxy) {
         OpenConnection oc;
-        oc.device.emplace(FakeDevice::Make());
+        oc.device = FakeDevice::Make();
+        EXPECT_TRUE(oc.device.has_value());
+        if (!oc.device) {
+            return oc;
+        }
 
         const auto authority = proxy.EnsureDiscoveryListener(oc.device->endpoint);
         EXPECT_TRUE(authority.has_value());
@@ -1547,10 +1562,11 @@ TEST_F(DialProxyForwardTest, EvictionReapsClosedConnectionNode) {
 // 2. A Connecting pair that never completes is reaped once its connect deadline passes.
 TEST_F(DialProxyForwardTest, EvictionReapsTimedOutConnectingPair) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
     auto* conn = AcceptOne(proxy, listener_fd);
@@ -1687,11 +1703,12 @@ TEST_F(DialProxyForwardTest, EndpointReapedOnlyAfterItsLastConnectionEndsSameSwe
 // reaped only after the LAST connection ends (count 0).
 TEST_F(DialProxyForwardTest, MultiConnectionEndpointReapedAfterTheLast) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
-    const auto dev = device.endpoint;
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
+    const auto dev = device->endpoint;
 
     const int client1 = ConnectRawClient(*authority);
     ASSERT_GE(client1, 0);
@@ -1728,11 +1745,12 @@ TEST_F(DialProxyForwardTest, MultiConnectionEndpointReapedAfterTheLast) {
 // balanced back to 0 — no leaked refcount that would pin the endpoint forever. The id is consumed.
 TEST_F(DialProxyForwardTest, AcceptRollbackOnRegisterFailureRestoresRefcount) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
-    const auto dev = device.endpoint;
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
+    const auto dev = device->endpoint;
     const auto id_before = NextConnectionId(proxy);
 
     const int client_fd = ConnectRawClient(*authority);
@@ -1813,11 +1831,12 @@ TEST_F(DialProxyTest, ListenerRegisterFailureRollsBackTheEndpoint) {
 // accept before constructing a Connection: no Connection, the id is not consumed, the endpoint untouched.
 TEST_F(DialProxyForwardTest, UpstreamConnectStartFailureDropsTheAccept) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
     target_if.SetV4(IpAddress::FromString("192.0.2.1"));  // unbindable connect source -> Connect nullopt
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());  // the listener (source_if) is fine; only the upstream bind fails
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     const auto id_before = NextConnectionId(proxy);
 
     const int client_fd = ConnectRawClient(*authority);
@@ -1833,7 +1852,7 @@ TEST_F(DialProxyForwardTest, UpstreamConnectStartFailureDropsTheAccept) {
     EXPECT_TRUE(dropped) << "the accepted client should be dropped on the upstream Connect-start failure";
     EXPECT_EQ(ConnectionCount(proxy), 0u);                              // no Connection emplaced
     EXPECT_EQ(NextConnectionId(proxy), id_before);                      // Connect failed before the id consume
-    EXPECT_EQ(EndpointActiveConnections(proxy, device.endpoint), 0u);   // no refcount touched
+    EXPECT_EQ(EndpointActiveConnections(proxy, device->endpoint), 0u);   // no refcount touched
     ::close(client_fd);
 }
 
@@ -1862,10 +1881,11 @@ TEST_F(DialProxyForwardTest, ForwardRefreshesIdleDeadlineOnAnOpenConnection) {
 // deadline must NOT be pushed out to the longer idle grace (the refresh is gated on !IsConnecting).
 TEST_F(DialProxyForwardTest, ForwardDoesNotRefreshDeadlineWhileUpstreamConnecting) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
     auto* conn = AcceptOne(proxy, listener_fd);
@@ -1886,10 +1906,11 @@ TEST_F(DialProxyForwardTest, ForwardDoesNotRefreshDeadlineWhileUpstreamConnectin
 // connect deadline onto the idle deadline (now + IDLE_TIMEOUT).
 TEST_F(DialProxyForwardTest, ConnectCompletionMovesDeadlineFromConnectToIdle) {
     auto device = FakeDevice::Make();
+    ASSERT_TRUE(device.has_value());
     auto proxy = MakeProxy();
-    const auto authority = proxy.EnsureDiscoveryListener(device.endpoint);
+    const auto authority = proxy.EnsureDiscoveryListener(device->endpoint);
     ASSERT_TRUE(authority.has_value());
-    const int listener_fd = ListenerFd(proxy, device.endpoint);
+    const int listener_fd = ListenerFd(proxy, device->endpoint);
     const int client_fd = ConnectRawClient(*authority);
     ASSERT_GE(client_fd, 0);
     auto* conn = AcceptOne(proxy, listener_fd);
@@ -1991,11 +2012,13 @@ TEST_F(DialProxyForwardTest, EvictionReapsAClosedIdleAndConnectingNodeInOneSweep
     ASSERT_NE(idle_oc.id, 0u);
 
     auto connecting_device = FakeDevice::Make();
-    const auto auth = proxy.EnsureDiscoveryListener(connecting_device.endpoint);
+
+    ASSERT_TRUE(connecting_device.has_value());
+    const auto auth = proxy.EnsureDiscoveryListener(connecting_device->endpoint);
     ASSERT_TRUE(auth.has_value());
     const int conn_client = ConnectRawClient(*auth);
     ASSERT_GE(conn_client, 0);
-    auto* connecting = AcceptOne(proxy, ListenerFd(proxy, connecting_device.endpoint));
+    auto* connecting = AcceptOne(proxy, ListenerFd(proxy, connecting_device->endpoint));
     ASSERT_NE(connecting, nullptr);
     ASSERT_FALSE(ConnIsOpen(*connecting));
     ASSERT_EQ(ConnectionCount(proxy), 3u);
