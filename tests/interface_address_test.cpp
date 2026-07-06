@@ -143,6 +143,57 @@ TEST(SelectSourceAddressesTest, FallsBackToOtherIpv6AsLastResort) {
     EXPECT_EQ(*selected.v6, other);
 }
 
+TEST(SelectSourceAddressesTest, PicksTheRoutableIpv6AlongsideTheLinkLocal) {
+    const auto global = *IpAddress::FromString("2001:db8::1");
+    const auto unique_local = *IpAddress::FromString("fd00::1");
+    const auto link_local = *IpAddress::FromString("fe80::1");
+    const std::vector<IpAddress> candidates{global, unique_local, link_local};
+
+    InterfaceAddresses selected;
+    detail::SelectSourceAddresses(candidates, selected);
+
+    ASSERT_TRUE(selected.v6.has_value());
+    EXPECT_EQ(*selected.v6, link_local);  // overall pick unchanged: link-local first
+    ASSERT_TRUE(selected.v6_routable.has_value());
+    EXPECT_EQ(*selected.v6_routable, unique_local);  // routable pick: ULA over GUA
+}
+
+TEST(SelectSourceAddressesTest, RoutableIpv6FallsBackToGlobal) {
+    const auto global = *IpAddress::FromString("2001:db8::1");
+    const auto link_local = *IpAddress::FromString("fe80::1");
+    const std::vector<IpAddress> candidates{global, link_local};
+
+    InterfaceAddresses selected;
+    detail::SelectSourceAddresses(candidates, selected);
+
+    ASSERT_TRUE(selected.v6_routable.has_value());
+    EXPECT_EQ(*selected.v6_routable, global);
+}
+
+TEST(SelectSourceAddressesTest, NoRoutableIpv6WhenOnlyLinkLocal) {
+    const auto link_local = *IpAddress::FromString("fe80::1");
+    const std::vector<IpAddress> candidates{link_local};
+
+    InterfaceAddresses selected;
+    detail::SelectSourceAddresses(candidates, selected);
+
+    ASSERT_TRUE(selected.v6.has_value());
+    EXPECT_FALSE(selected.v6_routable.has_value());  // a link-local never masquerades as routable
+}
+
+TEST(SelectSourceAddressesTest, OtherIpv6IsARoutableLastResort) {
+    // Same last-resort policy as the overall pick: an interface with only an unusual non-link-local
+    // address (::1 here) still resolves a routable source rather than nothing.
+    const auto other = *IpAddress::FromString("::1");
+    const std::vector<IpAddress> candidates{other};
+
+    InterfaceAddresses selected;
+    detail::SelectSourceAddresses(candidates, selected);
+
+    ASSERT_TRUE(selected.v6_routable.has_value());
+    EXPECT_EQ(*selected.v6_routable, other);
+}
+
 TEST(SelectSourceAddressesTest, TakesTheFirstIpv4) {
     const auto first = IpAddress::FromV4Bytes(192, 168, 1, 2);
     const auto second = IpAddress::FromV4Bytes(10, 0, 0, 1);

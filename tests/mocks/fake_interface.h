@@ -19,6 +19,9 @@ public:
 
     void SetV4(std::optional<IpAddress> v4) noexcept { addresses_.v4 = std::move(v4); }
     void SetV6(std::optional<IpAddress> v6) noexcept { addresses_.v6 = std::move(v6); }
+    void SetV6Routable(std::optional<IpAddress> v6_routable) noexcept {
+        addresses_.v6_routable = std::move(v6_routable);
+    }
 
     // Capability shorthand: a present (loopback) or absent source address for `family`.
     void SetHasSource(IpAddress::Family family, bool has) noexcept {

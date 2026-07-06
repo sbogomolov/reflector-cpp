@@ -132,6 +132,13 @@ def receive(args: argparse.Namespace) -> int:
                 return 1
 
             if payload == expected:
+                if args.expect_source_not_link_local and peer[0].lower().startswith("fe80"):
+                    print(
+                        f"forwarded from link-local source {peer[0]}; expected a routable (non-fe80::) address",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return 1
                 return 0
 
             print("received payload does not match expected magic packet", file=sys.stderr, flush=True)
@@ -616,6 +623,8 @@ def main() -> int:
     receive_parser.add_argument("--family", default=4, type=int, choices=(4, 6), help="IP version to bind")
     receive_parser.add_argument("--join-group", help="multicast group to join on --interface")
     receive_parser.add_argument("--interface", help="interface to join the multicast group on")
+    receive_parser.add_argument("--expect-source-not-link-local", action="store_true",
+                                help="also require the matched packet's source to be a routable (non-fe80::) address")
 
     expectation = receive_parser.add_mutually_exclusive_group(required=True)
     expectation.add_argument("--expect-mac", help="MAC address whose magic packet must be received")

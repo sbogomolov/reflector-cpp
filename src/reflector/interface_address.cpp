@@ -60,7 +60,9 @@ int Ipv6Rank(const IpAddress& address) noexcept {
 }
 
 // Folds a usable interface address into the result: the first IPv4 wins; the best-ranked IPv6
-// (see Ipv6Rank) wins, with the current pick's rank read back from result.v6.
+// (see Ipv6Rank) wins, with the current pick's rank read back from result.v6. Non-link-local
+// candidates additionally compete for v6_routable (so ULA > GUA > other), the source for
+// site/global-scoped destinations.
 void Consider(InterfaceAddresses& result, const IpAddress& address) noexcept {
     if (address.IsV4()) {
         if (!result.v4) {
@@ -71,6 +73,10 @@ void Consider(InterfaceAddresses& result, const IpAddress& address) noexcept {
 
     if (!result.v6 || Ipv6Rank(address) < Ipv6Rank(*result.v6)) {
         result.v6 = address;
+    }
+    if (!address.IsLinkLocal()
+            && (!result.v6_routable || Ipv6Rank(address) < Ipv6Rank(*result.v6_routable))) {
+        result.v6_routable = address;
     }
 }
 

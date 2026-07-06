@@ -367,8 +367,7 @@ bool RawSocket::SendUdpBroadcastDatagram(uint16_t dst_port, uint16_t src_port,
 
 bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t src_port,
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
-    const auto family = dst.addr.AddressFamily();
-    const auto source = interface_->SourceAddress(family);
+    const auto source = interface_->SourceAddressFor(dst.addr);
     if (!source) {
         logger_.Error("Cannot send to {}: interface has no source address for that family",
             dst.addr.ToString());

@@ -83,7 +83,7 @@ private:
     [[nodiscard]] std::optional<std::string> RewriteDialLocation(std::span<const std::byte> payload) noexcept;
     // Reserves a port + registers the 200-OK capture for a new client, returning the session to add
     // (not yet in the table) or nullopt (after logging) if the cap is hit or a step fails.
-    [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet, IpAddress::Family family,
+    [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet,
         std::chrono::steady_clock::time_point expiry);
     // The eviction-timer callback (its signature is the timer's): drops sessions past their expiry.
     // `now` is the reactor's fire-cycle time, which is also the test seam — FakeDispatcher::FireTimers

@@ -14,9 +14,12 @@ namespace reflector {
 // getifaddrs. Used by the raw egress path, which (unlike a kernel UDP socket) must supply the
 // source IP and MAC itself when building frames.
 struct InterfaceAddresses {
-    MacAddress mac{};             // all-zero when the interface has none (e.g. loopback)
-    std::optional<IpAddress> v4;
-    std::optional<IpAddress> v6;  // best-ranked IPv6 source (prefers link-local fe80::, else ULA/GUA), if any
+    MacAddress mac{};               // all-zero when the interface has none (e.g. loopback)
+    std::optional<IpAddress> v4{};  // the {} keep partial designated inits warning-free under GCC
+    std::optional<IpAddress> v6{};  // best-ranked IPv6 source (prefers link-local fe80::, else ULA/GUA), if any
+    // Best-ranked non-link-local IPv6 source (ULA > GUA), if any: the source for site/global-scoped
+    // destinations (e.g. the SSDP ff05::c group), which must not originate from fe80::.
+    std::optional<IpAddress> v6_routable{};
 };
 
 namespace detail {
