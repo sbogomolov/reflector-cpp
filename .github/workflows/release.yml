@@ -253,7 +253,7 @@ jobs:
         with:
           context: .
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/reflector,push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
@@ -303,29 +303,30 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/reflector
+          # Deliberately no "latest": that tag belongs to the Rust images; this repo releases
+          # version tags on the 0.7.x line only.
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
 
       - name: Create and push the manifest list
         working-directory: /tmp/digests
         env:
-          REPO: ${{ github.repository }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/reflector
           METADATA: ${{ steps.meta.outputs.json }}
         run: |
           mapfile -t tags < <(jq -r '.tags[]' <<< "$METADATA")
           args=()
           for tag in "${tags[@]}"; do args+=(--tag "$tag"); done
-          for f in *.digest; do args+=("ghcr.io/${REPO}@sha256:${f%.digest}"); done
+          for f in *.digest; do args+=("${IMAGE}@sha256:${f%.digest}"); done
           docker buildx imagetools create "${args[@]}"
 
       - name: Inspect
         env:
-          REPO: ${{ github.repository }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/reflector
           VERSION: ${{ steps.meta.outputs.version }}
-        run: docker buildx imagetools inspect "ghcr.io/${REPO}:${VERSION}"
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
 
   release:
     name: GitHub release
