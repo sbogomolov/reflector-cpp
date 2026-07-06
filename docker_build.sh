@@ -106,33 +106,32 @@ fi
 
 version=$("$(dirname "$0")/version.sh")
 
+# No "latest" tag anywhere: it tracks the Rust implementation; this repo builds version tags
+# on the 0.7.x line only.
 if [ "$push" = true ]; then
     docker buildx build \
         --platform "$platforms" \
         --push \
         -t "${image}:${version}" \
-        -t "${image}:latest" \
         .
 
-    printf '\nPublished %s:%s (also tagged latest).\n' "$image" "$version"
+    printf '\nPublished %s:%s.\n' "$image" "$version"
     printf 'Platforms: %s\n' "$platforms"
 elif [ "$platforms_set" = true ]; then
     docker buildx build \
         --load \
         --platform "$platforms" \
         -t "${image}:${version}" \
-        -t "${image}:latest" \
         .
 
-    printf '\nBuilt %s:%s for %s (also tagged latest).\n' "$image" "$version" "$platforms"
+    printf '\nBuilt %s:%s for %s.\n' "$image" "$version" "$platforms"
 else
     docker buildx build \
         --load \
         -t "${image}:${version}" \
-        -t "${image}:latest" \
         .
 
-    printf '\nBuilt %s:%s (also tagged latest).\n' "$image" "$version"
+    printf '\nBuilt %s:%s.\n' "$image" "$version"
 fi
 
 cat <<EOF

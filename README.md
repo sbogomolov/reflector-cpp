@@ -92,7 +92,7 @@ Requires Docker with Buildx.
 ./docker_build.sh --push
 ```
 
-The runtime image uses pinned Debian/distroless base image digests. By default, `./docker_build.sh` loads a single-platform image into the local Docker engine and tags it as `reflector:<version>` and `reflector:latest`. With `--push`, it publishes `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; override the destination with `--image`, or override architectures with `--platforms` for unusual deployment targets.
+The runtime image uses pinned Debian/distroless base image digests. By default, `./docker_build.sh` loads a single-platform image into the local Docker engine and tags it as `reflector:<version>`. With `--push`, it publishes `ghcr.io/sbogomolov/reflector` as a multi-platform manifest for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; override the destination with `--image`, or override architectures with `--platforms` for unusual deployment targets.
 
 ## Run
 
@@ -143,7 +143,7 @@ must run as root. To run unprivileged, grant a group read/write on `/dev/bpf*` w
 
 ### Run in Docker
 
-Prebuilt multi-arch images are published to `ghcr.io/sbogomolov/reflector`, tagged `latest` and per release version, for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; Docker pulls the variant matching the host. The image is a single static binary on `scratch` — no shell, no package manager. Its entrypoint is the reflector with no default argument, so it configures itself from `REFLECTOR_*` [environment variables](#environment-variables); pass a config file path to use a file instead.
+Prebuilt multi-arch images are published to `ghcr.io/sbogomolov/reflector`, tagged per release version plus the moving `0.7` minor tag, for `linux/amd64`, `linux/arm64`, `linux/arm/v7`, and `linux/arm/v5`; Docker pulls the variant matching the host. The `latest` tag tracks the Rust implementation, not this one. The image is a single static binary on `scratch` — no shell, no package manager. Its entrypoint is the reflector with no default argument, so it configures itself from `REFLECTOR_*` [environment variables](#environment-variables); pass a config file path to use a file instead.
 
 Because the reflector captures at L2 on each interface, the container must be **on the real segments it bridges**, not on a default NAT bridge network (which would hide that traffic from it). On a Linux host, `--network host` is the simplest way. Configure it with `-e` variables:
 
@@ -153,7 +153,7 @@ docker run --rm \
     -e REFLECTOR_TV_SOURCE_IF=eth0 \
     -e REFLECTOR_TV_TARGET_IF=eth1 \
     -e REFLECTOR_TV_MDNS=true \
-    ghcr.io/sbogomolov/reflector:latest
+    ghcr.io/sbogomolov/reflector:0.7
 ```
 
 `CAP_NET_RAW` is required (see [Runtime privileges](#runtime-privileges)) and is in Docker's default capability set, so the command above works as-is. For least privilege, drop everything else and grant just that one:
@@ -165,7 +165,7 @@ docker run --rm \
     -e REFLECTOR_TV_SOURCE_IF=eth0 \
     -e REFLECTOR_TV_TARGET_IF=eth1 \
     -e REFLECTOR_TV_MDNS=true \
-    ghcr.io/sbogomolov/reflector:latest
+    ghcr.io/sbogomolov/reflector:0.7
 ```
 
 To use a config file instead of (or alongside) the environment, mount it and pass its path as the argument. This form also shows running it as a service — `-d` with a restart policy:
@@ -175,7 +175,7 @@ docker run -d --name reflector --restart unless-stopped \
     --network host \
     --cap-drop ALL --cap-add NET_RAW \
     -v /path/to/config.toml:/etc/reflector/config.toml:ro \
-    ghcr.io/sbogomolov/reflector:latest /etc/reflector/config.toml
+    ghcr.io/sbogomolov/reflector:0.7 /etc/reflector/config.toml
 ```
 
 Logs are timestamped in UTC by default; pass `-e TZ=Europe/Berlin` (any zoneinfo name) for local time — the zoneinfo database is bundled in the image.
