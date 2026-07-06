@@ -304,8 +304,12 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/reflector
-          # Deliberately no "latest": that tag belongs to the Rust images; this repo releases
-          # version tags on the 0.7.x line only.
+          # No "latest": that tag belongs to the Rust images; this repo releases version tags on
+          # the 0.7.x line only. Omitting it from `tags` is not enough — the default flavor is
+          # latest=auto, which adds it on every semver release tag (how 0.7.3 clobbered the Rust
+          # latest) — so it must be disabled explicitly.
+          flavor: |
+            latest=false
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
