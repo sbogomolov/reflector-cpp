@@ -38,6 +38,16 @@ std::optional<IpAddress> Interface::SourceAddress(IpAddress::Family family) cons
     return family == IpAddress::Family::V4 ? addresses_.v4 : addresses_.v6;
 }
 
+std::optional<IpAddress> Interface::SourceAddressFor(const IpAddress& destination) const noexcept {
+    if (destination.IsV4()) {
+        return addresses_.v4;
+    }
+    if (destination.IsLinkLocalScoped()) {
+        return addresses_.v6;  // best overall — link-local when the interface has one
+    }
+    return addresses_.v6_routable ? addresses_.v6_routable : addresses_.v6;
+}
+
 bool Interface::CanSend(IpAddress::Family family) const noexcept {
     return SourceAddress(family).has_value();
 }
@@ -48,9 +58,10 @@ void Interface::Refresh() noexcept {
 #else
     addresses_ = ResolveInterfaceAddresses(name_);
 #endif
-    logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}", index_,
+    logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}, IPv6 routable {}", index_,
         addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
-        addresses_.v6 ? addresses_.v6->ToString() : "none");
+        addresses_.v6 ? addresses_.v6->ToString() : "none",
+        addresses_.v6_routable ? addresses_.v6_routable->ToString() : "none");
 }
 
 } // namespace reflector

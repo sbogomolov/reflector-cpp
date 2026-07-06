@@ -144,7 +144,6 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
         return;
     }
 
-    const auto family = packet.header.dest.addr.AddressFamily();
     const auto parsed_mx = ParseMSearchMx(packet.payload);
     const uint8_t mx = parsed_mx.value_or(MSEARCH_MX_DEFAULT);
     if (!parsed_mx) {
@@ -162,7 +161,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     });
     std::optional<Session> new_session;
     if (existing_session == sessions_.end()) {
-        new_session = MakeSession(packet, family, expiry);
+        new_session = MakeSession(packet, expiry);
         if (!new_session) {
             return;  // MakeSession logged the cause
         }
@@ -194,17 +193,19 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 }
 
 std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& packet,
-    IpAddress::Family family, std::chrono::steady_clock::time_point expiry) {
+    std::chrono::steady_clock::time_point expiry) {
     if (sessions_.size() >= MAX_SESSIONS) {
         logger_.Warning("Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
             packet.header.source, sessions_.size());
         return std::nullopt;
     }
     const auto& target_interface = target_socket_->GetInterface();
-    const auto our_address = target_interface.SourceAddress(family);
+    // Scope-matched to the group the search is re-emitted to — the same pick SendFrame makes for
+    // that re-emit — so responders' unicast 200-OKs land on the reserved address.
+    const auto our_address = target_interface.SourceAddressFor(packet.header.dest.addr);
     if (!our_address) {
         logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
-            packet.header.source, family);
+            packet.header.source, packet.header.dest.addr.AddressFamily());
         return std::nullopt;
     }
     auto reservation = PortReservation::Create(*our_address, target_interface.Index());

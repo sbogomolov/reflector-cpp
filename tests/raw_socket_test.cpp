@@ -57,9 +57,11 @@ public:
         }
         created_ = true;  // one command creates the pair; deleting `inject_` removes both
         // Manual link-locals with nodad so both ends are usable immediately, no DAD wait; the
-        // inject side also needs IPv4 for the broadcast test.
+        // inject side also needs IPv4 for the broadcast test and a ULA so the link-local and
+        // routable v6 sources differ (the per-scope source-selection test).
         valid_ = Run("ip addr add 10.99.0.1/24 dev " + inject_)
             && Run("ip -6 addr add fe80::1/64 dev " + inject_ + " nodad")
+            && Run("ip -6 addr add fd00:99::1/64 dev " + inject_ + " nodad")
             && Run("ip -6 addr add fe80::2/64 dev " + receive_ + " nodad")
             && Run("ip link set " + inject_ + " up")
             && Run("ip link set " + receive_ + " up");
@@ -83,6 +85,7 @@ public:
         valid_ = Run("ifconfig " + inject_ + " peer " + receive_)
             && Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
             && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + inject_ + " inet6 fd00:99::1 prefixlen 64")
             && Run("ifconfig " + receive_ + " up")
             && Run("ifconfig " + receive_ + " inet6 fe80::2 prefixlen 64");
 #elif defined(__FreeBSD__)
@@ -97,6 +100,7 @@ public:
         receive_.back() = 'b';
         valid_ = Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
             && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + inject_ + " inet6 fd00:99::1 prefixlen 64")
             && Run("ifconfig " + receive_ + " up")
             && Run("ifconfig " + receive_ + " inet6 fe80::2 prefixlen 64");
 #endif
@@ -909,6 +913,20 @@ protected:
         }
     }
 
+    // Waits until the interface resolves a routable (non-link-local) IPv6 source — the pair's
+    // manually-added ULA can land a beat after the link-locals.
+    static void WaitForRoutableV6Source(Interface& iface) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto source = iface.SourceAddressFor(IpAddress::SsdpGroupV6SiteLocal());
+            if (source && !source->IsLinkLocal()) {
+                return;
+            }
+            ::poll(nullptr, 0, POLL_SLICE_MS);
+            iface.Refresh();
+        }
+    }
+
     // Drains `peer` until it captures the datagram we injected (matched by source port and
     // destination), or the budget runs out. lo and real interfaces carry unrelated traffic too.
     static std::optional<Packet> CaptureInjected(RawSocket& peer, const IpAddress& dest_ip) {
@@ -1001,6 +1019,37 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv6MulticastReceivedByUdp
         INJECT_SRC_PORT, payload, /*ttl=*/64));
 
     ExpectReceived(receiver, payload);
+}
+
+// The per-scope IPv6 source selection on the wire: a site-local-scoped group is sourced from the
+// pair's ULA, a link-local-scoped group from its fe80::, asserted on the frames the peer captures.
+TEST_F(RawSocketInterfacePairRequiresRootTest, SourcesMulticastByDestinationScope) {
+    Interface inject_iface{pair.InjectInterface()};
+    RawSocket injector{inject_iface};
+    ASSERT_TRUE(injector.IsValid());
+    WaitForRoutableV6Source(inject_iface);
+    ASSERT_TRUE(inject_iface.CanSend(IpAddress::Family::V6)) << "no usable IPv6 source after DAD";
+
+    Interface receive_iface{pair.ReceiveInterface()};
+    RawSocket peer{receive_iface};
+    ASSERT_TRUE(peer.IsValid());
+
+    const std::array payload{std::byte{0xc}};
+    const auto site_group = IpAddress::SsdpGroupV6SiteLocal();
+    ASSERT_TRUE(injector.SendUdpMulticastDatagram({site_group, INJECT_DST_PORT},
+        INJECT_SRC_PORT, payload, /*ttl=*/64));
+    const auto site = CaptureInjected(peer, site_group);
+    ASSERT_TRUE(site.has_value()) << "site-local-scoped datagram never captured";
+    EXPECT_EQ(site->header.source.addr, *IpAddress::FromString("fd00:99::1"));
+
+    const auto link_group = IpAddress::SsdpGroupV6LinkLocal();
+    ASSERT_TRUE(injector.SendUdpMulticastDatagram({link_group, INJECT_DST_PORT},
+        INJECT_SRC_PORT, payload, /*ttl=*/64));
+    const auto link = CaptureInjected(peer, link_group);
+    ASSERT_TRUE(link.has_value()) << "link-local-scoped datagram never captured";
+    // Class, not identity: the kernel may auto-generate an EUI-64 link-local next to the pair's
+    // manual fe80::1 (macOS feth does), and which one wins enumeration order is not ours to pin.
+    EXPECT_TRUE(link->header.source.addr.IsLinkLocal()) << link->header.source.addr.ToString();
 }
 
 // Joins the mDNS groups on a real multicast-capable interface: both families succeed, and a

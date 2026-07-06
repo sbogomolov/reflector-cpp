@@ -34,8 +34,14 @@ public:
 
     // The source address for `family` — what sends and binds on this interface originate from.
     // nullopt if the interface has none (then CanSend(family) is also false). IPv6 prefers the
-    // link-local address, falling back to ULA then GUA.
+    // link-local address, falling back to ULA then GUA. For a send with a known destination use
+    // SourceAddressFor, which also matches the IPv6 scope.
     [[nodiscard]] std::optional<IpAddress> SourceAddress(IpAddress::Family family) const noexcept;
+    // The source address for a send to `destination` — family-matched, and for IPv6 also
+    // scope-matched: a link-local source for a link-local-scoped destination, a routable (ULA/GUA)
+    // source for a site/global one. Falls back to the other scope's address when the matching one
+    // is absent — a scope mismatch, but better than dropping the send.
+    [[nodiscard]] std::optional<IpAddress> SourceAddressFor(const IpAddress& destination) const noexcept;
     [[nodiscard]] bool CanSend(IpAddress::Family family) const noexcept;
 
     // Re-resolves the source addresses; Application calls this when the address monitor reports

@@ -73,6 +73,14 @@ public:
     [[nodiscard]] constexpr bool IsGlobalUnicast() const noexcept {
         return IsV6() && (std::to_integer<uint8_t>(bytes_[0]) & 0xe0) == 0x20;
     }
+    // Whether a v6 destination is link-local-scoped — link-local unicast, or a multicast group
+    // with scope nibble 2 (ff?2::) — and so wants a link-local source; anything wider wants a
+    // routable one. The IsMulticast() check isn't redundant: the scope nibble alone would also
+    // match unicasts like fd02:: or 2012::.
+    [[nodiscard]] constexpr bool IsLinkLocalScoped() const noexcept {
+        return IsLinkLocal()
+            || (IsV6() && IsMulticast() && (std::to_integer<uint8_t>(bytes_[1]) & 0x0f) == 0x02);
+    }
 
     // Fills `storage` and returns its used length (for bind/sendto's addrlen). The length may be
     // ignored when it's implied by context — e.g. a fixed-size group_req — so this is not

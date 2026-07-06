@@ -72,6 +72,18 @@ TEST(IpAddressTest, ClassifiesMulticast) {
     EXPECT_FALSE(Parse("fe80::1").IsMulticast());
 }
 
+TEST(IpAddressTest, ClassifiesLinkLocalScope) {
+    EXPECT_TRUE(Parse("fe80::1").IsLinkLocalScoped());     // link-local unicast
+    EXPECT_TRUE(Parse("ff02::c").IsLinkLocalScoped());     // multicast, scope nibble 2
+    EXPECT_TRUE(Parse("ff12::c").IsLinkLocalScoped());     // transient flag, still scope 2
+    EXPECT_FALSE(Parse("ff05::c").IsLinkLocalScoped());    // site-local multicast
+    EXPECT_FALSE(Parse("fd02::1").IsLinkLocalScoped());    // ULA whose byte 1 mimics the scope nibble
+    EXPECT_FALSE(Parse("2012::1").IsLinkLocalScoped());    // GUA whose byte 1 mimics the scope nibble
+    EXPECT_FALSE(Parse("2001:db8::1").IsLinkLocalScoped());
+    EXPECT_FALSE(Parse("::1").IsLinkLocalScoped());
+    EXPECT_FALSE(Parse("224.0.0.251").IsLinkLocalScoped()); // v4: never v6-scoped
+}
+
 TEST(IpAddressTest, ClassifiesBroadcast) {
     EXPECT_TRUE(Parse("255.255.255.255").IsBroadcast());
     EXPECT_FALSE(Parse("255.255.255.254").IsBroadcast());
