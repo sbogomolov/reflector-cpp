@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(reflector VERSION 0.7.3 LANGUAGES CXX)
+project(reflector VERSION 0.7.4 LANGUAGES CXX)
 include(CTest)
 
 if(NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin"
