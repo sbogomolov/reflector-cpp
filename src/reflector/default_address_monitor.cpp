@@ -32,13 +32,15 @@ Logger& GetLogger() noexcept {
     return logger;
 }
 
-// A single address notification is small and bounded — an ifaddrmsg / ifa_msghdr plus a few short
-// attributes — with none of the large per-interface blocks that force the RTM_GETLINK dump to grow
-// its buffer. The kernel delivers each notification as its own datagram, so 4 KB comfortably holds
-// one and the receive buffer never has to grow.
-constexpr size_t NOTIFICATION_BUFFER_SIZE = 4 * 1024;
+// The kernel delivers each notification as its own datagram, never a coalesced dump. Sized for
+// the largest: an RTM_NEWLINK carries the interface's whole attribute set (stats, IFLA_AF_SPEC,
+// VF info) at ~1 KB; address notifications are far smaller. 8 KB is roomy either way.
+constexpr size_t NOTIFICATION_BUFFER_SIZE = 8 * 1024;
 
 void AddUnique(std::vector<unsigned>& indices, unsigned index) {
+    if (index == 0) {
+        return;  // names no interface (kernel indices are >= 1) — and 0 is the refresh-all sentinel
+    }
     if (std::ranges::find(indices, index) == indices.end()) {
         indices.push_back(index);
     }
@@ -86,9 +88,9 @@ bool DefaultAddressMonitor::Open() noexcept {
 
     sockaddr_nl address{};
     address.nl_family = AF_NETLINK;
-    address.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
+    address.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR | RTMGRP_LINK;
     if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
-        GetLogger().Error("Cannot subscribe to netlink address groups: {}", Error::FromErrno());
+        GetLogger().Error("Cannot subscribe to netlink notification groups: {}", Error::FromErrno());
         return false;
     }
 #else
@@ -194,6 +196,9 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> 
         if (header->nlmsg_type == RTM_NEWADDR || header->nlmsg_type == RTM_DELADDR) {
             const auto* address = static_cast<const ifaddrmsg*>(NLMSG_DATA(header));
             AddUnique(changed, address->ifa_index);
+        } else if (header->nlmsg_type == RTM_NEWLINK || header->nlmsg_type == RTM_DELLINK) {
+            const auto* link = static_cast<const ifinfomsg*>(NLMSG_DATA(header));
+            AddUnique(changed, static_cast<unsigned>(link->ifi_index));
         }
     }
 }
@@ -218,7 +223,11 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> 
 
         const auto type = std::to_integer<u_char>(messages[offset + offsetof(rt_msghdr, rtm_type)]);
         constexpr size_t index_end = offsetof(ifa_msghdr, ifam_index) + sizeof(u_short);
-        if ((type == RTM_NEWADDR || type == RTM_DELADDR) && message_length >= index_end) {
+        // A link/MAC change arrives as RTM_IFINFO (if_msghdr), whose index sits at the same
+        // offset as ifa_msghdr's — asserted here so one read handles both shapes.
+        static_assert(offsetof(if_msghdr, ifm_index) == offsetof(ifa_msghdr, ifam_index));
+        if ((type == RTM_NEWADDR || type == RTM_DELADDR || type == RTM_IFINFO)
+                && message_length >= index_end) {
             u_short index = 0;
             std::memcpy(&index, messages.data() + offset + offsetof(ifa_msghdr, ifam_index), sizeof(index));
             AddUnique(changed, index);
