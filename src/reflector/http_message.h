@@ -41,9 +41,9 @@ struct Authority {
 // on EOF). Direction matters, so the framer is told its MessageType and reads the response status: a request
 // with neither framing header is bodyless (rule 6), and a 1xx/204/304 response is bodyless whatever headers
 // it carries (rule 1).
-// KNOWN LIMITATION: a response to a HEAD request is bodyless even with a Content-Length, but the framer can't
-// tell — that needs the paired request method, which lives in the opposite direction's framer. DIAL issues no
-// HEAD, so this does not arise; correlating the request method across the two framers is out of scope here.
+// A HEAD request is refused outright: its response is bodyless even with a Content-Length, but the framer
+// can't tell — that needs the paired request method, which lives in the opposite direction's framer. DIAL
+// issues no HEAD, so refusing (drop-and-close) is cheaper than correlating methods across the two framers.
 class HttpFraming {
 public:
     // Called once per rewritable authority header — Host (requests), Application-URL / Location

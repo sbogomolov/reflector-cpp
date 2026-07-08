@@ -451,6 +451,18 @@ TEST(HttpFramingMiscTest, AllowsIdenticalDuplicateContentLength) {
     EXPECT_TRUE(d.out.ends_with("hi"));
 }
 
+TEST(HttpFramingMiscTest, RefusesHeadRequest) {
+    // A HEAD response is bodyless but may still carry Content-Length, which this framer would await
+    // as phantom body bytes and desync the keep-alive stream. Refuse HEAD at the request side.
+    HostRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Request);
+    Driver d{framing};
+    d.Read(
+        "HEAD / HTTP/1.1\r\n"
+        "Host: 192.168.1.2:40000\r\n\r\n");
+    EXPECT_FALSE(d.ok);
+}
+
 TEST(HttpFramingMiscTest, FramesTwoPipelinedKeepAliveMessages) {
     const std::string first =
         "HTTP/1.1 200 OK\r\n"
