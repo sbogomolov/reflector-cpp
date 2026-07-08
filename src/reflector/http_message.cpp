@@ -97,6 +97,13 @@ bool HttpFraming::ScanAndRewriteHeader() {
     // branches. Requests carry no status code, so this stays false for them.
     const bool bodyless_status = type_ == MessageType::Response
         && StatusForbidsBody(ParseStatusCode(std::string_view{header_}.substr(0, header_.find(CRLF))));
+    // A HEAD response carries no body yet may still send Content-Length, indistinguishable from a
+    // real body without correlating the request method across the two framers: refuse HEAD at the
+    // request side instead. DIAL clients never issue it.
+    if (type_ == MessageType::Request && std::string_view{header_}.starts_with("HEAD ")) {
+        GetLogger().Error("refusing a HEAD request: its response cannot be framed");
+        return false;
+    }
     size_t pos = 0;
     while (pos < header_.size()) {
         const std::string_view header_view{header_};
