@@ -37,6 +37,13 @@ Logger& GetLogger() noexcept {
 // VF info) at ~1 KB; address notifications are far smaller. 8 KB is roomy either way.
 constexpr size_t NOTIFICATION_BUFFER_SIZE = 8 * 1024;
 
+#if !defined(__linux__)
+// The BSD route socket's receive queue defaults to only ~8 KiB, so a burst of routing messages can
+// overflow it and drop changes. Request a far larger SO_RCVBUF (kernel-clamped, best-effort). Linux
+// netlink already defaults to the system max, so it isn't grown.
+constexpr int ROUTE_RECEIVE_BUFFER_BYTES = 256 * 1024;
+#endif
+
 void AddUnique(std::vector<unsigned>& indices, unsigned index) {
     if (index == 0) {
         return;  // names no interface (kernel indices are >= 1) — and 0 is the refresh-all sentinel
@@ -103,6 +110,22 @@ bool DefaultAddressMonitor::Open() noexcept {
         GetLogger().Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
         return false;
     }
+    // Best-effort: a bigger receive queue so a routing-message burst is less likely to overflow it.
+    // Kernel-clamped, and the default still works, so a failure only warns — it doesn't fail Open.
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_RCVBUF,
+            &ROUTE_RECEIVE_BUFFER_BYTES, sizeof(ROUTE_RECEIVE_BUFFER_BYTES)) != 0) {
+        GetLogger().Warning("Cannot enlarge the route socket receive buffer: {}", Error::FromErrno());
+    }
+#if defined(__FreeBSD__)
+    // Without SO_RERROR (FreeBSD 13+) a receive-buffer overflow is dropped silently, so the ENOBUFS
+    // refresh-all recovery in OnReadable never fires and address changes are lost under pressure.
+    // Enabling it surfaces the overflow as ENOBUFS on the next recv. macOS has no equivalent.
+    const int rerror = 1;
+    if (setsockopt(fd_.Get(), SOL_SOCKET, SO_RERROR, &rerror, sizeof(rerror)) != 0) {
+        GetLogger().Error("Cannot enable SO_RERROR on the route socket: {}", Error::FromErrno());
+        return false;
+    }
+#endif
 #endif
 
     return true;
@@ -146,12 +169,14 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
             if (IsWouldBlockErrno(errno)) {
                 break;  // drained
             }
-#if defined(__linux__)
             if (errno == ENOBUFS) {
-                overflowed = true;  // kernel dropped notifications; emit one refresh-all below
+                // The kernel dropped notifications on a receive-queue overflow: emit one refresh-all
+                // below. Linux netlink reports this natively; the FreeBSD route socket does once
+                // SO_RERROR is enabled (see Open). Refreshing all is always safe, just occasionally
+                // redundant, so treat ENOBUFS uniformly rather than per platform.
+                overflowed = true;
                 continue;
             }
-#endif
             GetLogger().Error("Cannot read address notifications: {}", Error::FromErrno());
             break;
         }
