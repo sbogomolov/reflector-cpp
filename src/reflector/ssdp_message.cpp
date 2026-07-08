@@ -13,9 +13,9 @@
 #include <string_view>
 #include <system_error>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 // True if `payload` begins with the ASCII bytes of `token`. Case-sensitive; a payload shorter than
 // the token never matches.
@@ -41,6 +41,8 @@ Logger& GetLogger() noexcept {
 }
 
 } // namespace
+
+namespace reflector {
 
 std::optional<SsdpMessageKind> ClassifySsdpMessage(std::span<const std::byte> payload) noexcept {
     if (StartsWith(payload, SEARCH_TOKEN)) {

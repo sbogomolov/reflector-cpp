@@ -8,6 +8,7 @@
 ## Code style
 
 - Prefer RAII over manual cleanup.
+- Anonymous namespaces at file scope only, above `namespace reflector` (with `using namespace reflector;` inside when needed) — never nested inside it.
 - Pin Docker base images as `image:tag@sha256:digest` (don't drop the tag).
 - `auto`/`auto&`/`auto*` for locals and loop vars where the initializer makes the type clear; CTAD for aggregates (`std::array parts{a, b}`). Explicit type only when it genuinely clarifies (non-obvious conversion, pinning an interface).
 - Order struct members so padding lands at the end — place a trailing `bool` after a member with tail padding so it tucks in. A throwaway `static_assert(sizeof(X) == 0)` prints the actual size.

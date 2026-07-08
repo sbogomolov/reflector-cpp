@@ -13,9 +13,9 @@
 #include <linux/filter.h>
 #endif
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"PortReservation"};
@@ -23,6 +23,8 @@ Logger& GetLogger() noexcept {
 }
 
 } // namespace
+
+namespace reflector {
 
 std::optional<PortReservation> PortReservation::Create(const IpAddress& source_ip, unsigned scope_id) noexcept {
     const bool v6 = source_ip.IsV6();

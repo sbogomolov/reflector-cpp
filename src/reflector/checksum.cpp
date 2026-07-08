@@ -7,9 +7,9 @@
 #include <cassert>
 #include <cstring>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 constexpr std::byte UDP_PROTOCOL{IP_PROTO_UDP};
 
@@ -37,6 +37,8 @@ uint16_t Fold(uint32_t sum) noexcept {
 }
 
 } // namespace
+
+namespace reflector {
 
 uint16_t Ipv4HeaderChecksum(std::span<const std::byte> header) noexcept {
     return Fold(Accumulate(header, 0));

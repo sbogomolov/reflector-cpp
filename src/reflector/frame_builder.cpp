@@ -10,9 +10,9 @@
 #include <cstring>
 #include <sys/socket.h>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 // Shared L2/L3/L4 sizes/ethertypes/IP_PROTO_UDP come from protocol_constants.h. These are
 // frame-builder-only: the DLT_NULL prefix, the MAC length (from the canonical MacAddress type), a
@@ -90,6 +90,8 @@ void WriteIpUdp(const IpEndpoint& src, const IpEndpoint& dst,
 }
 
 } // namespace
+
+namespace reflector {
 
 MacAddress MulticastMacFor(const IpAddress& address) noexcept {
     const auto& bytes = address.Bytes();

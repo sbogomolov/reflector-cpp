@@ -12,15 +12,17 @@
 #include <string>
 #include <utility>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 std::string LoggerName(const SsdpConfig& config) {
     return std::format("SsdpReflector:{}:{}->{}", config.name, config.source_if, config.target_if);
 }
 
 } // namespace
+
+namespace reflector {
 
 SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const SsdpConfig& config)

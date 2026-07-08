@@ -7,15 +7,17 @@
 #include <string>
 #include <utility>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 std::string LoggerName(const MdnsConfig& config) {
     return std::format("MdnsReflector:{}:{}->{}", config.name, config.source_if, config.target_if);
 }
 
 } // namespace
+
+namespace reflector {
 
 MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const MdnsConfig& config)

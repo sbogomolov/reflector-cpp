@@ -30,9 +30,9 @@
 #include <sys/ioctl.h>
 #endif
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"InterfaceAddresses"};
@@ -79,20 +79,6 @@ void Consider(InterfaceAddresses& result, const IpAddress& address) noexcept {
         result.v6_routable = address;
     }
 }
-
-} // namespace
-
-namespace detail {
-
-void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddresses& result) noexcept {
-    for (const auto& address : candidates) {
-        Consider(result, address);
-    }
-}
-
-} // namespace detail
-
-namespace {
 
 #if defined(__linux__)
 
@@ -372,6 +358,18 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
 #endif
 
 } // namespace
+
+namespace reflector {
+
+namespace detail {
+
+void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddresses& result) noexcept {
+    for (const auto& address : candidates) {
+        Consider(result, address);
+    }
+}
+
+} // namespace detail
 
 #if defined(__linux__)
 

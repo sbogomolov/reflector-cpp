@@ -25,9 +25,9 @@
 #include <net/route.h>
 #endif
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"AddressMonitor"};
@@ -56,6 +56,8 @@ void AddUnique(std::vector<unsigned>& indices, unsigned index) {
 }
 
 } // namespace
+
+namespace reflector {
 
 namespace detail {
 
