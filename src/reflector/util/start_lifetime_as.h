@@ -17,6 +17,10 @@ namespace reflector {
 // memmove implicitly creates the implicit-lifetime object (P0593) and the self-copy keeps the bytes.
 // is_trivially_copyable_v is the exact precondition — it implies implicit-lifetime (so std accepts it
 // too) and is precisely what memmove can reconstitute.
+//
+// Mutable storage only: the fallback's memmove writes, so there is no const overload. To read a
+// const-qualified or foreign-owned buffer as a T, memcpy it into a local instead (see
+// IpAddress::FromSockaddr).
 template <typename T>
     requires std::is_trivially_copyable_v<T>
 [[nodiscard]] T* start_lifetime_as(void* p) noexcept {

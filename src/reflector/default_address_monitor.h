@@ -68,8 +68,9 @@ private:
 
     // Parses a buffer of kernel notification messages and appends each changed interface index to
     // `changed`, skipping any already present. Split out from OnReadable so tests can drive it with
-    // synthesized messages.
-    void CollectChangedInterfaces(std::span<const std::byte> messages,
+    // synthesized messages. The span is mutable because the Linux walk start_lifetime_as's the
+    // netlink structs over the received bytes, which reuses that storage.
+    void CollectChangedInterfaces(std::span<std::byte> messages,
         std::vector<unsigned>& changed) const noexcept;
 
     Dispatcher* dispatcher_;

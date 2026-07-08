@@ -219,7 +219,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
         // parsing — the collected list would only be discarded.
         if (!overflowed) {
             CollectChangedInterfaces(
-                std::span<const std::byte>{buffer.data(), static_cast<size_t>(received)}, changed);
+                std::span<std::byte>{buffer.data(), static_cast<size_t>(received)}, changed);
         }
     }
 
@@ -236,25 +236,27 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
 #if defined(__linux__)
 
 // The kernel netlink macros (NLMSG_OK, NLMSG_NEXT, NLMSG_DATA) use C-style casts and byte-wise
-// pointer arithmetic that the project's strict warning set rejects; the access is sound (OnReadable
-// aligns the buffer for nlmsghdr and messages are NLMSG_ALIGN padded). Scope the suppression to the
-// parser.
+// pointer arithmetic that the project's strict warning set rejects; the alignment is sound
+// (OnReadable aligns the buffer for nlmsghdr and messages are NLMSG_ALIGN padded). Scope the
+// suppression to the parser. Every struct the walk reads is start_lifetime_as'd first: the macros
+// only compute addresses and read fields of the already-blessed current header, so blessing each
+// derived pointer before its first dereference keeps all accesses on live objects.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #pragma GCC diagnostic ignored "-Wcast-align"
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 #pragma GCC diagnostic ignored "-Wconversion"
 
-void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
+void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messages,
         std::vector<unsigned>& changed) const noexcept {
-    const auto* header = reinterpret_cast<const nlmsghdr*>(messages.data());
+    auto* header = start_lifetime_as<nlmsghdr>(messages.data());
     for (int length = static_cast<int>(messages.size()); NLMSG_OK(header, length);
-            header = NLMSG_NEXT(header, length)) {
+            header = start_lifetime_as<nlmsghdr>(NLMSG_NEXT(header, length))) {
         if (header->nlmsg_type == RTM_NEWADDR || header->nlmsg_type == RTM_DELADDR) {
-            const auto* address = static_cast<const ifaddrmsg*>(NLMSG_DATA(header));
+            const auto* address = start_lifetime_as<ifaddrmsg>(NLMSG_DATA(header));
             AddUnique(changed, address->ifa_index);
         } else if (header->nlmsg_type == RTM_NEWLINK || header->nlmsg_type == RTM_DELLINK) {
-            const auto* link = static_cast<const ifinfomsg*>(NLMSG_DATA(header));
+            const auto* link = start_lifetime_as<ifinfomsg>(NLMSG_DATA(header));
             AddUnique(changed, static_cast<unsigned>(link->ifi_index));
         }
     }
@@ -264,7 +266,7 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> 
 
 #else
 
-void DefaultAddressMonitor::CollectChangedInterfaces(std::span<const std::byte> messages,
+void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messages,
         std::vector<unsigned>& changed) const noexcept {
     // PF_ROUTE messages pack back-to-back; each begins with rt_msghdr's prefix (u_short msglen;
     // u_char version; u_char type). Read the fields with memcpy — the buffer carries no

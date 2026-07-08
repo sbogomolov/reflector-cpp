@@ -3,6 +3,7 @@
 #include "error.h"
 #include "logger.h"
 #include "platform.h"
+#include "util/start_lifetime_as.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -87,10 +88,12 @@ bool IsUsable(uint32_t ifa_flags) noexcept {
 }
 
 // The kernel netlink macros (NLMSG_*, RTA_*, IFLA_RTA, IFA_RTA) use C-style casts and
-// byte-wise pointer arithmetic that the project's strict warning set rejects. The accesses are
-// sound — the receive buffer is netlink-aligned (alignas below) and every message/attribute is
-// NLMSG_ALIGN/RTA_ALIGN padded — so scope the suppression to the netlink code rather than
-// hand-reimplementing the macros.
+// byte-wise pointer arithmetic that the project's strict warning set rejects; the alignment is
+// sound (the receive buffer is max-aligned and every message/attribute is NLMSG_ALIGN/RTA_ALIGN
+// padded), so scope the suppression to the netlink code rather than hand-reimplementing the
+// macros. Every struct the walks read is start_lifetime_as'd first: the macros only compute
+// addresses and read fields of the already-blessed current struct, so blessing each derived
+// pointer before its first dereference keeps all accesses on live objects.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wold-style-cast"
 #pragma GCC diagnostic ignored "-Wcast-align"
@@ -154,9 +157,9 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
             continue;
         }
 
-        auto* header = reinterpret_cast<nlmsghdr*>(buffer.data());
+        auto* header = start_lifetime_as<nlmsghdr>(buffer.data());
         for (int length = static_cast<int>(received); NLMSG_OK(header, length);
-                header = NLMSG_NEXT(header, length)) {
+                header = start_lifetime_as<nlmsghdr>(NLMSG_NEXT(header, length))) {
             if (header->nlmsg_seq != seq) {
                 continue;
             }
@@ -165,7 +168,7 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
             }
             if (header->nlmsg_type == NLMSG_ERROR) {
                 // nlmsgerr.error is a negative errno (0 is an ACK, not a failure).
-                const auto* error = static_cast<const nlmsgerr*>(NLMSG_DATA(header));
+                const auto* error = start_lifetime_as<nlmsgerr>(NLMSG_DATA(header));
                 if (error->error != 0) {
                     GetLogger().Error("Netlink dump returned an error: {}", Error::FromErrno(-error->error));
                     return false;
@@ -184,13 +187,14 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
         return;
     }
 
-    NetlinkDump(fd, RTM_GETLINK, 1, [&](const nlmsghdr* header) {
-        const auto* link = static_cast<const ifinfomsg*>(NLMSG_DATA(header));
+    NetlinkDump(fd, RTM_GETLINK, 1, [&](nlmsghdr* header) {
+        const auto* link = start_lifetime_as<ifinfomsg>(NLMSG_DATA(header));
         if (static_cast<unsigned>(link->ifi_index) != index) {
             return;
         }
         int length = IFLA_PAYLOAD(header);
-        for (const rtattr* attr = IFLA_RTA(link); RTA_OK(attr, length); attr = RTA_NEXT(attr, length)) {
+        for (auto* attr = start_lifetime_as<rtattr>(IFLA_RTA(link)); RTA_OK(attr, length);
+                attr = start_lifetime_as<rtattr>(RTA_NEXT(attr, length))) {
             if (attr->rta_type == IFLA_ADDRESS && RTA_PAYLOAD(attr) == MAC_SIZE) {
                 const auto* mac = static_cast<const std::byte*>(RTA_DATA(attr));
                 result.mac = MacAddress::FromBytes(std::span<const std::byte, MAC_SIZE>{mac, MAC_SIZE});
@@ -200,8 +204,8 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
     });
 
     std::vector<IpAddress> candidates;
-    NetlinkDump(fd, RTM_GETADDR, 2, [&](const nlmsghdr* header) {
-        const auto* addr = static_cast<const ifaddrmsg*>(NLMSG_DATA(header));
+    NetlinkDump(fd, RTM_GETADDR, 2, [&](nlmsghdr* header) {
+        const auto* addr = start_lifetime_as<ifaddrmsg>(NLMSG_DATA(header));
         if (addr->ifa_index != index) {
             return;
         }
@@ -213,7 +217,8 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
         const std::byte* address_attr = nullptr;
         const std::byte* local_attr = nullptr;
         int length = IFA_PAYLOAD(header);
-        for (const rtattr* attr = IFA_RTA(addr); RTA_OK(attr, length); attr = RTA_NEXT(attr, length)) {
+        for (auto* attr = start_lifetime_as<rtattr>(IFA_RTA(addr)); RTA_OK(attr, length);
+                attr = start_lifetime_as<rtattr>(RTA_NEXT(attr, length))) {
             switch (attr->rta_type) {
             case IFA_ADDRESS:
                 address_attr = static_cast<const std::byte*>(RTA_DATA(attr));
@@ -222,7 +227,7 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
                 local_attr = static_cast<const std::byte*>(RTA_DATA(attr));
                 break;
             case IFA_FLAGS:
-                flags = *static_cast<const uint32_t*>(RTA_DATA(attr));
+                flags = *start_lifetime_as<uint32_t>(RTA_DATA(attr));
                 break;
             default:
                 break;
@@ -329,7 +334,11 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
             }
             break;
         case AF_INET6: {
-            const auto& sin6 = *reinterpret_cast<const sockaddr_in6*>(ifa->ifa_addr);
+            // Copy rather than cast-and-read: getifaddrs owns the storage and FromSockaddr below
+            // still reads it as a sockaddr, so beginning a sockaddr_in6's lifetime over it would
+            // just move the aliasing problem there. The copy is defined either way.
+            sockaddr_in6 sin6{};
+            std::memcpy(&sin6, ifa->ifa_addr, sizeof(sin6));
             if (!IsUsableIpv6(inet6_fd, ifa->ifa_name, sin6)) {
                 break;
             }
