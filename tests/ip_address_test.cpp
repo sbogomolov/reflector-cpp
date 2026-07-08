@@ -283,6 +283,33 @@ TEST(IpAddressTest, ToSockaddrV6RoundTripsWithScopeId) {
 #endif
 }
 
+namespace {
+
+// The scope id ToSockaddr wrote for `address` when the caller passes 7 — the
+// kernel-consults-the-zone gate under test. A failed parse fails the test via Parse and lands on
+// its AnyV6 fallback, so no disengaged optional is ever dereferenced.
+uint32_t ScopeWrittenFor(const char* address) {
+    sockaddr_storage storage{};
+    Parse(address).ToSockaddr(storage, /*port=*/0, /*scope_id=*/7);
+    return reinterpret_cast<const sockaddr_in6*>(&storage)->sin6_scope_id;
+}
+
+} // namespace
+
+TEST(IpAddressTest, ToSockaddrKeepsTheScopeIdWhereTheKernelConsultsIt) {
+    EXPECT_EQ(ScopeWrittenFor("fe80::1"), 7u);   // link-local unicast: required to disambiguate
+    EXPECT_EQ(ScopeWrittenFor("ff02::fb"), 7u);  // link-scoped multicast
+    EXPECT_EQ(ScopeWrittenFor("ff01::1"), 7u);   // interface-scoped multicast
+}
+
+TEST(IpAddressTest, ToSockaddrZeroesTheScopeIdWhereTheKernelIgnoresIt) {
+    // FreeBSD rejects a bind carrying a zone on any of these (EADDRNOTAVAIL); Linux/macOS ignore it.
+    EXPECT_EQ(ScopeWrittenFor("2001:db8::1"), 0u);  // global unicast
+    EXPECT_EQ(ScopeWrittenFor("fd00::1"), 0u);      // unique-local
+    EXPECT_EQ(ScopeWrittenFor("ff05::c"), 0u);      // site-scoped multicast
+    EXPECT_EQ(ScopeWrittenFor("::1"), 0u);          // loopback
+}
+
 TEST(IpAddressTest, FromSockaddrUnknownFamilyReturnsNullopt) {
     sockaddr_storage storage{};
     storage.ss_family = AF_UNSPEC;
