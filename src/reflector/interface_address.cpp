@@ -153,10 +153,19 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
             buffer.resize(static_cast<size_t>(needed));
         }
 
-        const auto received = recv(fd, buffer.data(), buffer.size(), 0);
+        sockaddr_nl src{};
+        socklen_t addrlen = sizeof(src);
+        const auto received = recvfrom(fd, buffer.data(), buffer.size(), 0,
+            reinterpret_cast<sockaddr*>(&src), &addrlen);
         if (received < 0) {
             GetLogger().Error("Cannot read netlink dump reply: {}", Error::FromErrno());
             return false;
+        }
+        // Only the kernel (nl_pid 0) may answer the dump; a local process could unicast a spoofed
+        // reply to inject a bogus address. Discard anything else and read the next datagram.
+        if (addrlen < sizeof(src) || src.nl_pid != 0) {
+            GetLogger().Debug("Ignoring a netlink dump reply from a non-kernel sender (pid {})", src.nl_pid);
+            continue;
         }
 
         auto* header = reinterpret_cast<nlmsghdr*>(buffer.data());
