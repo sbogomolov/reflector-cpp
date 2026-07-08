@@ -394,6 +394,22 @@ TEST(HttpFramingMiscTest, RefusesOversizedHeaderBlock) {
     EXPECT_FALSE(d.ok);
 }
 
+TEST(HttpFramingMiscTest, RefusesOverCapHeaderEvenWhenTerminated) {
+    // The cap must not depend on TCP segmentation: a fully terminated header block past the cap,
+    // delivered in one read, is refused just like an unterminated one — otherwise a coalesced read
+    // could slip a header through that a byte-at-a-time one could not.
+    std::string message =
+        "HTTP/1.1 200 OK\r\n"
+        "X-Pad: ";
+    message.append(3 * 1024, 'a');
+    message.append("\r\n\r\n");  // terminated, but the block is over the cap
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(message);
+    EXPECT_FALSE(d.ok);
+}
+
 TEST(HttpFramingMiscTest, FramesTwoPipelinedKeepAliveMessages) {
     const std::string first =
         "HTTP/1.1 200 OK\r\n"

@@ -181,6 +181,13 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             return Output{};  // incomplete header: nothing forwardable yet, read more and feed again
         }
         const size_t header_len = term + HEADER_TERMINATOR.size();
+        // The cap must not depend on TCP segmentation: a coalesced read could otherwise slip a
+        // header past it that a segmented one could not (the unterminated check above never fires
+        // when the terminator is already in the buffer).
+        if (header_len > MAX_HEADER_BYTES) {
+            GetLogger().Error("header block exceeds the {}-byte cap", MAX_HEADER_BYTES);
+            return std::nullopt;
+        }
         header_.assign(input.data(), header_len);  // copy only the header, to rewrite it
         if (!ScanAndRewriteHeader()) {             // rewrites header_ in place and sets the body phase
             return std::nullopt;
