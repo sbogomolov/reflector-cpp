@@ -106,7 +106,8 @@ bool HttpFraming::ScanAndRewriteHeader() {
 
         if (StartsWithNoCase(line, "Content-Length:")) {
             const std::string_view v = TrimLeadingSpace(line.substr(line.find(':') + 1));
-            const auto result = std::from_chars(v.data(), v.data() + v.size(), content_length);
+            size_t parsed = 0;
+            const auto result = std::from_chars(v.data(), v.data() + v.size(), parsed);
             // Require the whole value to be the number, like ParseAuthority's port parse: from_chars stops
             // at the first non-digit and reports success, so "12abc" would otherwise frame a body of 12 and
             // mis-parse the rest. Trailing OWS (RFC 7230 §3.2.4) is tolerated; any other trailing byte rejects.
@@ -114,6 +115,13 @@ bool HttpFraming::ScanAndRewriteHeader() {
                 GetLogger().Error("malformed Content-Length value \"{}\"", v);
                 return false;
             }
+            // A second, differing Content-Length is a request-smuggling vector (RFC 9112 §6.3): refuse
+            // the message rather than pick a winner. Identical repeats agree on the framing, so they pass.
+            if (has_content_length && parsed != content_length) {
+                GetLogger().Error("conflicting Content-Length values {} and {}", content_length, parsed);
+                return false;
+            }
+            content_length = parsed;
             has_content_length = true;
         } else if (StartsWithNoCase(line, "Transfer-Encoding:")) {
             const std::string_view v = line.substr(line.find(':') + 1);
