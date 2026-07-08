@@ -150,7 +150,7 @@ public:
 
 class TomlSource final : public ConfigSource {
 public:
-    TomlSource(std::string_view name, const toml::table& table) noexcept : name_{name}, table_{&table} {}
+    TomlSource(std::string name, const toml::table& table) : name_{std::move(name)}, table_{&table} {}
 
     [[nodiscard]] std::string_view Name() const override { return name_; }
 
@@ -182,7 +182,7 @@ public:
     }
 
 private:
-    std::string_view name_;
+    std::string name_;
     const toml::table* table_;
 };
 
@@ -265,6 +265,29 @@ private:
     EnvParams params_;
 };
 
+// The ASCII whitespace bytes, as std::isspace classifies them in the C locale.
+constexpr std::string_view ASCII_WHITESPACE = " \t\n\v\f\r";
+
+// A reflector name's canonical form: surrounding whitespace trimmed and ASCII-lowercased, so two
+// names differing only in case or padding are one identity — used both as the display name and as
+// the duplicate-detection key. Internal whitespace is kept (a name may read "living room"); an
+// all-whitespace name canonicalizes to empty and is rejected downstream as unnamed.
+std::string CanonicalizeName(std::string_view name) {
+    const size_t first = name.find_first_not_of(ASCII_WHITESPACE);
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const size_t last = name.find_last_not_of(ASCII_WHITESPACE);
+    return AsciiToLower(name.substr(first, last - first + 1));
+}
+
+// True if `s` holds any ASCII whitespace. An OS interface name never does, so a padded or spaced
+// one is a config mistake: it would miss the interface (a confusing capture error) and, being
+// unequal to the intended name, slip past the source_if == target_if check.
+bool ContainsWhitespace(std::string_view s) noexcept {
+    return s.find_first_of(ASCII_WHITESPACE) != std::string_view::npos;
+}
+
 // Reads one entry from any source and appends a reflector config for each protocol it enables. The
 // entry's shared fields (mac, source_if, target_if, address_family) flow to every enabled protocol;
 // for a real device the one mac is both the WoL target and the mDNS/SSDP frame source.
@@ -341,6 +364,12 @@ std::optional<Error> ReadEntry(const ConfigSource& source,
         }
     }
 
+    if (ContainsWhitespace(source_if)) {
+        return Error{"entry \"{}\" source_if must not contain whitespace: \"{}\"", name, source_if};
+    }
+    if (ContainsWhitespace(target_if)) {
+        return Error{"entry \"{}\" target_if must not contain whitespace: \"{}\"", name, target_if};
+    }
     if (!wol && !mdns && !ssdp) {
         return Error{"entry \"{}\" enables no protocol (set wol, mdns, or ssdp)", name};
     }
@@ -397,7 +426,7 @@ struct ConfigAccumulator {
     std::optional<Error> AddEntry(const ConfigSource& source) {
         const auto name = source.Name();
         if (std::ranges::find(entry_names, name) != entry_names.end()) {
-            return Error{"duplicate entry name \"{}\"", name};
+            return Error{"duplicate reflector name \"{}\" (names are compared case-insensitively and trimmed)", name};
         }
         entry_names.emplace_back(name);
         return ReadEntry(source, wol, mdns, ssdp);
@@ -430,7 +459,7 @@ std::optional<Error> ApplyToml(ConfigAccumulator& acc, std::string_view str) {
                 if (!entry_table) {
                     return Error{"reflector \"{}\" must be a table ([reflectors.{}])", entry_name, entry_name};
                 }
-                const TomlSource source{entry_name, *entry_table};
+                const TomlSource source{CanonicalizeName(entry_name), *entry_table};
                 if (auto error = acc.AddEntry(source)) {
                     return error;
                 }
@@ -535,7 +564,7 @@ std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> en
             name = it->second;
             params.erase(it);
         }
-        const EnvSource source{std::move(name), std::move(params)};
+        const EnvSource source{CanonicalizeName(name), std::move(params)};
         if (auto error = acc.AddEntry(source)) {
             return error;
         }
