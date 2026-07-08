@@ -772,6 +772,41 @@ TEST_F(SsdpReflectorTest, DistinctClientsEachGetTheirOwnSession) {
     EXPECT_NE(target.sent[0].src_port, target.sent[1].src_port);  // distinct reserved ports
 }
 
+TEST_F(SsdpReflectorTest, OneSearcherGetsASessionPerGroup) {
+    // One reflector spans both IPv6 groups; each group's reply port is bound to a scope-matched
+    // source (link-local for ff02::c, routable for ff05::c). A searcher hitting both groups must get
+    // two sessions, or the second group's replies land on the first's unwatched reserved address.
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv6)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+
+    const auto search = MakeSearch();
+    packet_dispatcher.Deliver(source, MakePacket(search, IpAddress::SsdpGroupV6LinkLocal()));
+    packet_dispatcher.Deliver(source, MakePacket(search, IpAddress::SsdpGroupV6SiteLocal()));
+
+    ASSERT_EQ(target.sent.size(), 2u);
+    EXPECT_EQ(RegistrationCount(), base + 2);                      // two sessions, not one reused
+    EXPECT_NE(target.sent[0].src_port, target.sent[1].src_port);  // each on its own reserved port
+    EXPECT_EQ(target.sent[0].dst_ip, IpAddress::SsdpGroupV6LinkLocal());
+    EXPECT_EQ(target.sent[1].dst_ip, IpAddress::SsdpGroupV6SiteLocal());
+}
+
+TEST_F(SsdpReflectorTest, SameSearcherAndGroupReusesOneSession) {
+    // The dedup key is (searcher, group): a retransmit to the *same* group is still one session, so
+    // the group half of the key doesn't split genuine retransmits.
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv6)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+
+    const auto search = MakeSearch();
+    for (int i = 0; i < 3; ++i) {
+        packet_dispatcher.Deliver(source, MakePacket(search, IpAddress::SsdpGroupV6SiteLocal()));
+    }
+
+    EXPECT_EQ(target.sent.size(), 3u);         // reflected every time
+    EXPECT_EQ(RegistrationCount(), base + 1);  // but one shared session
+}
+
 TEST_F(SsdpReflectorTest, LogsDefaultedMxAtInfoWhenSearchHasNoMx) {
     const ScopedMinLogLevel level{LogLevel::Info};
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};

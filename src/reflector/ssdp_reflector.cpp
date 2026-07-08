@@ -153,11 +153,12 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
     const auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds{mx} + SESSION_GRACE;
 
-    // One session per client (searcher ip:port): a retransmit reuses its session, a new client gets a
-    // fresh one (reserved port + response capture), built locally so a failed reflect rolls it back via
-    // RAII. Either way the search is reflected once, from the session's reserved port.
+    // One session per (client, group): a retransmit to the same group reuses its session, a new client —
+    // or the same client searching a different group (a different reply scope) — gets a fresh one
+    // (reserved port + response capture), built locally so a failed reflect rolls it back via RAII.
+    // Either way the search is reflected once, from the session's reserved port.
     const auto existing_session = std::ranges::find_if(sessions_, [&](const Session& session) {
-        return session.searcher == packet.header.source;
+        return session.searcher == packet.header.source && session.group == packet.header.dest.addr;
     });
     std::optional<Session> new_session;
     if (existing_session == sessions_.end()) {
@@ -223,6 +224,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
     }
     return Session{
         .searcher = packet.header.source,
+        .group = packet.header.dest.addr,
         .searcher_mac = packet.header.source_mac,
         .expiry = expiry,
         .reservation = std::move(*reservation),
