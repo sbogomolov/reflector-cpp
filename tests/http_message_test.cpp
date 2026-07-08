@@ -151,6 +151,20 @@ TEST(ParseAuthorityTest, RejectsNonHttpAndMalformed) {
     EXPECT_FALSE(ParseAuthority("not-an-ip:8008", /*bare=*/true).has_value());      // host is not an IPv4 literal
 }
 
+TEST(ParseAuthorityTest, TerminatesAuthorityAtQueryOrFragment) {
+    // A pathless URL with a query or fragment: the authority ends at '?'/'#' (RFC 3986), so the
+    // host:port still parses and rewrites instead of folding the query into the port field.
+    const auto query = ParseAuthority("http://10.1.3.80:8008?token=x", /*bare=*/false);
+    ASSERT_TRUE(query.has_value());
+    EXPECT_EQ(query->endpoint, Device(8008));
+    EXPECT_EQ(std::string_view{"http://10.1.3.80:8008?token=x"}.substr(query->offset, query->length),
+        "10.1.3.80:8008");
+
+    const auto fragment = ParseAuthority("http://10.1.3.80#frag", /*bare=*/false);
+    ASSERT_TRUE(fragment.has_value());
+    EXPECT_EQ(fragment->endpoint, Device(80));
+}
+
 TEST(ParseAuthorityTest, AcceptsCaseInsensitiveHttpScheme) {
     const std::string_view value = "HTTP://10.1.3.80:8008/dd.xml";  // the scheme is case-insensitive (RFC 3986)
     const auto a = ParseAuthority(value, /*bare=*/false);

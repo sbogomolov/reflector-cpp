@@ -55,7 +55,7 @@ std::optional<Authority> ParseAuthority(std::string_view value, bool bare) {
         }
         auth_start = SCHEME.size();
     }
-    size_t auth_end = value.find_first_of("/ \t\r", auth_start);
+    size_t auth_end = value.find_first_of("/?# \t\r", auth_start);  // path, query, or fragment ends it (RFC 3986)
     if (auth_end == std::string_view::npos) {
         auth_end = value.size();
     }
