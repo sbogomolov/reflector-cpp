@@ -7,6 +7,7 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <limits>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -78,6 +79,16 @@ TEST(PortReservationTest, MoveTransfersOwnershipWithoutDoubleClose) {
     PortReservation moved = std::move(*first);
     EXPECT_EQ(moved.Port(), port);
     // No crash / ASan double-close when both `first` (moved-from) and `moved` destruct here.
+}
+
+TEST(PortReservationTest, RoutableV6ReservationIgnoresTheInterfaceIndex) {
+    // Callers pass their interface index unconditionally; ToSockaddr must drop it for a
+    // non-link-local bind or FreeBSD fails the reservation with EADDRNOTAVAIL (::1 is
+    // non-link-local, and no interface has the bogus index).
+    const auto reservation =
+        PortReservation::Create(IpAddress::LoopbackV6(), std::numeric_limits<unsigned>::max());
+    ASSERT_TRUE(reservation.has_value());
+    EXPECT_NE(reservation->Port(), 0);
 }
 
 TEST(PortReservationTest, CreateWorksForIpv6) {

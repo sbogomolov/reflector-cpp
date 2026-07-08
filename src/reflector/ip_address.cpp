@@ -165,6 +165,25 @@ std::optional<IpAddress> IpAddress::FromSockaddr(const sockaddr* address) noexce
     return std::nullopt;
 }
 
+namespace {
+
+// Whether the kernel consults sin6_scope_id for this address: link-local unicast, or multicast
+// scoped to the interface (ff?1::) or link (ff?2::). For everything else, including site-scoped
+// multicast, Linux ignores the field, macOS zeroes it before its lookup, and FreeBSD rejects a
+// bind that carries it (its lookup compares the whole sockaddr -> EADDRNOTAVAIL).
+bool NeedsScopeId(const IpAddress& address) noexcept {
+    if (address.IsLinkLocal()) {
+        return true;
+    }
+    if (!address.IsMulticast()) {
+        return false;
+    }
+    const auto scope = std::to_integer<uint8_t>(address.Bytes()[1]) & 0x0f;
+    return scope == 0x01 || scope == 0x02;
+}
+
+} // namespace
+
 socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id) const noexcept {
     std::memset(&storage, 0, sizeof(storage));
 
@@ -187,7 +206,7 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
         auto* v6 = reinterpret_cast<sockaddr_in6*>(&storage);
         v6->sin6_family = AF_INET6;
         v6->sin6_port = htons(port);
-        v6->sin6_scope_id = scope_id;
+        v6->sin6_scope_id = NeedsScopeId(*this) ? scope_id : 0;
         std::memcpy(&v6->sin6_addr, bytes_.data(), sizeof(v6->sin6_addr));
 #if !defined(__linux__)
         v6->sin6_len = sizeof(sockaddr_in6);

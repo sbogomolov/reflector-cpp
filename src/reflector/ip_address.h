@@ -84,7 +84,10 @@ public:
 
     // Fills `storage` and returns its used length (for bind/sendto's addrlen). The length may be
     // ignored when it's implied by context — e.g. a fixed-size group_req — so this is not
-    // [[nodiscard]]. `scope_id` populates sin6_scope_id for IPv6; ignored for IPv4.
+    // [[nodiscard]]. `scope_id` (an interface index) goes into sin6_scope_id only for addresses
+    // whose zone the kernel consults (link-local unicast, interface-/link-scoped multicast) and is
+    // zeroed otherwise — FreeBSD rejects a bind carrying it on any other address — so callers can
+    // pass their interface index unconditionally. Ignored for IPv4.
     socklen_t ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id = 0) const noexcept;
 
     [[nodiscard]] std::string ToString() const;
