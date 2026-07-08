@@ -8,8 +8,21 @@
 #include <cstddef>
 #include <span>
 #include <vector>
+#include <sys/socket.h>
 
 namespace reflector {
+
+namespace detail {
+
+// Whether a notification's source address (as recvfrom reports it) is the kernel's. On Linux the
+// kernel's netlink source has nl_pid == 0; a user process's carries its own port id, so a non-zero
+// pid — or a source too short to be a sockaddr_nl — is a locally-spoofed datagram (netlink
+// user-to-user unicast needs no privilege) and is rejected. On the BSDs the route socket carries no
+// per-message sender identity, so every datagram is the kernel's and this is always true. Exposed
+// for testing. Prefer verifying in the monitor over trusting the socket's group binding.
+[[nodiscard]] bool NetlinkSenderIsKernel(sockaddr_storage src, socklen_t len) noexcept;
+
+} // namespace detail
 
 // Production AddressMonitor. Linux uses a NETLINK_ROUTE socket subscribed to the IPv4/IPv6 address
 // groups and the link group (a MAC change is a link event, not an address one); macOS uses a
@@ -24,8 +37,11 @@ public:
     // Test seam: build a monitor around an already-open `fd` (e.g. a socketpair end) instead of the
     // kernel notification socket. The monitor owns and closes `fd`. Like the production path, it
     // does not watch until Start() is called, so tests can drive OnReadable with synthesized
-    // messages and observe on_change with no real netlink/route socket.
-    [[nodiscard]] static DefaultAddressMonitor ForTesting(Dispatcher& dispatcher, int fd);
+    // messages and observe on_change with no real netlink/route socket. Sender verification is off
+    // by default: a socketpair source is not a netlink kernel address, so an on-check monitor would
+    // drop every synthesized datagram; pass `verify_sender=true` to exercise that drop path.
+    [[nodiscard]] static DefaultAddressMonitor ForTesting(Dispatcher& dispatcher, int fd,
+        bool verify_sender = false);
 
     [[nodiscard]] bool Start(const OnInterfaceChanged& on_change) noexcept override;
 
@@ -34,7 +50,7 @@ public:
 private:
     // Used by ForTesting: adopts an already-open `fd` instead of opening the kernel socket.
     // Watching begins at Start().
-    DefaultAddressMonitor(Dispatcher& dispatcher, int fd) noexcept;
+    DefaultAddressMonitor(Dispatcher& dispatcher, int fd, bool verify_sender) noexcept;
 
     // Opens the notification socket into fd_, leaving fd_ >= 0 on success. Logs the specific cause
     // and returns false on any failure; the caller then closes the fd.
@@ -63,6 +79,9 @@ private:
     OnInterfaceChanged on_change_;
     Dispatcher::Registration registration_;
     UniqueFd fd_;
+    // Whether OnReadable rejects datagrams whose source isn't the kernel (production always does;
+    // the testing seam defaults it off since a socketpair can't carry a netlink kernel source).
+    bool verify_sender_ = true;
 };
 
 } // namespace reflector

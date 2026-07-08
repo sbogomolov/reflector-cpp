@@ -136,14 +136,15 @@ protected:
 
     // Builds a monitor adopting one end of a fresh non-blocking socketpair; the other end is kept
     // for feeding notifications. The monitor owns and closes its (read) end. Like production, it
-    // does not watch until StartWatching() — call that to begin observing.
-    DefaultAddressMonitor MakeMonitor() {
+    // does not watch until StartWatching() — call that to begin observing. Sender verification is
+    // off by default (a socketpair carries no netlink kernel source); pass true to drive that path.
+    DefaultAddressMonitor MakeMonitor(bool verify_sender = false) {
         int fds[2];
         EXPECT_EQ(::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds), 0) << std::strerror(errno);
         EXPECT_EQ(::fcntl(fds[0], F_SETFL, O_NONBLOCK), 0) << std::strerror(errno);
         monitor_fd = fds[0];
         write_fd = fds[1];
-        return DefaultAddressMonitor::ForTesting(dispatcher, fds[0]);
+        return DefaultAddressMonitor::ForTesting(dispatcher, fds[0], verify_sender);
     }
 
     // Starts the monitor, binding the recording sink — the construct-then-Start() flow production
@@ -295,6 +296,24 @@ TEST_F(DefaultAddressMonitorTest, NeverForwardsIndexZero) {
     EXPECT_EQ(sink.changed, (std::vector<unsigned>{6}));
 }
 
+#if defined(__linux__)
+TEST_F(DefaultAddressMonitorTest, DropsNotificationsFromANonKernelSender) {
+    // With sender verification on, a datagram whose source isn't the kernel is dropped. The
+    // socketpair source is a plain AF_UNIX peer, not a netlink kernel address, so a well-formed
+    // message written to it must not be parsed. (macOS route sockets carry no sender identity, so
+    // this gate is a no-op there — Linux only.)
+    auto monitor = MakeMonitor(/*verify_sender=*/true);
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, ADDR_MESSAGE, 7);
+
+    Write(messages);
+    FireReadable();
+
+    EXPECT_TRUE(sink.changed.empty());
+}
+#endif
+
 TEST_F(DefaultAddressMonitorTest, IgnoresSpuriousWakeWithNoData) {
     auto monitor = MakeMonitor();
     ASSERT_TRUE(StartWatching(monitor));
@@ -328,6 +347,30 @@ TEST_F(DefaultAddressMonitorTest, StartRejectsUnboundCallback) {
     EXPECT_FALSE(dispatcher.IsWatching(monitor_fd));
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
+
+#if defined(__linux__)
+// A sockaddr_storage holding a sockaddr_nl with the given nl_pid, as recvfrom would report a
+// datagram's source. static for internal linkage (GCC's -Wmissing-declarations).
+static sockaddr_storage StorageWithPid(uint32_t pid) {
+    sockaddr_storage storage{};
+    auto* nl = reinterpret_cast<sockaddr_nl*>(&storage);
+    nl->nl_family = AF_NETLINK;
+    nl->nl_pid = pid;
+    return storage;
+}
+
+TEST(NetlinkSenderIsKernelTest, AcceptsOnlyTheKernel) {
+    const auto full = narrow_cast<socklen_t>(sizeof(sockaddr_nl));
+    EXPECT_TRUE(detail::NetlinkSenderIsKernel(StorageWithPid(0), full));      // the kernel (nl_pid 0)
+    EXPECT_FALSE(detail::NetlinkSenderIsKernel(StorageWithPid(1234), full));  // a user process's port id
+    EXPECT_FALSE(detail::NetlinkSenderIsKernel(StorageWithPid(0), 4));        // source too short
+}
+#else
+TEST(NetlinkSenderIsKernelTest, AcceptsEverythingOnTheBsds) {
+    // A PF_ROUTE message carries no per-message sender identity, so every datagram is the kernel's.
+    EXPECT_TRUE(detail::NetlinkSenderIsKernel(sockaddr_storage{}, 0));
+}
+#endif
 
 // The one genuinely-real test: opening the kernel notification socket and starting it on a real
 // dispatcher succeeds (needs no privilege on Linux/macOS).

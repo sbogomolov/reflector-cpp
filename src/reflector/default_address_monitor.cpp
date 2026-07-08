@@ -4,6 +4,8 @@
 #include "logger.h"
 #include "platform.h"
 #include "util/fd_util.h"
+#include "util/narrow_cast.h"
+#include "util/start_lifetime_as.h"
 
 #include <algorithm>
 #include <array>
@@ -55,6 +57,25 @@ void AddUnique(std::vector<unsigned>& indices, unsigned index) {
 
 } // namespace
 
+namespace detail {
+
+#if defined(__linux__)
+bool NetlinkSenderIsKernel(sockaddr_storage src, socklen_t len) noexcept {
+    if (len < narrow_cast<socklen_t>(sizeof(sockaddr_nl))) {
+        return false;  // too short to carry a netlink source address
+    }
+    // The kernel filled `src`'s bytes; bless them as the sockaddr_nl they represent (by value, since
+    // start_lifetime_as reuses the storage) rather than read a never-created object via a cast.
+    return start_lifetime_as<sockaddr_nl>(&src)->nl_pid == 0;
+}
+#else
+bool NetlinkSenderIsKernel(sockaddr_storage /*src*/, socklen_t /*len*/) noexcept {
+    return true;  // PF_ROUTE messages carry no per-message sender identity; all are the kernel's
+}
+#endif
+
+} // namespace detail
+
 DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher)
         : dispatcher_{&dispatcher} {
     if (!Open()) {
@@ -62,11 +83,11 @@ DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher)
     }
 }
 
-DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher, int fd) noexcept
-        : dispatcher_{&dispatcher}, fd_{fd} {}
+DefaultAddressMonitor::DefaultAddressMonitor(Dispatcher& dispatcher, int fd, bool verify_sender) noexcept
+        : dispatcher_{&dispatcher}, fd_{fd}, verify_sender_{verify_sender} {}
 
-DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, int fd) {
-    return DefaultAddressMonitor{dispatcher, fd};
+DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, int fd, bool verify_sender) {
+    return DefaultAddressMonitor{dispatcher, fd, verify_sender};
 }
 
 bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept {
@@ -164,7 +185,10 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     std::vector<unsigned> changed;
     bool overflowed = false;
     while (true) {
-        const auto received = recv(fd_.Get(), buffer.data(), buffer.size(), 0);
+        sockaddr_storage src{};
+        socklen_t addrlen = sizeof(src);
+        const auto received = recvfrom(fd_.Get(), buffer.data(), buffer.size(), 0,
+            reinterpret_cast<sockaddr*>(&src), &addrlen);
         if (received < 0) {
             if (IsWouldBlockErrno(errno)) {
                 break;  // drained
@@ -182,6 +206,12 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
         }
         if (received == 0) {
             break;
+        }
+        // A local process can unicast a netlink datagram to this socket (user-to-user needs no
+        // privilege), spoofing an address change; drop anything whose source isn't the kernel.
+        if (verify_sender_ && !detail::NetlinkSenderIsKernel(src, addrlen)) {
+            GetLogger().Debug("Dropping an address notification from a non-kernel sender");
+            continue;
         }
         // Once overflowed we'll emit a single refresh-all, so keep draining the socket but stop
         // parsing — the collected list would only be discarded.
