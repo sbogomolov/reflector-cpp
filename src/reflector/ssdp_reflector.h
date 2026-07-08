@@ -49,10 +49,13 @@ private:
     static constexpr std::chrono::seconds EVICTION_INTERVAL{1};
 
     // One in-flight client discovery awaiting unicast 200 OK replies; a client's retransmits reuse it.
-    // The client is `searcher` (ip:port) and the reserved port is reservation.Port(), so no separate
-    // key is stored — sessions live in a small vector, found by linear scan. Move-only.
+    // Keyed by (searcher ip:port, group): one reflector spans every SSDP group, and each group's reply
+    // port is bound to a scope-matched source (link-local for ff02::c, routable for ff05::c), so one
+    // searcher's searches to two groups need separate sessions or the second scope's replies land on an
+    // unwatched address. Sessions live in a small vector, found by linear scan. Move-only.
     struct Session {
         IpEndpoint searcher;
+        IpAddress group;
         MacAddress searcher_mac;
         std::chrono::steady_clock::time_point expiry;
         PortReservation reservation;
