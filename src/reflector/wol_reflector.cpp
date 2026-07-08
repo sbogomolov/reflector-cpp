@@ -8,15 +8,17 @@
 #include <string>
 #include <utility>
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 std::string LoggerName(const WolConfig& config) {
     return std::format("WolReflector:{}:{}->{}", config.name, config.source_if, config.target_if);
 }
 
 } // namespace
+
+namespace reflector {
 
 WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
     LinkSocket& target_socket, const WolConfig& config)

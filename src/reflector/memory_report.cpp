@@ -18,9 +18,9 @@
 #endif
 #endif
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"MemoryReport"};
@@ -233,6 +233,8 @@ void LogCgroupMemory() {
 #endif  // __linux__
 
 } // namespace
+
+namespace reflector {
 
 void LogMemoryReport() {
     const size_t peak = PeakRssKib();  // getrusage -- cross-platform high-water

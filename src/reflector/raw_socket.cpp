@@ -46,9 +46,9 @@
 #include <sys/uio.h>
 #endif
 
-namespace reflector {
-
 namespace {
+
+using namespace reflector;
 
 // Classic BPF programs that accept IPv4 UDP or IPv6 UDP only (no VLAN tag, no IPv6
 // extension headers). Direction filtering keeps the kernel from feeding us our own injected
@@ -164,6 +164,8 @@ constexpr size_t LOOPBACK_FAMILY_SIZE = 4;
 // (shared with the frame builder). IPV4_HEADER_SIZE doubles as the minimum valid IPv4 header here.
 
 } // namespace
+
+namespace reflector {
 
 RawSocket::RawSocket(const Interface& interface)
         : logger_{std::format("RawSocket:{}", interface.Name())}

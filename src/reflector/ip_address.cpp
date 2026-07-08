@@ -11,21 +11,38 @@
 #include <ostream>
 #include <utility>
 
-namespace reflector {
-
-// IpAddress stores 16 network-order bytes; the platform address structs that ToSockaddr and
-// FromSockaddr memcpy to/from must fit within that (in_addr is 4 bytes, in6_addr 16).
-static_assert(sizeof(in_addr) <= sizeof(IpAddress::ByteArray));
-static_assert(sizeof(in6_addr) <= sizeof(IpAddress::ByteArray));
-
 namespace {
+
+using namespace reflector;
 
 Logger& GetLogger() noexcept {
     static Logger logger{"IpAddress"};
     return logger;
 }
 
+// Whether the kernel consults sin6_scope_id for this address: link-local unicast, or multicast
+// scoped to the interface (ff?1::) or link (ff?2::). For everything else, including site-scoped
+// multicast, Linux ignores the field, macOS zeroes it before its lookup, and FreeBSD rejects a
+// bind that carries it (its lookup compares the whole sockaddr -> EADDRNOTAVAIL).
+bool NeedsScopeId(const IpAddress& address) noexcept {
+    if (address.IsLinkLocal()) {
+        return true;
+    }
+    if (!address.IsMulticast()) {
+        return false;
+    }
+    const auto scope = std::to_integer<uint8_t>(address.Bytes()[1]) & 0x0f;
+    return scope == 0x01 || scope == 0x02;
+}
+
 } // namespace
+
+namespace reflector {
+
+// IpAddress stores 16 network-order bytes; the platform address structs that ToSockaddr and
+// FromSockaddr memcpy to/from must fit within that (in_addr is 4 bytes, in6_addr 16).
+static_assert(sizeof(in_addr) <= sizeof(IpAddress::ByteArray));
+static_assert(sizeof(in6_addr) <= sizeof(IpAddress::ByteArray));
 
 std::ostream& operator<<(std::ostream& os, IpAddress::Family family) {
     return os << std::format("{}", family);
@@ -164,25 +181,6 @@ std::optional<IpAddress> IpAddress::FromSockaddr(const sockaddr* address) noexce
         static_cast<int>(address->sa_family));
     return std::nullopt;
 }
-
-namespace {
-
-// Whether the kernel consults sin6_scope_id for this address: link-local unicast, or multicast
-// scoped to the interface (ff?1::) or link (ff?2::). For everything else, including site-scoped
-// multicast, Linux ignores the field, macOS zeroes it before its lookup, and FreeBSD rejects a
-// bind that carries it (its lookup compares the whole sockaddr -> EADDRNOTAVAIL).
-bool NeedsScopeId(const IpAddress& address) noexcept {
-    if (address.IsLinkLocal()) {
-        return true;
-    }
-    if (!address.IsMulticast()) {
-        return false;
-    }
-    const auto scope = std::to_integer<uint8_t>(address.Bytes()[1]) & 0x0f;
-    return scope == 0x01 || scope == 0x02;
-}
-
-} // namespace
 
 socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id) const noexcept {
     std::memset(&storage, 0, sizeof(storage));

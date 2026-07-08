@@ -2,8 +2,6 @@
 
 #include <cstddef>
 
-namespace reflector {
-
 namespace {
 
 // DNS header (RFC 1035 §4.1.1): a fixed 12-byte prefix. The QR bit is the most significant bit of
@@ -13,6 +11,8 @@ constexpr size_t FLAGS_HIGH_OFFSET = 2;
 constexpr std::byte QR_BIT{0x80};
 
 } // namespace
+
+namespace reflector {
 
 std::optional<MdnsMessageKind> ClassifyMdnsMessage(std::span<const std::byte> payload) noexcept {
     if (payload.size() < DNS_HEADER_SIZE) {
