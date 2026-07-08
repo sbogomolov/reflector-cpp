@@ -759,6 +759,74 @@ wol = true
 )").has_value());
 }
 
+TEST(ConfigTest, RejectsCaseFoldedDuplicateName) {
+    // "TV" and "tv" are distinct TOML keys, so the parser accepts both; they canonicalize to one
+    // name, so they must be rejected rather than silently become two reflectors sharing it.
+    EXPECT_FALSE(Config::FromString(R"(
+[reflectors.TV]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+
+[reflectors.tv]
+source_if = "eth2"
+target_if = "eth3"
+wol = true
+)").has_value());
+}
+
+TEST(ConfigTest, TrimsAndLowercasesReflectorName) {
+    // The display name is the canonical form: surrounding whitespace trimmed, ASCII-lowercased,
+    // internal spaces kept.
+    const auto config = Config::FromString(R"(
+[reflectors."  Living Room  "]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)");
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().front().name, "living room");
+}
+
+TEST(ConfigTest, RejectsWhitespaceInInterfaceName) {
+    // A padded interface name would miss the interface and slip past source_if == target_if.
+    for (const std::string_view name : {"eth0 ", " eth0", "e th0"}) {
+        const auto config = Config::FromString(std::format(R"(
+[reflectors.tv]
+source_if = "{}"
+target_if = "eth1"
+wol = true
+)", name));
+        EXPECT_FALSE(config.has_value()) << "source_if=\"" << name << "\" should be rejected";
+    }
+}
+
+TEST(ConfigTest, EnvNameIsTrimmedAndLowercased) {
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_TV_SOURCE_IF", "eth0"},
+        {"REFLECTOR_TV_TARGET_IF", "eth1"},
+        {"REFLECTOR_TV_WOL", "true"},
+        {"REFLECTOR_TV_NAME", "  Living Room  "},
+    }));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->WolConfigs().front().name, "living room");
+}
+
+TEST(ConfigTest, RejectsEnvTagFoldingWithFileName) {
+    // An env tag "TV" and a file key "tv" canonicalize equal: the env source is a duplicate of the
+    // file reflector, not a separate one.
+    EXPECT_FALSE(Config::Load(R"(
+[reflectors.tv]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+)", Env({
+        {"REFLECTOR_TV_SOURCE_IF", "eth2"},
+        {"REFLECTOR_TV_TARGET_IF", "eth3"},
+        {"REFLECTOR_TV_MDNS", "true"},
+    })).has_value());
+}
+
 TEST(ConfigTest, RejectsDuplicateMacSourceTargetTriple) {
     EXPECT_FALSE(Config::FromString(R"(
 [reflectors.a]
