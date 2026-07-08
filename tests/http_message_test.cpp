@@ -410,6 +410,33 @@ TEST(HttpFramingMiscTest, RefusesOverCapHeaderEvenWhenTerminated) {
     EXPECT_FALSE(d.ok);
 }
 
+TEST(HttpFramingMiscTest, RefusesConflictingContentLengths) {
+    // Two differing Content-Length headers are a request-smuggling vector (RFC 9112 6.3): refuse
+    // rather than pick a last-wins length that a downstream peer might frame differently.
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 0\r\n"
+        "Content-Length: 100\r\n\r\n");
+    EXPECT_FALSE(d.ok);
+}
+
+TEST(HttpFramingMiscTest, AllowsIdenticalDuplicateContentLength) {
+    // Identical repeats agree on the framing, so they are tolerated (only a conflict is fatal).
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 2\r\n"
+        "Content-Length: 2\r\n\r\n"
+        "hi");
+    EXPECT_TRUE(d.ok);
+    EXPECT_TRUE(d.out.ends_with("hi"));
+}
+
 TEST(HttpFramingMiscTest, FramesTwoPipelinedKeepAliveMessages) {
     const std::string first =
         "HTTP/1.1 200 OK\r\n"
