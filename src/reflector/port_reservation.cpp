@@ -2,6 +2,7 @@
 
 #include "error.h"
 #include "logger.h"
+#include "util/start_lifetime_as.h"
 
 #include <cstdint>
 #include <netinet/in.h>
@@ -61,9 +62,11 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
         close(fd);
         return std::nullopt;
     }
+    // getsockname filled `bound`'s bytes; begin the family struct's lifetime over them so the port
+    // read is from a real object, not a cast to one that was never created there.
     const uint16_t port = v6
-        ? ntohs(reinterpret_cast<const sockaddr_in6*>(&bound)->sin6_port)
-        : ntohs(reinterpret_cast<const sockaddr_in*>(&bound)->sin_port);
+        ? ntohs(start_lifetime_as<sockaddr_in6>(&bound)->sin6_port)
+        : ntohs(start_lifetime_as<sockaddr_in>(&bound)->sin_port);
 
     return PortReservation{fd, port};
 }

@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "util/fd_util.h"
 #include "util/narrow_cast.h"
+#include "util/start_lifetime_as.h"
 
 #include <array>
 #include <cerrno>
@@ -82,7 +83,9 @@ Logger& GetLogger() noexcept {
         GetLogger().Error("Cannot read local endpoint for fd {}: {}", fd, Error::FromErrno());
         return std::nullopt;
     }
-    return IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&addr));
+    // getsockname filled the bytes; begin a sockaddr's lifetime over them for FromSockaddr's
+    // sa_family read (it memcpy's the rest out itself).
+    return IpEndpoint::FromSockaddr(start_lifetime_as<sockaddr>(&addr));
 }
 
 } // namespace
@@ -253,7 +256,7 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
         ::close(client);
         return std::nullopt;
     }
-    return TcpSocket{client, *local, IpEndpoint::FromSockaddr(reinterpret_cast<const sockaddr*>(&peer))};
+    return TcpSocket{client, *local, IpEndpoint::FromSockaddr(start_lifetime_as<sockaddr>(&peer))};
 }
 
 bool TcpSocket::FinishConnect() noexcept {

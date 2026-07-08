@@ -4,6 +4,7 @@
 #include "reflector/logger.h"
 #include "reflector/platform.h"
 #include "reflector/util/narrow_cast.h"
+#include "reflector/util/start_lifetime_as.h"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -185,10 +186,13 @@ std::optional<IpAddress> IpAddress::FromSockaddr(const sockaddr* address) noexce
 socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id) const noexcept {
     std::memset(&storage, 0, sizeof(storage));
 
+    // start_lifetime_as, not a reinterpret_cast: it begins the family struct's lifetime over the
+    // zeroed bytes, so the member writes below go to a real object instead of aliasing one that
+    // was never created there.
     switch (family_) {
     using enum Family;
     case V4: {
-        auto* v4 = reinterpret_cast<sockaddr_in*>(&storage);
+        auto* v4 = start_lifetime_as<sockaddr_in>(&storage);
         v4->sin_family = AF_INET;
         v4->sin_port = htons(port);
         std::memcpy(&v4->sin_addr, bytes_.data(), sizeof(v4->sin_addr));
@@ -201,7 +205,7 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
         return sizeof(sockaddr_in);
     }
     case V6: {
-        auto* v6 = reinterpret_cast<sockaddr_in6*>(&storage);
+        auto* v6 = start_lifetime_as<sockaddr_in6>(&storage);
         v6->sin6_family = AF_INET6;
         v6->sin6_port = htons(port);
         v6->sin6_scope_id = NeedsScopeId(*this) ? scope_id : 0;
