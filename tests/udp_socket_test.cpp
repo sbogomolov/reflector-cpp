@@ -156,33 +156,29 @@ TEST(UdpSocketTest, SetBroadcastOnValidSocketSucceeds) {
     EXPECT_TRUE(sock.SetBroadcast(true));
 }
 
-TEST(UdpSocketTest, SetBroadcastOnMovedFromSocketFails) {
+TEST(UdpSocketTest, OperationsOnMovedFromSocketFail) {
     UdpSocket src{IpAddress::Family::V4};
     UdpSocket dst{std::move(src)};
+    ASSERT_FALSE(src.IsValid()); // NOLINT(bugprone-use-after-move)
 
-    EXPECT_FALSE(src.SetBroadcast(true)); // NOLINT(bugprone-use-after-move)
-}
+    struct Op {
+        const char* name;
+        bool (*run)(UdpSocket&);
+    };
+    // SetBroadcast, SetReuseAddr, Bind, and SendTo all share the single IsValid() guard.
+    const std::array<Op, 4> ops{{
+        {"SetBroadcast", [](UdpSocket& s) { return s.SetBroadcast(true); }},
+        {"SetReuseAddr", [](UdpSocket& s) { return s.SetReuseAddr(true); }},
+        {"Bind", [](UdpSocket& s) { return s.Bind(0); }},
+        {"SendTo",
+            [](UdpSocket& s) {
+                return s.SendTo(std::array{std::byte{0x01}}, {IpAddress::LoopbackV4(), 9});
+            }},
+    }};
 
-TEST(UdpSocketTest, SetReuseAddrOnMovedFromSocketFails) {
-    UdpSocket src{IpAddress::Family::V4};
-    UdpSocket dst{std::move(src)};
-
-    EXPECT_FALSE(src.SetReuseAddr(true)); // NOLINT(bugprone-use-after-move)
-}
-
-TEST(UdpSocketTest, BindOnMovedFromSocketFails) {
-    UdpSocket src{IpAddress::Family::V4};
-    UdpSocket dst{std::move(src)};
-
-    EXPECT_FALSE(src.Bind(0)); // NOLINT(bugprone-use-after-move)
-}
-
-TEST(UdpSocketTest, SendToOnMovedFromSocketFails) {
-    UdpSocket src{IpAddress::Family::V4};
-    UdpSocket dst{std::move(src)};
-
-    const std::array payload{std::byte{0x01}};
-    EXPECT_FALSE(src.SendTo(payload, {IpAddress::LoopbackV4(), 9})); // NOLINT(bugprone-use-after-move)
+    for (const auto& op : ops) {
+        EXPECT_FALSE(op.run(src)) << op.name; // NOLINT(bugprone-use-after-move)
+    }
 }
 
 TEST(UdpSocketTest, CloseInvalidatesSocket) {
@@ -199,15 +195,6 @@ TEST(UdpSocketTest, CloseIsIdempotent) {
     sock.Close();
     sock.Close();
     EXPECT_FALSE(sock.IsValid());
-}
-
-TEST(UdpSocketTest, OperationsOnClosedSocketFail) {
-    UdpSocket sock{IpAddress::Family::V4};
-    sock.Close();
-
-    EXPECT_FALSE(sock.SetBroadcast(true));
-    EXPECT_FALSE(sock.SetReuseAddr(true));
-    EXPECT_FALSE(sock.Bind(0));
 }
 
 TEST(UdpSocketTest, SetV6OnlySucceedsOnV6Socket) {

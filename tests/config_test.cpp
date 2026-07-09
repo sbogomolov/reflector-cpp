@@ -827,210 +827,157 @@ wol = true
     })).has_value());
 }
 
-TEST(ConfigTest, RejectsDuplicateMacSourceTargetTriple) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "eth0"
-target_if = "eth1"
-wol = true
+// --- Cross-protocol duplicate-rule matrix ---
+// AppendConfig<T> implements duplicate detection once, but each protocol is a separate
+// instantiation over its own config vector: the matrix runs against every protocol so each
+// protocol's contract stays pinned even if the shared template is ever split apart. The
+// port-dependent corners are WoL-only and live in their own section further down.
+class ConfigDedupMatrixTest : public ::testing::TestWithParam<std::string_view> {
+protected:
+    // Two-entry TOML enabling the parameterized protocol on both entries; `a` and `b` carry each
+    // entry's remaining fields (mac / interfaces / address_family) as raw TOML lines.
+    [[nodiscard]] std::string TwoEntries(std::string_view a, std::string_view b) const {
+        return std::format("[reflectors.a]{1}\n{0} = true\n\n[reflectors.b]{2}\n{0} = true\n",
+            GetParam(), a, b);
+    }
 
-[reflectors.b]
+    [[nodiscard]] size_t ConfigCount(const Config& config) const {
+        if (GetParam() == "wol") {
+            return config.WolConfigs().size();
+        }
+        if (GetParam() == "mdns") {
+            return config.MdnsConfigs().size();
+        }
+        if (GetParam() == "ssdp") {
+            return config.SsdpConfigs().size();
+        }
+        // A protocol added to the instantiation must extend this dispatch, not silently count some
+        // other vector and pass.
+        ADD_FAILURE() << "ConfigCount has no case for protocol \"" << GetParam() << "\"";
+        return 0;
+    }
+
+    // The pair must be rejected as this protocol's duplicate — the message names the protocol,
+    // which also pins AppendConfig's error text (WoL runs its ports-mentioning branch, the other
+    // protocols the ports-less one).
+    void ExpectDuplicate(std::string_view a, std::string_view b) const {
+        const auto config = Config::FromString(TwoEntries(a, b));
+        ASSERT_FALSE(config.has_value());
+        EXPECT_NE(config.error().Message().find(std::format("duplicate {} rule", GetParam())),
+            std::string::npos) << config.error().Message();
+    }
+
+    void ExpectBothAccepted(std::string_view a, std::string_view b) const {
+        const auto config = Config::FromString(TwoEntries(a, b));
+        ASSERT_TRUE(config.has_value()) << config.error().Message();
+        EXPECT_EQ(ConfigCount(*config), 2u);
+    }
+};
+
+INSTANTIATE_TEST_SUITE_P(Protocols, ConfigDedupMatrixTest,
+    ::testing::Values(std::string_view{"wol"}, std::string_view{"mdns"}, std::string_view{"ssdp"}),
+    [](const ::testing::TestParamInfo<std::string_view>& param_info) { return std::string{param_info.param}; });
+
+TEST_P(ConfigDedupMatrixTest, RejectsDuplicateMacSourceTargetTriple) {
+    ExpectDuplicate(R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
-target_if = "eth1"
-wol = true
-)").has_value());
+target_if = "eth1")", R"(
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1")");
 }
 
-TEST(ConfigTest, RejectsDuplicateUnfilteredSourceTargetRule) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
+TEST_P(ConfigDedupMatrixTest, RejectsDuplicateUnfilteredSourceTargetRule) {
+    ExpectDuplicate(R"(
 source_if = "eth0"
-target_if = "eth1"
-wol = true
-
-[reflectors.b]
+target_if = "eth1")", R"(
 source_if = "eth0"
-target_if = "eth1"
-wol = true
-)").has_value());
+target_if = "eth1")");
 }
 
-TEST(ConfigTest, RejectsSpecificRuleOverlappedByUnfilteredRule) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
+TEST_P(ConfigDedupMatrixTest, RejectsSpecificRuleOverlappedByUnfilteredRule) {
+    ExpectDuplicate(R"(
 source_if = "eth0"
-target_if = "eth1"
-wol = true
+target_if = "eth1")", R"(
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth1")");
+}
 
-[reflectors.b]
+// "default" handles IPv4 too, so it overlaps an ipv4-only rule on the same triple.
+TEST_P(ConfigDedupMatrixTest, RejectsOverlappingRuleWhenDefaultCoversIpv4) {
+    ExpectDuplicate(R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-)").has_value());
-}
-
-TEST(ConfigTest, AcceptsSameMacWithDifferentTargets) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
+address_family = "default")", R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "eth0"
-target_if = "eth2"
-wol = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->WolConfigs().size(), 2);
+address_family = "ipv4")");
 }
 
-TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDisjointPorts) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
+TEST_P(ConfigDedupMatrixTest, RejectsDuplicateIpv6OnlyRules) {
+    // Two ipv6-only rules on the same triple collide via the IPv6 disjunct of AddressFamiliesOverlap
+    // (the IPv4 disjunct is false for both) -- the mirror of the default/ipv4 case above.
+    ExpectDuplicate(R"(
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-wol_ports = [7]
-
-[reflectors.b]
-mac = "00:11:22:33:44:55"
+address_family = "ipv6")", R"(
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-wol_ports = [9]
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->WolConfigs().size(), 2);
+address_family = "ipv6")");
 }
 
-TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentSources) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
+TEST_P(ConfigDedupMatrixTest, AcceptsDistinctConcreteMacs) {
+    // Two different concrete MACs on the same source/target do not collide: MacSelectionsOverlap
+    // is false only when both are set and unequal.
+    ExpectBothAccepted(R"(
+mac = "00:11:22:33:44:55"
 source_if = "eth0"
-target_if = "eth1"
-wol = true
+target_if = "eth1")", R"(
+mac = "00:11:22:33:44:66"
+source_if = "eth0"
+target_if = "eth1")");
+}
 
-[reflectors.b]
+TEST_P(ConfigDedupMatrixTest, AcceptsOverlappingMacSelectionWithDifferentSources) {
+    ExpectBothAccepted(R"(
+source_if = "eth0"
+target_if = "eth1")", R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth2"
-target_if = "eth1"
-wol = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->WolConfigs().size(), 2);
+target_if = "eth1")");
 }
 
-TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDifferentTargets) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "eth0"
-target_if = "eth1"
-wol = true
-
-[reflectors.b]
+TEST_P(ConfigDedupMatrixTest, AcceptsSameMacWithDifferentTargets) {
+    ExpectBothAccepted(R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
-target_if = "eth2"
-wol = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->WolConfigs().size(), 2);
+target_if = "eth1")", R"(
+mac = "00:11:22:33:44:55"
+source_if = "eth0"
+target_if = "eth2")");
 }
 
 // An ipv4-only and an ipv6-only rule never handle the same packet, so an otherwise identical pair
 // is not a duplicate — it is just the long form of one "dual" rule.
-TEST(ConfigTest, AcceptsIdenticalRuleWithDisjointAddressFamilies) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
+TEST_P(ConfigDedupMatrixTest, AcceptsIdenticalRuleWithDisjointAddressFamilies) {
+    ExpectBothAccepted(R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-address_family = "ipv4"
-
-[reflectors.b]
+address_family = "ipv4")", R"(
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
-wol = true
-address_family = "ipv6"
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->WolConfigs().size(), 2);
+address_family = "ipv6")");
 }
 
-// "default" handles IPv4 too, so it overlaps an ipv4-only rule on the same triple.
-TEST(ConfigTest, RejectsOverlappingRuleWhenDefaultCoversIpv4) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "eth0"
-target_if = "eth1"
-wol = true
-address_family = "default"
+// --- cross-protocol independence: the same rule under different protocols never collides ---
 
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "eth0"
-target_if = "eth1"
-wol = true
-address_family = "ipv4"
-)").has_value());
-}
 
-TEST(ConfigTest, RejectsDuplicateIpv6OnlyRules) {
-    // Two ipv6-only rules on the same triple collide via the IPv6 disjunct of AddressFamiliesOverlap
-    // (the IPv4 disjunct is false for both) -- the mirror of the default/ipv4 case above.
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "eth0"
-target_if = "eth1"
-wol = true
-address_family = "ipv6"
-
-[reflectors.b]
-source_if = "eth0"
-target_if = "eth1"
-wol = true
-address_family = "ipv6"
-)").has_value());
-}
-
-// --- per-protocol dedup across entries (mDNS / SSDP) and cross-protocol independence ---
-
-TEST(ConfigTest, RejectsDuplicateMdnsRuleAcrossEntries) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-)").has_value());
-}
-
-TEST(ConfigTest, RejectsDuplicateSsdpRuleAcrossEntries) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-)").has_value());
-}
 
 TEST(ConfigTest, AcceptsOverlappingDifferentProtocolsAcrossEntries) {
     // Same source/target, but one entry does WoL and the other mDNS — different protocol vectors,
@@ -1295,23 +1242,22 @@ ssdp = true
 )").has_value());
 }
 
-// --- WoL dedup: branches not exercised by the migrated matrix ---
+// --- WoL dedup: the port-dependent branches the cross-protocol matrix cannot reach ---
 
-TEST(ConfigTest, AcceptsDistinctConcreteMacsSameTriple) {
-    // Two different concrete MACs on the same source/target/ports do not collide: MacSelectionsOverlap
-    // is false only when both are set and unequal.
+TEST(ConfigTest, AcceptsOverlappingMacSelectionWithDisjointPorts) {
     const auto config = Config::FromString(R"(
 [reflectors.a]
+source_if = "eth0"
+target_if = "eth1"
+wol = true
+wol_ports = [7]
+
+[reflectors.b]
 mac = "00:11:22:33:44:55"
 source_if = "eth0"
 target_if = "eth1"
 wol = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:66"
-source_if = "eth0"
-target_if = "eth1"
-wol = true
+wol_ports = [9]
 )");
     ASSERT_TRUE(config.has_value()) << config.error().Message();
     EXPECT_EQ(config->WolConfigs().size(), 2);
@@ -1319,8 +1265,8 @@ wol = true
 
 TEST(ConfigTest, RejectsPartialPortOverlap) {
     // Sharing a single port (9) is enough to collide — PortsOverlap is any-shared-element, not set
-    // equality.
-    EXPECT_FALSE(Config::FromString(R"(
+    // equality. The error runs AppendConfig's WoL-only branch, whose message lists the ports.
+    const auto config = Config::FromString(R"(
 [reflectors.a]
 source_if = "eth0"
 target_if = "eth1"
@@ -1332,242 +1278,24 @@ source_if = "eth0"
 target_if = "eth1"
 wol = true
 wol_ports = [9, 40000]
-)").has_value());
-}
-
-// --- mDNS dedup matrix (AppendConfig dedups mdns_configs independently of WoL) ---
-
-TEST(ConfigTest, RejectsMdnsDuplicateMacTriple) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-mdns = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-mdns = true
-)").has_value());
-}
-
-TEST(ConfigTest, RejectsMdnsSpecificOverlappedByUnfiltered) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-mdns = true
-)").has_value());
-}
-
-TEST(ConfigTest, AcceptsMdnsDistinctMacs) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-mdns = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:66"
-source_if = "lan"
-target_if = "iot"
-mdns = true
 )");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MdnsConfigs().size(), 2);
+    ASSERT_FALSE(config.has_value());
+    EXPECT_NE(config.error().Message().find("ports"), std::string::npos) << config.error().Message();
 }
 
-TEST(ConfigTest, AcceptsMdnsDifferentSources) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
 
-[reflectors.b]
-source_if = "lan2"
-target_if = "iot"
-mdns = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MdnsConfigs().size(), 2);
-}
 
-TEST(ConfigTest, AcceptsMdnsDifferentTargets) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
 
-[reflectors.b]
-source_if = "lan"
-target_if = "iot2"
-mdns = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MdnsConfigs().size(), 2);
-}
 
-TEST(ConfigTest, AcceptsMdnsDisjointAddressFamilies) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-address_family = "ipv4"
 
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-address_family = "ipv6"
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MdnsConfigs().size(), 2);
-}
 
-TEST(ConfigTest, RejectsMdnsDefaultOverlapsIpv4) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-address_family = "default"
 
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-mdns = true
-address_family = "ipv4"
-)").has_value());
-}
 
-// --- SSDP dedup matrix (AppendConfig dedups ssdp_configs independently of WoL / mDNS) ---
 
-TEST(ConfigTest, RejectsSsdpDuplicateMacTriple) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-ssdp = true
 
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-)").has_value());
-}
 
-TEST(ConfigTest, RejectsSsdpSpecificOverlappedByUnfiltered) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
 
-[reflectors.b]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-)").has_value());
-}
 
-TEST(ConfigTest, AcceptsSsdpDistinctMacs) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-mac = "00:11:22:33:44:55"
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-
-[reflectors.b]
-mac = "00:11:22:33:44:66"
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->SsdpConfigs().size(), 2);
-}
-
-TEST(ConfigTest, AcceptsSsdpDifferentSources) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-
-[reflectors.b]
-source_if = "lan2"
-target_if = "iot"
-ssdp = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->SsdpConfigs().size(), 2);
-}
-
-TEST(ConfigTest, AcceptsSsdpDifferentTargets) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-
-[reflectors.b]
-source_if = "lan"
-target_if = "iot2"
-ssdp = true
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->SsdpConfigs().size(), 2);
-}
-
-TEST(ConfigTest, AcceptsSsdpDisjointAddressFamilies) {
-    const auto config = Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-address_family = "ipv4"
-
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-address_family = "ipv6"
-)");
-    ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->SsdpConfigs().size(), 2);
-}
-
-TEST(ConfigTest, RejectsSsdpDefaultOverlapsIpv4) {
-    EXPECT_FALSE(Config::FromString(R"(
-[reflectors.a]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-address_family = "default"
-
-[reflectors.b]
-source_if = "lan"
-target_if = "iot"
-ssdp = true
-address_family = "ipv4"
-)").has_value());
-}
 
 // --- SSDP dial flag: struct-level Verify + formatter, and the TOML parse ---
 
