@@ -14,14 +14,13 @@
 #include <cstring>
 #include <span>
 #include <vector>
+#include <net/if.h>
 #include <sys/socket.h>
-#include <unistd.h>
 
 #if defined(__linux__)
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #else
-#include <net/if.h>
 #include <net/route.h>
 #endif
 

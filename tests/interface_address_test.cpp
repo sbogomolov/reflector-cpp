@@ -6,22 +6,20 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <vector>
-
-#if defined(__linux__)
-#include <net/if.h>
-#include <string>
-#else
-#include <array>
 #include <cstring>
 #include <span>
+#include <string>
 #include <string_view>
+#include <vector>
 #include <net/if.h>
+#include <sys/socket.h>
+
+#if !defined(__linux__)
 #include <net/if_dl.h>
 #include <netinet6/in6_var.h>
-#include <sys/socket.h>
 #endif
 
 namespace {

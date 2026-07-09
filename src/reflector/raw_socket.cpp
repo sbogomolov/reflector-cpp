@@ -27,13 +27,11 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <utility>
 
 #if defined(__linux__)
 #include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
-#include <sys/socket.h>
 // Added to the UAPI in Linux 4.20; define it for older build headers. At runtime the setsockopt may
 // still fail on a pre-4.20 kernel (or under user-mode QEMU), in which case Open falls back to dropping
 // our own outgoing frames inside the BPF filter (DROP_OUTGOING_PROLOGUE).
@@ -42,8 +40,6 @@
 #endif
 #else
 #include <net/bpf.h>
-#include <net/ethernet.h>
-#include <sys/uio.h>
 #endif
 
 namespace {

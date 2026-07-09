@@ -13,7 +13,10 @@
 #include <string_view>
 #include <vector>
 
+#include <ifaddrs.h>
 #include <net/if.h>
+#include <netinet/in.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -22,13 +25,9 @@
 #include <linux/if_link.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <cerrno>
 #else
-#include <ifaddrs.h>
 #include <net/if_dl.h>
-#include <netinet/in.h>
 #include <netinet6/in6_var.h>
-#include <sys/ioctl.h>
 #endif
 
 namespace {
