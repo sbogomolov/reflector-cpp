@@ -92,6 +92,18 @@ TEST(SsdpMessageTest, ReturnsNulloptWhenMxAbsentOrUnparseable) {
     EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: abc\r\n\r\n")), std::nullopt);
 }
 
+TEST(SsdpMessageTest, RejectsMxValueWithTrailingGarbage) {
+    // The MX grammar is a bare integer; "2abc" and "2 seconds" are invalid values, not a 2 —
+    // the whole value must be digits (trailing whitespace tolerated, next test).
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 2abc\r\n\r\n")), std::nullopt);
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 2 seconds\r\n\r\n")), std::nullopt);
+}
+
+TEST(SsdpMessageTest, ToleratesTrailingWhitespaceAfterMxValue) {
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 2 \r\n\r\n")), 2);
+    EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nMX: 3\t\r\n\r\n")), 3);
+}
+
 TEST(SsdpMessageTest, ParsesMxHeaderNameCaseInsensitively) {
     EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nmx: 2\r\n\r\n")), 2);
 }
