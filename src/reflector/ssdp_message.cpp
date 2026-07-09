@@ -66,7 +66,13 @@ std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexce
                 unsigned parsed = 0;
                 const auto* begin = value.data();
                 const auto* stop = value.data() + value.size();
-                if (std::from_chars(begin, stop, parsed).ec == std::errc{}) {
+                const auto result = std::from_chars(begin, stop, parsed);
+                // Require the whole value to be the integer the spec's grammar demands: from_chars
+                // stops at the first non-digit and reports success, so "2abc" would otherwise pass
+                // as 2. Trailing OWS is tolerated, like the DIAL framer's Content-Length parse; any
+                // other trailing byte makes the value invalid (the caller falls back to the default
+                // window and logs the searcher).
+                if (result.ec == std::errc{} && TrimLeadingSpace({result.ptr, stop}).empty()) {
                     return static_cast<uint8_t>(std::clamp<unsigned>(parsed, MX_MIN, MX_MAX));
                 }
             }
