@@ -13,6 +13,15 @@
 #if defined(__linux__)
 #include <net/if.h>
 #include <string>
+#else
+#include <array>
+#include <cstring>
+#include <span>
+#include <string_view>
+#include <net/if.h>
+#include <net/if_dl.h>
+#include <netinet6/in6_var.h>
+#include <sys/socket.h>
 #endif
 
 namespace {
@@ -232,5 +241,87 @@ TEST(SelectSourceAddressesTest, EmptyCandidatesSelectNothing) {
     EXPECT_FALSE(selected.v4.has_value());
     EXPECT_FALSE(selected.v6.has_value());
 }
+
+#if !defined(__linux__)
+
+// --- BSD getifaddrs pure helpers (the resolver itself needs a real interface) ---
+
+namespace {
+
+// An AF_LINK sockaddr_dl carrying `name` then `mac` in sdl_data, with sdl_len (the sa_len the reader
+// bounds against) set to `sa_len`. Short inputs fit sdl_data, so a plain sockaddr_dl backs it.
+sockaddr_dl MakeLinkSockaddr(std::string_view name, std::span<const std::byte> mac, uint8_t sa_len) {
+    sockaddr_dl sdl{};
+    sdl.sdl_family = AF_LINK;
+    sdl.sdl_nlen = static_cast<unsigned char>(name.size());
+    sdl.sdl_alen = static_cast<unsigned char>(mac.size());
+    sdl.sdl_len = sa_len;
+    std::memcpy(sdl.sdl_data, name.data(), name.size());
+    std::memcpy(sdl.sdl_data + name.size(), mac.data(), mac.size());
+    return sdl;
+}
+
+constexpr uint8_t LinkSaLen(size_t name_len, size_t mac_len) {
+    return static_cast<uint8_t>(offsetof(sockaddr_dl, sdl_data) + name_len + mac_len);
+}
+
+}  // namespace
+
+TEST(MacFromLinkSockaddrTest, ReadsMacAtTheNameDependentOffset) {
+    // The MAC sits after the 3-char name in sdl_data; a correct read skips the name.
+    const std::array<std::byte, 6> mac{std::byte{0x02}, std::byte{0x11}, std::byte{0x22},
+        std::byte{0x33}, std::byte{0x44}, std::byte{0x55}};
+    const auto sdl = MakeLinkSockaddr("en0", mac, LinkSaLen(3, 6));
+
+    const auto parsed = detail::MacFromLinkSockaddr(reinterpret_cast<const sockaddr&>(sdl));
+    EXPECT_EQ(parsed, *MacAddress::FromString("02:11:22:33:44:55"));
+}
+
+TEST(MacFromLinkSockaddrTest, YieldsZeroWhenTheLinkCarriesNoAddress) {
+    // A loopback-style AF_LINK entry has sdl_alen 0 (no hardware address) -> all-zero MAC.
+    const auto sdl = MakeLinkSockaddr("lo0", {}, LinkSaLen(3, 0));
+
+    EXPECT_EQ(detail::MacFromLinkSockaddr(reinterpret_cast<const sockaddr&>(sdl)), MacAddress{});
+}
+
+TEST(MacFromLinkSockaddrTest, YieldsZeroWhenTheMacWouldRunPastSaLen) {
+    // sdl_alen claims 6 but sa_len stops one byte short of the MAC's end: refuse rather than over-read.
+    const std::array<std::byte, 6> mac{std::byte{0x02}, std::byte{0x11}, std::byte{0x22},
+        std::byte{0x33}, std::byte{0x44}, std::byte{0x55}};
+    const auto sdl = MakeLinkSockaddr("en0", mac, LinkSaLen(3, 6) - 1);
+
+    EXPECT_EQ(detail::MacFromLinkSockaddr(reinterpret_cast<const sockaddr&>(sdl)), MacAddress{});
+}
+
+TEST(Ipv6SourceFlagsUsableTest, AcceptsAUsableAddress) {
+    EXPECT_TRUE(detail::Ipv6SourceFlagsUsable(0));
+    EXPECT_TRUE(detail::Ipv6SourceFlagsUsable(IN6_IFF_AUTOCONF));  // a benign flag, not in the reject set
+}
+
+TEST(Ipv6SourceFlagsUsableTest, RejectsEachUnusableFlag) {
+    for (const int flag : {IN6_IFF_TENTATIVE, IN6_IFF_DUPLICATED, IN6_IFF_DETACHED,
+                           IN6_IFF_DEPRECATED, IN6_IFF_ANYCAST}) {
+        EXPECT_FALSE(detail::Ipv6SourceFlagsUsable(flag)) << "flag " << flag;
+        EXPECT_FALSE(detail::Ipv6SourceFlagsUsable(flag | IN6_IFF_AUTOCONF)) << "flag " << flag;
+    }
+}
+
+TEST(CanonicalizeLinkLocalV6Test, ClearsTheEmbeddedKameScopeId) {
+    // KAME stashes the interface index in bytes 2-3 of a link-local sin6_addr; canonicalizing zeroes
+    // just those, leaving fe80:: and the interface id intact.
+    auto bytes = IpAddress::FromString("fe80::1")->Bytes();
+    bytes[2] = std::byte{0x00};
+    bytes[3] = std::byte{0x05};  // scope id 5 embedded KAME-style
+    const auto canonical = detail::CanonicalizeLinkLocalV6(IpAddress::FromV6Bytes(bytes));
+
+    EXPECT_EQ(canonical, *IpAddress::FromString("fe80::1"));
+}
+
+TEST(CanonicalizeLinkLocalV6Test, LeavesACanonicalAddressUnchanged) {
+    const auto canonical = *IpAddress::FromString("fe80::1");
+    EXPECT_EQ(detail::CanonicalizeLinkLocalV6(canonical), canonical);
+}
+
+#endif
 
 }  // namespace reflector

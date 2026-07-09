@@ -259,27 +259,10 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
 
 #else
 
-// The interface's link-layer MAC from a sockaddr_dl, or a default (all-zero) MacAddress if it
-// has none. Reads straight out of the kernel-provided sockaddr rather than copying the whole
-// (variable-length) sockaddr into a fixed local: the MAC sits at a name-dependent offset in
-// sdl_data that a long interface name could push past any local sockaddr_dl. Byte access
-// through std::byte* is alignment- and aliasing-safe.
-MacAddress ReadMac(const ifaddrs& ifa) noexcept {
-    const auto* bytes = reinterpret_cast<const std::byte*>(ifa.ifa_addr);
-    const auto sa_len = static_cast<size_t>(ifa.ifa_addr->sa_len);
-    const auto name_len = std::to_integer<size_t>(bytes[offsetof(sockaddr_dl, sdl_nlen)]);
-    const auto addr_len = std::to_integer<size_t>(bytes[offsetof(sockaddr_dl, sdl_alen)]);
-    const auto mac_offset = offsetof(sockaddr_dl, sdl_data) + name_len;
-    if (addr_len != MAC_SIZE || mac_offset + MAC_SIZE > sa_len) {
-        return {};
-    }
-    return MacAddress::FromBytes(std::span<const std::byte, MAC_SIZE>{bytes + mac_offset, MAC_SIZE});
-}
-
-// True only if the kernel confirms the IPv6 address is a valid source — not tentative,
-// deprecated, duplicated, etc. Queried via SIOCGIFAFLAG_IN6 since getifaddrs doesn't surface
-// per-address flags. If the ioctl fails — most likely because the address was removed between
-// enumeration and now — we can't confirm it's usable, so we skip it rather than risk a
+// True only if the kernel confirms the IPv6 address is a valid source. Queried via SIOCGIFAFLAG_IN6
+// since getifaddrs doesn't surface per-address flags; the usable/unusable decision itself is
+// detail::Ipv6SourceFlagsUsable. If the ioctl fails — most likely because the address was removed
+// between enumeration and now — we can't confirm it's usable, so we skip it rather than risk a
 // tentative or stale source.
 bool IsUsableIpv6(int inet6_fd, const char* interface, const sockaddr_in6& sin6) noexcept {
     in6_ifreq request{};
@@ -289,20 +272,7 @@ bool IsUsableIpv6(int inet6_fd, const char* interface, const sockaddr_in6& sin6)
         GetLogger().Warning("Cannot query IPv6 address flags on interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
-    constexpr int unusable = IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED | IN6_IFF_DETACHED
-        | IN6_IFF_DEPRECATED | IN6_IFF_ANYCAST;
-    return (request.ifr_ifru.ifru_flags6 & unusable) == 0;
-}
-
-// BSD/KAME embeds the scope id (interface index) in bytes 2-3 of a link-local sin6_addr;
-// clear it so the on-wire source is the canonical fe80::<interface-id>. macOS-only: Linux's
-// netlink returns canonical link-local addresses, so the same clearing there would be a no-op
-// at best and corrupt a non-conforming address at worst.
-IpAddress CanonicalizeLinkLocal(const IpAddress& address) noexcept {
-    auto bytes = address.Bytes();
-    bytes[2] = std::byte{0};
-    bytes[3] = std::byte{0};
-    return IpAddress::FromV6Bytes(bytes);
+    return detail::Ipv6SourceFlagsUsable(request.ifr_ifru.ifru_flags6);
 }
 
 void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result) noexcept {
@@ -344,14 +314,14 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
             }
             if (auto address = IpAddress::FromSockaddr(ifa->ifa_addr); address) {
                 if (address->IsLinkLocal()) {
-                    address = CanonicalizeLinkLocal(*address);
+                    address = detail::CanonicalizeLinkLocalV6(*address);
                 }
                 candidates.push_back(*address);
             }
             break;
         }
         case AF_LINK:
-            result.mac = ReadMac(*ifa);
+            result.mac = detail::MacFromLinkSockaddr(*ifa->ifa_addr);
             break;
         default:
             break;
@@ -377,6 +347,39 @@ void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddre
         Consider(result, address);
     }
 }
+
+#if !defined(__linux__)
+
+// Reads straight out of the kernel-provided sockaddr rather than copying the whole (variable-length)
+// sockaddr into a fixed local: the MAC sits at a name-length-dependent offset in sdl_data that a long
+// interface name could push past any local sockaddr_dl. Byte access through std::byte* is alignment-
+// and aliasing-safe.
+MacAddress MacFromLinkSockaddr(const sockaddr& link_addr) noexcept {
+    const auto* bytes = reinterpret_cast<const std::byte*>(&link_addr);
+    const auto sa_len = static_cast<size_t>(link_addr.sa_len);
+    const auto name_len = std::to_integer<size_t>(bytes[offsetof(sockaddr_dl, sdl_nlen)]);
+    const auto addr_len = std::to_integer<size_t>(bytes[offsetof(sockaddr_dl, sdl_alen)]);
+    const auto mac_offset = offsetof(sockaddr_dl, sdl_data) + name_len;
+    if (addr_len != MAC_SIZE || mac_offset + MAC_SIZE > sa_len) {
+        return {};
+    }
+    return MacAddress::FromBytes(std::span<const std::byte, MAC_SIZE>{bytes + mac_offset, MAC_SIZE});
+}
+
+bool Ipv6SourceFlagsUsable(int flags6) noexcept {
+    constexpr int unusable = IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED | IN6_IFF_DETACHED
+        | IN6_IFF_DEPRECATED | IN6_IFF_ANYCAST;
+    return (flags6 & unusable) == 0;
+}
+
+IpAddress CanonicalizeLinkLocalV6(const IpAddress& address) noexcept {
+    auto bytes = address.Bytes();
+    bytes[2] = std::byte{0};
+    bytes[3] = std::byte{0};
+    return IpAddress::FromV6Bytes(bytes);
+}
+
+#endif
 
 } // namespace detail
 
