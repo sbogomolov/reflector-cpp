@@ -528,6 +528,20 @@ TEST_F(RawSocketTest, RefusesIpv4SendWithoutIpv4Source) {
     });
 }
 
+// A payload that pushes the assembled frame past SendFrame's fixed-size stack buffer:
+// BuildUdpFrame's CheckedFrameSize rejects it (out buffer too small) and returns 0, so SendFrame
+// must log and return false instead of writing a truncated frame. Ethernet(14) + IPv4(20) +
+// UDP(8) header overhead alone means a 4096-byte payload already overflows the 4096-byte buffer.
+TEST_F(RawSocketTest, SendFailsWhenFrameExceedsSendBuffer) {
+    SetSource(IpAddress::FromV4Bytes(192, 0, 2, 1), std::nullopt);
+    const std::vector<std::byte> oversized_payload(4096, std::byte{0});
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(socket.SendUdpBroadcastDatagram(9, 9, oversized_payload, /*ttl=*/64));
+    });
+    EXPECT_NE(output.find("egress"), std::string::npos) << output;
+}
+
 // A non-multicast group is rejected by the kernel (EINVAL on both platforms) and surfaced as
 // false — the deterministic, root-free failure case. (A successful join needs a real
 // multicast-capable interface; that's the RequiresRoot veth test below. Joining a *valid* group
@@ -542,6 +556,17 @@ TEST_F(RawSocketTest, JoinMulticastGroupRejectsNonMulticastAddress) {
     // an fd leak, so assert it directly).
     EXPECT_FALSE(JoinFdValid(IpAddress::Family::V4));
     EXPECT_FALSE(JoinFdValid(IpAddress::Family::V6));
+}
+
+// The bind/interface-index validation in the constructor (raw_socket.cpp's IsValid() gate) is
+// platform-independent, so this runs on every platform rather than only alongside the BSD-only
+// tests below.
+TEST_F(RawSocketTest, RejectsInvalidInterface) {
+    CaptureStdout([&] {  // swallow the rejection logs; IsValid() is the contract
+        const Interface invalid{"nonex0"};
+        const RawSocket socket_on_invalid{invalid};
+        EXPECT_FALSE(socket_on_invalid.IsValid());
+    });
 }
 
 #if !defined(__linux__)
@@ -605,14 +630,6 @@ TEST_F(RawSocketTest, RejectsLoopbackWithUnsupportedFamily) {
     f.AppendLoopback(/*AF_UNIX-ish*/ 1);
 
     EXPECT_FALSE(ParseQuietly(f.bytes).has_value());
-}
-
-TEST_F(RawSocketTest, RejectsInvalidInterface) {
-    CaptureStdout([&] {  // swallow the rejection logs; IsValid() is the contract
-        const Interface invalid{"nonex0"};
-        const RawSocket socket_on_invalid{invalid};
-        EXPECT_FALSE(socket_on_invalid.IsValid());
-    });
 }
 
 // Packs N bpf_hdr-prefixed frames into a single batch (one read returns all of them),
@@ -975,6 +992,11 @@ protected:
     static bool JoinFdValid(const RawSocket& socket, IpAddress::Family family) {
         return socket.join_fds_.Get(family).IsValid();
     }
+    // The raw fd number, so a test can confirm a second join reused the family's existing join fd
+    // rather than closing and reopening it (JoinFdValid alone can't distinguish those).
+    static int JoinFdNumber(const RawSocket& socket, IpAddress::Family family) {
+        return socket.join_fds_.Get(family).Get();
+    }
     static void CloseSocket(RawSocket& socket) { socket.Close(); }
 };
 
@@ -1067,6 +1089,34 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, JoinsMulticastGroupsIdempotently)
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()).IsValid());
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV4()).IsValid());
     EXPECT_TRUE(socket.JoinMulticastGroup(IpAddress::MdnsGroupV6()).IsValid());
+}
+
+// Second join of a *different* group in the same family, once that family's join fd is already
+// open from an earlier join (JoinMulticastGroup's opened_now == false path). The existing fd must
+// be reused, not reset and reopened: resetting it would close the fd holding the first group's
+// kernel membership out from under it, even though the membership map still reports it held. This
+// is distinct from JoinsMulticastGroupsIdempotently above, which only re-joins the *same* group
+// and so never leaves the top (already-a-membership) fast path.
+TEST_F(RawSocketInterfacePairRequiresRootTest, JoinReusesAlreadyOpenFamilyFd) {
+    Interface iface{pair.InjectInterface()};
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+
+    const auto first_group = IpAddress::MdnsGroupV4();
+    const auto second_group = IpAddress::SsdpGroupV4();
+    auto first = socket.JoinMulticastGroup(first_group);
+    ASSERT_TRUE(first.IsValid());
+    const int fd_after_first = JoinFdNumber(socket, IpAddress::Family::V4);
+    ASSERT_GE(fd_after_first, 0);
+
+    auto second = socket.JoinMulticastGroup(second_group);  // different group, same family
+    ASSERT_TRUE(second.IsValid());
+
+    EXPECT_EQ(JoinFdNumber(socket, IpAddress::Family::V4), fd_after_first)
+        << "second join reset the family's already-open join fd instead of reusing it";
+    EXPECT_TRUE(JoinFdValid(socket, IpAddress::Family::V4));
+    EXPECT_EQ(MembershipCount(socket, first_group), 1u);
+    EXPECT_EQ(MembershipCount(socket, second_group), 1u);
 }
 
 // The refcount + fd lifecycle: two memberships of a group keep one kernel join; the group is left

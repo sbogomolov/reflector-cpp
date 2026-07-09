@@ -485,6 +485,42 @@ TEST_F(DialProxyTest, OnInterfaceChangedKeepsListenersWhenSourceAddressUnchanged
     EXPECT_TRUE(dispatcher.IsWatching(fd));
 }
 
+// A source address that CHANGES to a different live address (rather than disappearing outright) must also
+// stale the old listeners -- is_stale's `current != old_addr` branch, not just its `current == nullopt`
+// branch. Mirrors OnInterfaceChangedDropsListenersBoundToAChangedSourceAddress with a live replacement
+// address instead of none, and additionally proves the next advertisement re-mints against the new address
+// rather than reusing the stale listener.
+TEST_F(DialProxyTest, OnInterfaceChangedDropsListenersWhenSourceAddressChangesToADifferentLiveAddress) {
+    // Not every platform routes all of 127/8 to lo (macOS assigns only 127.0.0.1); skip where 127.0.0.2
+    // isn't bindable, as BindAddressFlowsFromTheSourceInterface does -- the docker (Linux) gate still
+    // exercises this.
+    const auto alt = IpAddress::FromString("127.0.0.2").value();
+    FakeInterface alt_if;
+    alt_if.SetV4(alt);
+    if (!TcpSocket::Listen(alt_if, IpAddress::Family::V4)) {
+        GTEST_SKIP() << "127.0.0.2 is not bindable on this platform";
+    }
+
+    auto proxy = MakeProxy();
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(2)).has_value());
+    ASSERT_EQ(EndpointCount(proxy), 1u);
+    const int old_fd = ListenerFd(proxy, Device(2));
+    ASSERT_TRUE(dispatcher.IsWatching(old_fd));
+
+    source_if.SetV4(alt);  // the source address CHANGED, not nulled
+    proxy.OnInterfaceChanged();
+
+    EXPECT_EQ(EndpointCount(proxy), 0u);          // the old-address listener went too
+    EXPECT_FALSE(HasEndpoint(proxy, Device(2)));
+    EXPECT_FALSE(dispatcher.IsWatching(old_fd));   // its accept registration went with it
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);        // nothing left to sweep -> the reaper stopped
+
+    // The next advertisement re-mints against the NEW address, not a reuse of the stale listener.
+    const auto authority = proxy.EnsureDiscoveryListener(Device(2));
+    ASSERT_TRUE(authority.has_value());
+    EXPECT_EQ(authority->addr, alt);  // bound to the NEW address -- a reused stale listener would still carry 127.0.0.1
+}
+
 TEST_F(DialProxyTest, DiscoveryAndRestCapsAreIndependent) {
     auto proxy = MakeProxy();
     // Fill the Discovery cap entirely...
@@ -1365,6 +1401,46 @@ TEST_F(DialProxyRewriteTest, SecondUrlHeaderOverflowingTheCapDropsTheWholeRespon
     EXPECT_FALSE(HasEndpoint(proxy, second_dev));  // the overflowing second was never minted
 }
 
+// 5c. RewriteRestAuthority's closed-guard (dial_proxy.cpp:260-264): once a PRIOR header in this same message
+//     already Aborted the connection, a LATER header must not re-enter EnsureRestListener at all. Pre-mint the
+//     first device's REST listener so the response's first Application-URL hits the cheap reuse branch (no
+//     Register call) -- that leaves the seam's single Register failure to land on the SECOND header (a fresh
+//     device), which Aborts. The THIRD header names a brand-new device that WOULD mint successfully if
+//     RewriteRestAuthority re-entered EnsureRestListener for it (the seam is spent by then, and nothing else
+//     blocks it) -- so a removed guard leaves a real endpoint for it; the guard in place must not.
+TEST_F(DialProxyRewriteTest, ClosedGuardStopsMintingForAHeaderAfterAPriorHeaderAborted) {
+    auto proxy = MakeProxy();
+    OpenConnection oc = OpenOne(proxy);
+    ASSERT_NE(oc.id, 0u);
+    auto* conn = FindConnection(proxy, oc.id);
+    ASSERT_NE(conn, nullptr);
+
+    const auto first_dev = DeviceRest(170, 8009);
+    ASSERT_TRUE(EnsureRest(proxy, first_dev).has_value());  // pre-minted: the response's first header reuses it
+    ASSERT_TRUE(HasEndpoint(proxy, first_dev));
+
+    const auto second_dev = DeviceRest(171, 8010);  // fresh device: its mint is the first Register call in Feed
+    const auto third_dev = DeviceRest(172, 8011);   // fresh device: would mint fine if the guard didn't stop Feed
+    ASSERT_FALSE(HasEndpoint(proxy, second_dev));
+    ASSERT_FALSE(HasEndpoint(proxy, third_dev));
+
+    const std::string response = std::format(
+        "HTTP/1.1 200 OK\r\nApplication-URL: http://{}/apps\r\nLocation: http://{}/run\r\n"
+        "Location: http://{}/run2\r\nContent-Length: 0\r\n\r\n",
+        first_dev, second_dev, third_dev);
+    const std::span<const std::byte> bytes{
+        reinterpret_cast<const std::byte*>(response.data()), response.size()};
+    ASSERT_EQ(oc.DeviceSide().Send(bytes), SendStatus::Ok);
+
+    dispatcher.fail_registers_remaining = 1;  // the SECOND header's Register call is the first one Feed makes
+    ASSERT_TRUE(FireReadableWhenReady(oc.conn_upstream_fd));
+
+    EXPECT_TRUE(ConnClosed(*conn));                 // the second header's mint failed -> Abort
+    EXPECT_TRUE(HasEndpoint(proxy, first_dev));     // the pre-minted, reused listener is untouched
+    EXPECT_FALSE(HasEndpoint(proxy, second_dev));   // its failed Register rolled the endpoint back
+    EXPECT_FALSE(HasEndpoint(proxy, third_dev));    // the closed-guard stopped Feed before a third mint attempt
+}
+
 // 6. Back-pressure DRAIN path (Sync -> Flush): stall the raw client so the proxy's client socket buffers a
 //    partial (non-overflowing) tail; Sync must arm write interest on it. Then drain the client and fire the
 //    writable edge: Flush drains the tail. A deleted/incorrect Sync(to) would leave the tail unarmed and
@@ -1645,6 +1721,57 @@ TEST_F(DialProxyForwardTest, EvictionReapsIdleListenersByRoleGraceButNotReferenc
     Evict(base + DialProxy::REST_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, rest_dev));         // Rest grace elapsed -> reaped
     EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // still referenced by the live Connection -> survives
+}
+
+// ---- last_active refresh: the two production writes that keep an active endpoint out of the grace reap.
+// Both are stamped from the LIVE clock (not the Evict `now` seam), so unlike the deadline-based tests above,
+// these can't set last_active directly -- they bracket each real write with steady_clock::now() and separate
+// mint from refresh with a real (short) sleep, wide enough that an Evict `now` lands strictly between "past
+// the original mint's deadline" and "before the refreshed deadline". Deleting either refresh collapses that
+// window, so the endpoint is reaped and the test fails. ----
+
+// EnsureListener's reuse-branch refresh (dial_proxy.cpp:67): re-advertising an already-minted device must
+// push its last_active forward, or a repeatedly-rediscovered device would still get swept on its ORIGINAL
+// mint time.
+TEST_F(DialProxyTest, RediscoveryRefreshesLastActivePastTheOriginalGraceDeadline) {
+    auto proxy = MakeProxy();
+    const auto device = Device(120);
+
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(device).has_value());  // first mint: try_emplace stamps last_active
+    const auto after_first = std::chrono::steady_clock::now();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});  // a real gap the refresh must land past
+
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(device).has_value());  // re-advertise: the reuse branch's refresh
+
+    // Past the original mint's deadline, but well before (original + the 50ms gap)'s deadline: only the
+    // refresh decides whether this endpoint is still alive here.
+    Evict(after_first + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{10});
+
+    EXPECT_TRUE(HasEndpoint(proxy, device));  // survives only because re-advertising refreshed last_active
+}
+
+// OnAccept's own refresh (dial_proxy.cpp:289), run BEFORE Accept() itself: even a spurious/EAGAIN accept edge
+// counts as activity, so a device mid-connect-attempt isn't swept out from under it. Fire the listener's
+// readable edge with NO client pending -- Accept() then reports EAGAIN, so no Connection is created and
+// active_connections stays 0, isolating this refresh from the (separate) endpoint-reference eviction guard.
+TEST_F(DialProxyTest, SpuriousAcceptEdgeRefreshesLastActivePastTheOriginalGraceDeadline) {
+    auto proxy = MakeProxy();
+    const auto device = Device(121);
+
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(device).has_value());
+    const auto after_first = std::chrono::steady_clock::now();
+    const int listener_fd = ListenerFd(proxy, device);
+    ASSERT_GE(listener_fd, 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    dispatcher.FireReadable(listener_fd);  // no pending client: OnAccept stamps last_active, then Accept() EAGAINs
+    ASSERT_EQ(EndpointActiveConnections(proxy, device), 0u);  // confirms nothing was actually accepted
+
+    Evict(after_first + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{10});
+
+    EXPECT_TRUE(HasEndpoint(proxy, device));  // survives only because the accept edge refreshed last_active
 }
 
 // 5. Lazy-start / self-stop: no timer before the first mint; one after; and once everything is reaped the

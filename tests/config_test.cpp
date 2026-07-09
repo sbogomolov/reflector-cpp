@@ -1758,6 +1758,21 @@ TEST(ConfigTest, EnvRejectsDuplicateNameAcrossTags) {
     EXPECT_FALSE(config.has_value());
 }
 
+TEST(ConfigTest, EnvRejectsTagsDifferingOnlyByCase) {
+    // The tag map keys on the raw tag (case-sensitive), so TV and tv are two groups — but both
+    // canonicalize to the reflector name "tv", so the second is rejected as a duplicate rather than
+    // silently becoming a separate reflector.
+    const auto config = Config::Load(std::nullopt, Env({
+        {"REFLECTOR_TV_SOURCE_IF", "eth0"},
+        {"REFLECTOR_TV_TARGET_IF", "eth1"},
+        {"REFLECTOR_TV_WOL", "true"},
+        {"REFLECTOR_tv_SOURCE_IF", "eth2"},
+        {"REFLECTOR_tv_TARGET_IF", "eth3"},
+        {"REFLECTOR_tv_WOL", "true"},
+    }));
+    EXPECT_FALSE(config.has_value());
+}
+
 TEST(ConfigTest, EnvRejectsEmptyConfiguration) {
     EXPECT_FALSE(Config::Load(std::nullopt, std::span<const EnvVar>{}).has_value());
     EXPECT_FALSE(Config::Load(std::nullopt, Env({{"PATH", "/usr/bin"}})).has_value());

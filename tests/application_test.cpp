@@ -39,6 +39,7 @@ protected:
     // The signal-wakeup self-pipe read fd (friendship isn't inherited, so the TEST_F body reaches the
     // private member through this fixture accessor, like the counts above).
     static int WakeupReadFd(const Application& app) { return app.wakeup_read_.Get(); }
+    static int WakeupWriteFd(const Application& app) { return app.wakeup_write_.Get(); }
 
     // Per-interface settings the factories stamp onto the Interface and socket when first
     // created. Interfaces with no entry get the defaults (valid, can send both families,
@@ -568,6 +569,20 @@ TEST_F(ApplicationTest, SignalWakeupRegistersAndDrains) {
     unsigned char drained = 0;
     EXPECT_EQ(::read(read_fd, &drained, 1), -1);
     EXPECT_TRUE(IsWouldBlockErrno(errno));
+}
+
+// If the dispatcher can't watch the read end, PrepareSignalWakeup rolls back: both pipe fds are
+// closed (they would otherwise leak -- LeakSanitizer doesn't track fds) and it returns -1 so main()
+// falls back to poll-interval-bounded shutdown rather than a live but unwatched pipe.
+TEST_F(ApplicationTest, SignalWakeupRollsBackWhenRegistrationFails) {
+    auto app = MakeApp();
+    const size_t before = dispatcher_->RegistrationCount();
+    dispatcher_->fail_registers_remaining = 1;  // the wakeup pipe is the next (and only) Register here
+
+    EXPECT_EQ(app.PrepareSignalWakeup(), -1);
+    EXPECT_EQ(dispatcher_->RegistrationCount(), before);  // nothing left watched
+    EXPECT_EQ(WakeupReadFd(app), -1);                     // read end closed on rollback
+    EXPECT_EQ(WakeupWriteFd(app), -1);                    // write end closed on rollback
 }
 
 } // namespace reflector

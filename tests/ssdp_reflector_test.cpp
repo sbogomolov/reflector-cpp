@@ -405,6 +405,53 @@ TEST_F(SsdpReflectorTest, RequiredFamilyTornDownAndRecovered) {
     EXPECT_EQ(RegistrationCount(), 2);  // brought back up
 }
 
+// SSDP counterpart of MdnsReflectorTest.RepeatInterfaceChangeWithoutCapabilityChangeIsANoOp: an
+// interface change that doesn't flip any family's reflectability is a no-op. SyncFamily's
+// already-in-desired-state guard is per-family, so this also covers IPv6's second group (site-local) —
+// a per-group guard, or none at all, would churn it on every call even though nothing changed.
+TEST_F(SsdpReflectorTest, RepeatInterfaceChangeWithoutCapabilityChangeIsANoOp) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    const auto joins_before = source.joined_groups.size();
+    const auto count_before = RegistrationCount();
+
+    reflector.OnInterfaceChanged();
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), count_before);          // no duplicate registrations
+    EXPECT_EQ(source.joined_groups.size(), joins_before);  // no duplicate joins
+    EXPECT_TRUE(source.left_groups.empty());               // and nothing torn down
+}
+
+// SSDP counterpart of MdnsReflectorTest.TransientBringUpFailureLeavesFamilyDownThenRetries, timed to
+// fail v6's SECOND group (site-local) rather than its first: proves BringUpFamily's per-group rollback
+// (not just DynamicFamilyReflector's family-level teardown) releases the FIRST group's (link-local)
+// already-taken membership/registrations when a LATER group fails during a dynamic (OnInterfaceChanged)
+// bring-up — the construction-time equivalent is FailureOnALaterGroupRollsBackTheWholeFamily below.
+TEST_F(SsdpReflectorTest, TransientBringUpFailureOnALaterGroupLeavesFamilyDownThenRetries) {
+    target.iface.SetHasSource(IpAddress::Family::V6, false);  // v6 down at construction
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Default)};
+    ASSERT_TRUE(reflector.IsValid());
+    EXPECT_EQ(RegistrationCount(), 2);  // v4 only
+
+    // v6 becomes reflectable; fail its SECOND group's (site-local) first registration, after the first
+    // group (link-local) has already taken its memberships/registrations.
+    target.iface.SetHasSource(IpAddress::Family::V6, true);
+    packet_dispatcher.fail_register_on_call = RegistrationCount() + 3;
+    const std::string output = CaptureStdout([&] { reflector.OnInterfaceChanged(); });
+
+    EXPECT_EQ(RegistrationCount(), 2);   // bring-up failed -> v6 stays fully down, nothing half-set-up
+    EXPECT_TRUE(reflector.IsValid());    // still valid
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;  // the registration failure was logged
+    // the first group's membership, already taken before the second group's failure, was rolled back too
+    EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::SsdpGroupV6LinkLocal()),
+        source.left_groups.end());
+
+    packet_dispatcher.fail_register_on_call = 0;  // the transient condition clears
+    reflector.OnInterfaceChanged();                // retried on the next change
+    EXPECT_EQ(RegistrationCount(), 6);  // v4 (2) + v6's two groups x both directions (4)
+}
+
 // Multi-group construction rollback: when a LATER group of a family fails to register, the family's
 // already-set-up earlier groups are rolled back (BringUpFamily resets the setup) before the
 // reflector reports invalid. (IPv6 has two groups; fail the second's first registration.)
@@ -733,6 +780,33 @@ TEST_F(SsdpReflectorTest, CapDropsSessionsBeyondTheLimit) {
     EXPECT_EQ(target.sent.size(), 32u);  // 33rd search not reflected
 }
 
+// MAX_SESSIONS (32) caps the whole sessions_ table, not each group's slice of it: 32 distinct
+// searchers spread across all three SSDP groups (v4, v6 link-local, v6 site-local) fill the table, and
+// the 33rd distinct searcher's session is dropped no matter which group it targets. A per-group cap
+// would leave headroom in every group (site-local holds only 10 of the 32) and wrongly accept it.
+TEST_F(SsdpReflectorTest, SessionCapIsGlobalAcrossGroups) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const std::vector<IpAddress> groups{
+        IpAddress::SsdpGroupV4(), IpAddress::SsdpGroupV6LinkLocal(), IpAddress::SsdpGroupV6SiteLocal()};
+    const auto search_payload = MakeSearch();
+    for (uint16_t i = 0; i < 32; ++i) {
+        Packet search = MakePacket(search_payload, groups[i % groups.size()]);
+        search.header.source.port = static_cast<uint16_t>(20000 + i);
+        packet_dispatcher.Deliver(source, search);
+    }
+    ASSERT_EQ(target.sent.size(), 32u);  // all 32 distinct searchers reflected; table now full
+
+    // The 33rd distinct searcher targets v6 site-local, which so far holds only 10 of the 32 sessions.
+    Packet overflow = MakePacket(search_payload, IpAddress::SsdpGroupV6SiteLocal());
+    overflow.header.source.port = 20032;
+    const std::string output = CaptureStdout([&] { packet_dispatcher.Deliver(source, overflow); });
+
+    EXPECT_EQ(target.sent.size(), 32u);  // not reflected: MakeSession returned nullopt before the reflect
+    EXPECT_NE(output.find("cap reached"), std::string::npos) << output;
+}
+
 TEST_F(SsdpReflectorTest, RetransmittedMSearchReusesOneSessionAndReflectsEach) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
@@ -1039,6 +1113,41 @@ TEST_F(SsdpReflectorTest, DialForwardsLocationUnchangedWhenListenerMintFails) {
 
     ASSERT_EQ(source.sent.size(), 1u);
     EXPECT_EQ(source.sent.back().payload, advertisement);            // forwarded unchanged (benign fallback)
+    EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
+}
+
+// Same mint-failure fallback as DialForwardsLocationUnchangedWhenListenerMintFails, but on the unicast
+// response path (OnUnicastResponse's RewriteDialLocation call) rather than the advertisement path — the
+// two call sites are independent branches that could regress separately.
+TEST_F(SsdpReflectorTest, DialForwardsResponseLocationUnchangedWhenListenerMintFails) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // An M-SEARCH establishes the session so the 200 OK has a searcher to be injected to.
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(target.sent.size(), 1u);
+    const uint16_t reserved_port = target.sent.back().src_port;
+
+    source.iface.SetV4(std::nullopt);  // no source_if V4 address -> EnsureDiscoveryListener cannot bind a listener
+
+    const auto response = MakeDialResponse();
+    Packet reply{
+        .header = PacketHeader{
+            .source = {IpAddress::FromV4Bytes(10, 0, 0, 5), SSDP_PORT},
+            .dest = {*target.iface.SourceAddress(IpAddress::Family::V4), reserved_port},
+            .ttl = 4,
+        },
+        .payload = response,
+    };
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(target, reply);
+    });
+
+    ASSERT_EQ(source.sent.size(), 1u);
+    EXPECT_EQ(source.sent.back().payload, response);                     // forwarded unchanged (benign fallback)
     EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
 }
 

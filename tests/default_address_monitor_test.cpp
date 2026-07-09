@@ -348,6 +348,19 @@ TEST_F(DefaultAddressMonitorTest, StartRejectsUnboundCallback) {
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
+// If the dispatcher can't watch the already-open notification socket, Start rolls back via Close():
+// the fd is released so IsValid() reports false, rather than leaving a live-but-unwatched socket that
+// still claims to be a working monitor.
+TEST_F(DefaultAddressMonitorTest, StartRollsBackWhenRegistrationFails) {
+    auto monitor = MakeMonitor();
+    dispatcher.fail_registers_remaining = 1;  // Watch()'s Register is the only one here, and it fails
+
+    EXPECT_FALSE(StartWatching(monitor));
+    EXPECT_FALSE(monitor.IsValid());  // Close() released the fd on rollback
+    EXPECT_FALSE(dispatcher.IsWatching(monitor_fd));
+    EXPECT_EQ(dispatcher.RegistrationCount(), 0);
+}
+
 #if defined(__linux__)
 // A sockaddr_storage holding a sockaddr_nl with the given nl_pid, as recvfrom would report a
 // datagram's source. static for internal linkage (GCC's -Wmissing-declarations).
