@@ -108,6 +108,67 @@ TEST(SsdpMessageTest, ParsesMxHeaderNameCaseInsensitively) {
     EXPECT_EQ(ParseMSearchMx(Bytes("M-SEARCH * HTTP/1.1\r\nmx: 2\r\n\r\n")), 2);
 }
 
+// --- CACHE-CONTROL max-age (the advertised validity a DIAL listener's grace derives from) ---
+
+TEST(SsdpMessageTest, ParsesCacheControlMaxAge) {
+    const auto payload = Bytes(
+        "NOTIFY * HTTP/1.1\r\n"
+        "HOST: 239.255.255.250:1900\r\n"
+        "CACHE-CONTROL: max-age=1800\r\n"
+        "NT: upnp:rootdevice\r\n\r\n");
+    EXPECT_EQ(ParseCacheControlMaxAge(payload), 1800u);
+}
+
+TEST(SsdpMessageTest, ParsesCacheControlCaseInsensitively) {
+    // Field name and directive name both fold case.
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\ncache-control: MAX-AGE=60\r\n\r\n")), 60u);
+}
+
+TEST(SsdpMessageTest, PicksMaxAgeFromCommaSeparatedDirectives) {
+    EXPECT_EQ(ParseCacheControlMaxAge(
+        Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: no-cache, max-age=90, no-store\r\n\r\n")), 90u);
+}
+
+TEST(SsdpMessageTest, CacheControlNulloptWhenAbsentOrWithoutMaxAge) {
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nNT: upnp:rootdevice\r\n\r\n")), std::nullopt);
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: no-cache\r\n\r\n")), std::nullopt);
+}
+
+TEST(SsdpMessageTest, RejectsMaxAgeWithTrailingGarbage) {
+    // Like MX: the value must be a bare integer; a malformed first max-age invalidates the field
+    // rather than falling through to a later directive.
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age=2abc\r\n\r\n")),
+        std::nullopt);
+    EXPECT_EQ(ParseCacheControlMaxAge(
+        Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age=2abc, max-age=90\r\n\r\n")), std::nullopt);
+}
+
+TEST(SsdpMessageTest, RejectsMaxAgeOverflowingUint32) {
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age=99999999999\r\n\r\n")),
+        std::nullopt);
+}
+
+TEST(SsdpMessageTest, ToleratesWhitespaceAroundMaxAge) {
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL:  max-age=120 \r\n\r\n")), 120u);
+}
+
+TEST(SsdpMessageTest, ToleratesWhitespaceAroundTheMaxAgeEquals) {
+    // UDA's own header templates and example messages write the directive with spaces around '='.
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age = 1800\r\n\r\n")),
+        1800u);
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age =60\r\n\r\n")), 60u);
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age= 90\r\n\r\n")), 90u);
+}
+
+TEST(SsdpMessageTest, DoesNotMistakeALongerDirectiveForMaxAge) {
+    // "max-agenda" shares the prefix but is a different token: skipped, and the real max-age later in
+    // the same field still parses. A bare "max-age" with no '=' is a malformed directive -> nullopt.
+    EXPECT_EQ(ParseCacheControlMaxAge(
+        Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-agenda=5, max-age=70\r\n\r\n")), 70u);
+    EXPECT_EQ(ParseCacheControlMaxAge(Bytes("NOTIFY * HTTP/1.1\r\nCACHE-CONTROL: max-age\r\n\r\n")),
+        std::nullopt);
+}
+
 // --- DIAL service classification ---
 
 TEST(SsdpMessageTest, DetectsTheDialServiceUrn) {

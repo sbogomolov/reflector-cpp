@@ -86,6 +86,55 @@ std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexce
     return std::nullopt;  // no MX header at all
 }
 
+std::optional<uint32_t> ParseCacheControlMaxAge(std::span<const std::byte> payload) noexcept {
+    const std::string_view text{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    size_t pos = 0;
+    while (pos < text.size()) {
+        const auto end = text.find("\r\n", pos);
+        const auto line = text.substr(pos, end == std::string_view::npos ? std::string_view::npos : end - pos);
+        if (StartsWithNoCase(line, "CACHE-CONTROL:")) {
+            // The first CACHE-CONTROL field decides; its directives are comma-separated and the first
+            // max-age among them wins. A malformed value invalidates the field (nullopt) rather than
+            // falling through to a later directive or field.
+            auto directives = line.substr(14);
+            while (!directives.empty()) {
+                const auto comma = directives.find(',');
+                const auto directive = TrimLeadingSpace(directives.substr(0, comma));
+                directives = comma == std::string_view::npos ? std::string_view{} : directives.substr(comma + 1);
+                if (!StartsWithNoCase(directive, "max-age")) {
+                    continue;
+                }
+                // OWS around '=' is tolerated: HTTP's cache-directive grammar has none, but UDA's own
+                // header templates and examples write "max-age = 1800", and devices copy them.
+                const auto after_name = TrimLeadingSpace(directive.substr(7));
+                if (!after_name.starts_with('=')) {
+                    if (after_name.data() == directive.data() + 7 && !after_name.empty()) {
+                        continue;  // a longer token (e.g. "max-agenda=..."): a different directive
+                    }
+                    return std::nullopt;  // a bare or malformed max-age (no '=')
+                }
+                const auto value = TrimLeadingSpace(after_name.substr(1));
+                uint32_t parsed = 0;
+                const auto* stop = value.data() + value.size();
+                const auto result = std::from_chars(value.data(), stop, parsed);
+                // Like ParseMSearchMx: the whole value must be the integer (trailing OWS tolerated) —
+                // from_chars alone would accept "1800x" as 1800. A value overflowing uint32_t also
+                // lands here.
+                if (result.ec == std::errc{} && TrimLeadingSpace({result.ptr, stop}).empty()) {
+                    return parsed;
+                }
+                return std::nullopt;
+            }
+            return std::nullopt;  // CACHE-CONTROL present but carries no max-age directive
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        pos = end + 2;
+    }
+    return std::nullopt;  // no CACHE-CONTROL header at all
+}
+
 bool IsDialServiceMessage(std::span<const std::byte> payload) noexcept {
     const std::string_view text{reinterpret_cast<const char*>(payload.data()), payload.size()};
     return ContainsNoCase(text, DIAL_SERVICE_TYPE);

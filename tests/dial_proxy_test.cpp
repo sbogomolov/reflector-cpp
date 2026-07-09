@@ -1686,9 +1686,10 @@ TEST_F(DialProxyForwardTest, EvictionReapsIdleOpenButNotRefreshed) {
     EXPECT_EQ(ConnectionCount(proxy), 1u);
 }
 
-// 4. Endpoint role grace: an unreferenced Discovery endpoint is reaped after DISCOVERY_ENDPOINT_GRACE; a
-//    Rest endpoint survives until the longer REST_ENDPOINT_GRACE; a referenced endpoint (an active
-//    Connection to its device) is NOT reaped even when idle past the grace.
+// 4. Endpoint role grace: an unreferenced Rest endpoint is reaped after REST_ENDPOINT_GRACE; an
+//    unreferenced Discovery endpoint (no advertised max-age) survives until the longer
+//    DEFAULT_DISCOVERY_GRACE; a referenced endpoint (an active Connection to its device) is NOT reaped
+//    even when idle past the grace.
 TEST_F(DialProxyForwardTest, EvictionReapsIdleListenersByRoleGraceButNotReferenced) {
     auto proxy = MakeProxy();
 
@@ -1708,19 +1709,72 @@ TEST_F(DialProxyForwardTest, EvictionReapsIdleListenersByRoleGraceButNotReferenc
     SetEndpointLastActive(proxy, rest_dev, base);
     SetEndpointLastActive(proxy, referenced_dev, base);
     // Keep the referencing connection out of the connection reap (its own deadline far ahead).
-    SetConnDeadline(*FindConnection(proxy, referenced.id), base + std::chrono::hours{1});
+    SetConnDeadline(*FindConnection(proxy, referenced.id), base + std::chrono::hours{3});
 
-    // Just past the discovery grace, before the rest grace: only the unreferenced Discovery endpoint goes.
-    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
-    EXPECT_FALSE(HasEndpoint(proxy, discovery_dev));   // Discovery grace elapsed -> reaped
-    EXPECT_TRUE(HasEndpoint(proxy, rest_dev));          // Rest grace not yet elapsed -> survives
-    EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // referenced -> survives regardless of grace
-
-    // Past the rest grace too: the unreferenced Rest endpoint goes; the referenced one still survives because
-    // its Connection keeps it alive (idle past grace but referenced).
+    // Just past the rest grace, before the discovery grace: only the unreferenced Rest endpoint goes.
     Evict(base + DialProxy::REST_ENDPOINT_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, rest_dev));         // Rest grace elapsed -> reaped
+    EXPECT_TRUE(HasEndpoint(proxy, discovery_dev));     // Discovery default grace not yet elapsed -> survives
+    EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // referenced -> survives regardless of grace
+
+    // Past the discovery default grace too: the unreferenced Discovery endpoint goes; the referenced one
+    // still survives because its Connection keeps it alive (idle past grace but referenced).
+    Evict(base + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{1});
+    EXPECT_FALSE(HasEndpoint(proxy, discovery_dev));    // Discovery grace elapsed -> reaped
     EXPECT_TRUE(HasEndpoint(proxy, referenced_dev));    // still referenced by the live Connection -> survives
+}
+
+// An advertised max-age (CACHE-CONTROL) sets the Discovery grace, replacing the default: the endpoint
+// is evicted once the advertised validity lapses, while an endpoint minted without one still gets
+// DEFAULT_DISCOVERY_GRACE.
+TEST_F(DialProxyForwardTest, AdvertisedMaxAgeSetsTheDiscoveryGrace) {
+    auto proxy = MakeProxy();
+    const auto advertised_dev = Device(70);
+    const auto defaulted_dev = Device(71);
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(advertised_dev, std::chrono::seconds{60}).has_value());
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(defaulted_dev).has_value());
+
+    const auto base = std::chrono::steady_clock::now();
+    SetEndpointLastActive(proxy, advertised_dev, base);
+    SetEndpointLastActive(proxy, defaulted_dev, base);
+
+    // Past the advertised 60s, far before the default grace: only the advertised endpoint goes.
+    Evict(base + std::chrono::seconds{61});
+    EXPECT_FALSE(HasEndpoint(proxy, advertised_dev));
+    EXPECT_TRUE(HasEndpoint(proxy, defaulted_dev));
+}
+
+// The advertised validity is attacker-controlled and sets a proxy-slot eviction deadline, so an
+// oversized max-age is clamped to MAX_DISCOVERY_GRACE instead of pinning a scarce slot for days.
+TEST_F(DialProxyForwardTest, ClampsAnOversizedAdvertisedMaxAge) {
+    auto proxy = MakeProxy();
+    const auto dev = Device(72);
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(dev, std::chrono::hours{28}).has_value());
+
+    const auto base = std::chrono::steady_clock::now();
+    SetEndpointLastActive(proxy, dev, base);
+
+    Evict(base + DialProxy::MAX_DISCOVERY_GRACE + std::chrono::seconds{1});
+    EXPECT_FALSE(HasEndpoint(proxy, dev));  // evicted at the ceiling, not the advertised 28h
+}
+
+// Each advertisement re-states the device's validity: the new max-age replaces the previous grace in
+// both directions, like the device's own cache directive would at any client.
+TEST_F(DialProxyForwardTest, AReAdvertisementReplacesTheAdvertisedGrace) {
+    auto proxy = MakeProxy();
+    const auto dev = Device(73);
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(dev, std::chrono::seconds{60}).has_value());
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(dev, std::chrono::seconds{600}).has_value());  // extend
+
+    const auto base = std::chrono::steady_clock::now();
+    SetEndpointLastActive(proxy, dev, base);
+    Evict(base + std::chrono::seconds{61});
+    EXPECT_TRUE(HasEndpoint(proxy, dev));  // the 600s re-advertisement extended past the initial 60s
+
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(dev, std::chrono::seconds{30}).has_value());  // shorten
+    SetEndpointLastActive(proxy, dev, base);
+    Evict(base + std::chrono::seconds{31});
+    EXPECT_FALSE(HasEndpoint(proxy, dev));  // the shorter re-advertisement took effect too
 }
 
 // ---- last_active refresh: the two production writes that keep an active endpoint out of the grace reap.
@@ -1746,7 +1800,7 @@ TEST_F(DialProxyTest, RediscoveryRefreshesLastActivePastTheOriginalGraceDeadline
 
     // Past the original mint's deadline, but well before (original + the 50ms gap)'s deadline: only the
     // refresh decides whether this endpoint is still alive here.
-    Evict(after_first + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{10});
+    Evict(after_first + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{10});
 
     EXPECT_TRUE(HasEndpoint(proxy, device));  // survives only because re-advertising refreshed last_active
 }
@@ -1769,7 +1823,7 @@ TEST_F(DialProxyTest, SpuriousAcceptEdgeRefreshesLastActivePastTheOriginalGraceD
     dispatcher.FireReadable(listener_fd);  // no pending client: OnAccept stamps last_active, then Accept() EAGAINs
     ASSERT_EQ(EndpointActiveConnections(proxy, device), 0u);  // confirms nothing was actually accepted
 
-    Evict(after_first + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{10});
+    Evict(after_first + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{10});
 
     EXPECT_TRUE(HasEndpoint(proxy, device));  // survives only because the accept edge refreshed last_active
 }
@@ -1814,14 +1868,14 @@ TEST_F(DialProxyForwardTest, EndpointReapedOnlyAfterItsLastConnectionEndsSameSwe
     SetConnDeadline(*conn, base + std::chrono::hours{1});    // keep the connection out of this first reap
 
     // Past grace but still referenced -> endpoint survives, count stays 1.
-    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{1});
     EXPECT_TRUE(HasEndpoint(proxy, dev));
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 1u);
 
     // Expire the connection: in ONE sweep it is reaped (dtor: count 1->0) and the now-unreferenced, past-grace
     // endpoint is reaped after it. A reordered sweep (endpoints before connections) would keep the endpoint.
     SetConnDeadline(*conn, base);
-    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{1});
     EXPECT_EQ(ConnectionCount(proxy), 0u);
     EXPECT_FALSE(HasEndpoint(proxy, dev));
 }
@@ -1854,13 +1908,13 @@ TEST_F(DialProxyForwardTest, MultiConnectionEndpointReapedAfterTheLast) {
     // Reap conn1 only: count 2->1, endpoint still referenced -> kept.
     SetConnDeadline(*conn1, base);
     SetConnDeadline(*conn2, base + std::chrono::hours{1});
-    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{1});
     EXPECT_EQ(EndpointActiveConnections(proxy, dev), 1u);
     EXPECT_TRUE(HasEndpoint(proxy, dev));
 
     // Reap conn2: count 1->0, the now-unreferenced past-grace endpoint goes.
     SetConnDeadline(*conn2, base);
-    Evict(base + DialProxy::DISCOVERY_ENDPOINT_GRACE + std::chrono::milliseconds{1});
+    Evict(base + DialProxy::DEFAULT_DISCOVERY_GRACE + std::chrono::milliseconds{1});
     EXPECT_FALSE(HasEndpoint(proxy, dev));
     EXPECT_EQ(ConnectionCount(proxy), 0u);
 

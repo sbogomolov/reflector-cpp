@@ -949,6 +949,32 @@ TEST_F(SsdpReflectorTest, DialRewritesPortLessAdvertisementLocation) {
     EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;  // to the minted listener
 }
 
+// The advertisement's CACHE-CONTROL max-age flows through the rewrite into the minted listener's
+// grace: 45 minutes in — past the 30-minute default validity but within the advertised 3600s — the
+// listener still stands, so a re-advertisement reuses it and the rewritten payload is identical.
+TEST_F(SsdpReflectorTest, DialAdvertisedMaxAgeExtendsTheListenerGrace) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    const auto advertisement = Bytes(
+        "NOTIFY * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+        "CACHE-CONTROL: max-age=3600\r\n"
+        "LOCATION: http://192.168.1.50:8008/dd.xml\r\n"
+        "NT: urn:dial-multiscreen-org:service:dial:1\r\nNTS: ssdp:alive\r\n\r\n");
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 1u);
+    const std::string first{AsText(source.sent.back().payload)};
+    ASSERT_NE(first.find("http://127.0.0.1:"), std::string::npos) << first;
+
+    packet_dispatcher.dispatcher.FireTimers(std::chrono::steady_clock::now() + std::chrono::minutes{45});
+
+    packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 2u);
+    EXPECT_EQ(AsText(source.sent.back().payload), first);  // same listener reused -> same rewrite
+}
+
 TEST_F(SsdpReflectorTest, DialRewritesUnicastResponseLocationWhenEnabled) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.dial = true;

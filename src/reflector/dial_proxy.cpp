@@ -23,8 +23,12 @@ DialProxy::DialProxy(Dispatcher& dispatcher, const Interface& source_if, const I
         , target_if_{&target_if}
         , eviction_timer_{dispatcher} {}
 
-std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& device) {
-    return EnsureListener(device, Endpoint::Role::Discovery);
+std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& device,
+    std::optional<std::chrono::seconds> advertised_validity) {
+    const auto grace = advertised_validity
+        ? std::min(*advertised_validity, MAX_DISCOVERY_GRACE)
+        : DEFAULT_DISCOVERY_GRACE;
+    return EnsureListener(device, Endpoint::Role::Discovery, grace);
 }
 
 void DialProxy::OnInterfaceChanged() noexcept {
@@ -53,18 +57,25 @@ void DialProxy::OnInterfaceChanged() noexcept {
 }
 
 std::optional<IpEndpoint> DialProxy::EnsureRestListener(const IpEndpoint& device) {
-    return EnsureListener(device, Endpoint::Role::Rest);
+    return EnsureListener(device, Endpoint::Role::Rest, REST_ENDPOINT_GRACE);
 }
 
-std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, Endpoint::Role role) {
+std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, Endpoint::Role role,
+    std::chrono::seconds grace) {
     const auto now = std::chrono::steady_clock::now();
 
     // Reuse an existing listener for this device: refresh it, promote Discovery -> Rest if asked (a
-    // device referenced as both roles is pinned to Rest, the longer-lived grace), and hand back its
-    // authority. The listener's bind address is the source_if address it was minted on.
+    // device referenced as both roles is pinned to Rest — it serves description fetches and the app's
+    // REST calls alike), and hand back its authority. The listener's bind address is the source_if
+    // address it was minted on.
     if (const auto it = endpoints_.find(device); it != endpoints_.end()) {
         auto& endpoint = it->second;
         endpoint.last_active = now;
+        if (role == Endpoint::Role::Discovery) {
+            // A fresh advertisement re-states the device's validity, so the new grace replaces the
+            // old one (shorter or longer) — a Rest touch leaves the advertised validity in force.
+            endpoint.grace = grace;
+        }
         // Promoting Discovery -> Rest moves the device into the Rest tally (it isn't counted there yet), so
         // the Rest cap must gate it here too — otherwise a promotion silently overruns MAX_REST_LISTENERS.
         // Over cap: refuse without demoting (close-don't-forward, as a fresh over-cap mint does).
@@ -97,7 +108,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
 
     // Construct the node in place (Endpoint is NoMove): try_emplace builds it once in the final map node
     // — no move follows, so the accept handler we register next binds a stable address.
-    const auto [it, inserted] = endpoints_.try_emplace(device, device, role, std::move(*listener), now);
+    const auto [it, inserted] = endpoints_.try_emplace(device, device, role, std::move(*listener), now, grace);
     auto& endpoint = it->second;
 
     auto registration = dispatcher_->Register(listener_fd, CreateDelegate<&DialProxy::OnAccept>(this));
@@ -362,8 +373,7 @@ void DialProxy::EvictExpired(std::chrono::steady_clock::time_point now) noexcept
     // reap above already ran the dtors of everything it erased, so the count is current here.
     const auto endpoints_reaped = std::erase_if(endpoints_, [now](const auto& entry) {
         const auto& endpoint = entry.second;
-        const auto grace = endpoint.role == Endpoint::Role::Rest ? REST_ENDPOINT_GRACE : DISCOVERY_ENDPOINT_GRACE;
-        if (now < endpoint.last_active + grace) {
+        if (now < endpoint.last_active + endpoint.grace) {
             return false;
         }
         return endpoint.active_connections == 0;  // reap only if no Connection is still pinned to it

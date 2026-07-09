@@ -305,7 +305,9 @@ std::optional<std::string> SsdpReflector::RewriteDialLocation(std::span<const st
     if (!location) {
         return std::nullopt;  // a DIAL message with no/unparseable LOCATION: nothing to rewrite
     }
-    const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint);
+    const auto max_age = ParseCacheControlMaxAge(payload);
+    const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint,
+        max_age.transform([](uint32_t seconds) { return std::chrono::seconds{seconds}; }));
     if (!reflector_authority) {
         logger_.Info("DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
             location->endpoint);
