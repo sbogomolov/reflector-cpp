@@ -33,6 +33,11 @@ namespace reflector {
 // (DynamicFamilyReflector).
 class SsdpReflector : public DynamicFamilyReflector {
 public:
+    // Concurrent in-flight M-SEARCH sessions -- one reserved response port per search awaiting its
+    // unicast 200 OK -- capped globally across all groups; a search past this is dropped before
+    // reserving a port.
+    static constexpr size_t MAX_SESSIONS = 64;
+
     SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket,
         LinkSocket& target_socket, const SsdpConfig& config);
 
@@ -44,7 +49,6 @@ public:
 private:
     static constexpr uint16_t SSDP_PORT = 1900;
     static constexpr uint8_t SSDP_TTL = 2;
-    static constexpr size_t MAX_SESSIONS = 32;
     static constexpr std::chrono::seconds SESSION_GRACE{2};
     static constexpr std::chrono::seconds EVICTION_INTERVAL{1};
 

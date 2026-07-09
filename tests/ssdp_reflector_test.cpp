@@ -768,22 +768,22 @@ TEST_F(SsdpReflectorTest, CapDropsSessionsBeyondTheLimit) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
 
-    // 32 in-flight searches fill the table; the 33rd is dropped before reserving a port (no reflect).
-    // Hoist the payload so each Packet's span outlives its Deliver (MakeSearch()'s temporary would
-    // die at the semicolon otherwise).
+    // A full table of in-flight searches fills it; one more is dropped before reserving a port (no
+    // reflect). Hoist the payload so each Packet's span outlives its Deliver (MakeSearch()'s temporary
+    // would die at the semicolon otherwise).
     const auto search_payload = MakeSearch();
-    for (uint16_t i = 0; i < 33; ++i) {
+    for (uint16_t i = 0; i < SsdpReflector::MAX_SESSIONS + 1; ++i) {
         Packet search = MakePacket(search_payload, IpAddress::SsdpGroupV4());
         search.header.source.port = static_cast<uint16_t>(20000 + i);
         packet_dispatcher.Deliver(source, search);
     }
-    EXPECT_EQ(target.sent.size(), 32u);  // 33rd search not reflected
+    EXPECT_EQ(target.sent.size(), SsdpReflector::MAX_SESSIONS);  // the one past the cap not reflected
 }
 
-// MAX_SESSIONS (32) caps the whole sessions_ table, not each group's slice of it: 32 distinct
-// searchers spread across all three SSDP groups (v4, v6 link-local, v6 site-local) fill the table, and
-// the 33rd distinct searcher's session is dropped no matter which group it targets. A per-group cap
-// would leave headroom in every group (site-local holds only 10 of the 32) and wrongly accept it.
+// MAX_SESSIONS caps the whole sessions_ table, not each group's slice of it: distinct searchers spread
+// across all three SSDP groups (v4, v6 link-local, v6 site-local) fill the table, and one more distinct
+// searcher is dropped no matter which group it targets. A per-group cap would leave headroom in every
+// group (round-robin puts only about a third in site-local) and wrongly accept it.
 TEST_F(SsdpReflectorTest, SessionCapIsGlobalAcrossGroups) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::Dual)};
     ASSERT_TRUE(reflector.IsValid());
@@ -791,19 +791,19 @@ TEST_F(SsdpReflectorTest, SessionCapIsGlobalAcrossGroups) {
     const std::vector<IpAddress> groups{
         IpAddress::SsdpGroupV4(), IpAddress::SsdpGroupV6LinkLocal(), IpAddress::SsdpGroupV6SiteLocal()};
     const auto search_payload = MakeSearch();
-    for (uint16_t i = 0; i < 32; ++i) {
+    for (uint16_t i = 0; i < SsdpReflector::MAX_SESSIONS; ++i) {
         Packet search = MakePacket(search_payload, groups[i % groups.size()]);
         search.header.source.port = static_cast<uint16_t>(20000 + i);
         packet_dispatcher.Deliver(source, search);
     }
-    ASSERT_EQ(target.sent.size(), 32u);  // all 32 distinct searchers reflected; table now full
+    ASSERT_EQ(target.sent.size(), SsdpReflector::MAX_SESSIONS);  // all distinct searchers reflected; table full
 
-    // The 33rd distinct searcher targets v6 site-local, which so far holds only 10 of the 32 sessions.
+    // The overflow searcher targets v6 site-local, which so far holds only about a third of the table.
     Packet overflow = MakePacket(search_payload, IpAddress::SsdpGroupV6SiteLocal());
-    overflow.header.source.port = 20032;
+    overflow.header.source.port = static_cast<uint16_t>(20000 + SsdpReflector::MAX_SESSIONS);
     const std::string output = CaptureStdout([&] { packet_dispatcher.Deliver(source, overflow); });
 
-    EXPECT_EQ(target.sent.size(), 32u);  // not reflected: MakeSession returned nullopt before the reflect
+    EXPECT_EQ(target.sent.size(), SsdpReflector::MAX_SESSIONS);  // not reflected: MakeSession returned nullopt before the reflect
     EXPECT_NE(output.find("cap reached"), std::string::npos) << output;
 }
 
