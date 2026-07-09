@@ -16,7 +16,6 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
-#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -25,7 +24,6 @@
 #include <initializer_list>
 #include <netinet/in.h>
 #include <optional>
-#include <poll.h>
 #include <span>
 #include <string>
 #include <string_view>
@@ -389,44 +387,6 @@ private:
         }
         const auto n = ::write(write_fd, bytes.data(), bytes.size());
         return n == static_cast<ssize_t>(bytes.size());
-    }
-};
-
-struct LoopbackReceiver {
-    UdpSocket socket;
-    PacketRecorder recorder;
-
-    explicit LoopbackReceiver(uint16_t port, IpAddress::Family family) : socket{family} {
-        BindLoopback(socket, port);
-    }
-
-    [[nodiscard]] uint16_t Port() const { return BoundPort(socket); }
-
-    bool PollOnce(std::chrono::milliseconds timeout) {
-        pollfd pfd{.fd = socket.Fd(), .events = POLLIN, .revents = 0};
-        const auto ready = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
-        if (ready <= 0) {
-            return false;
-        }
-
-        std::vector<std::byte> buffer(64 * 1024);
-        sockaddr_storage source{};
-        socklen_t source_size = sizeof(source);
-        const auto bytes = ::recvfrom(socket.Fd(), buffer.data(), buffer.size(), 0,
-            reinterpret_cast<sockaddr*>(&source), &source_size);
-        if (bytes <= 0) {
-            return false;
-        }
-        const auto source_ip = IpAddress::FromSockaddr(reinterpret_cast<const sockaddr*>(&source));
-        Packet packet{
-            .header = PacketHeader{
-                .source = {source_ip.value_or(LoopbackFor(socket.AddressFamily()))},
-                .dest = {LoopbackFor(socket.AddressFamily())},
-            },
-            .payload = std::span<const std::byte>{buffer.data(), static_cast<size_t>(bytes)},
-        };
-        recorder.OnPacket(packet);
-        return true;
     }
 };
 

@@ -32,8 +32,18 @@ TEST(MacAddressTest, ParsesUppercaseAddress) {
     EXPECT_EQ(bytes[5], std::byte{0xbe});
 }
 
-TEST(MacAddressTest, ParsesMixedCaseAddress) {
-    EXPECT_TRUE(MacAddress::FromString("aA:bB:cC:dD:eE:fF").has_value());
+TEST(MacAddressTest, ParsesMixedCaseWithinAByte) {
+    // Both nibbles of each byte differ in case (aA, bB, ...) — the lowercase/uppercase tests use
+    // uniform case per byte, so only this pins that case-folding is per nibble, not per byte.
+    const auto mac = MacAddress::FromString("aA:bB:cC:dD:eE:fF");
+    ASSERT_TRUE(mac.has_value());
+    const auto& bytes = mac->Bytes();
+    EXPECT_EQ(bytes[0], std::byte{0xaa});
+    EXPECT_EQ(bytes[1], std::byte{0xbb});
+    EXPECT_EQ(bytes[2], std::byte{0xcc});
+    EXPECT_EQ(bytes[3], std::byte{0xdd});
+    EXPECT_EQ(bytes[4], std::byte{0xee});
+    EXPECT_EQ(bytes[5], std::byte{0xff});
 }
 
 TEST(MacAddressTest, DefaultInitializesToZero) {

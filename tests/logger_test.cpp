@@ -63,16 +63,19 @@ TEST(LoggerTest, StaticLiteralNameAppearsInOutput) {
     EXPECT_NE(output.find("message from static literal logger"), std::string::npos) << output;
 }
 
-TEST(LoggerTest, StaticArrayNameAppearsInOutput) {
+TEST(LoggerTest, NonNullTerminatedArrayNameAppearsInOutput) {
+    // A char array without a trailing NUL: StaticStringLength takes its `: N` branch (a terminated
+    // array and any string literal take `N - 1`), so the whole extent is the name — the one case
+    // that distinguishes the array ctor from the literal ctor.
     const ScopedMinLogLevel level{LogLevel::Info};
-    Logger logger{STATIC_ARRAY_NAME};
+    constexpr char name[] = {'N', 'o', 'N', 'u', 'l'};
+    Logger logger{name};
 
     const std::string output = CaptureStdout([&] {
-        logger.Info("message from static array logger");
+        logger.Info("message from unterminated array logger");
     });
 
-    EXPECT_NE(output.find(STATIC_ARRAY_NAME), std::string::npos) << output;
-    EXPECT_NE(output.find("message from static array logger"), std::string::npos) << output;
+    EXPECT_NE(output.find("[NoNul]"), std::string::npos) << output;
 }
 
 TEST(LoggerTest, DynamicTemporaryNameAppearsInOutput) {
