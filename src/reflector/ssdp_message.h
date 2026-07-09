@@ -36,6 +36,15 @@ inline constexpr uint8_t MSEARCH_MX_DEFAULT = 3;
 // case-insensitive.
 [[nodiscard]] std::optional<uint8_t> ParseMSearchMx(std::span<const std::byte> payload) noexcept;
 
+// Parses the CACHE-CONTROL max-age directive (the advertised validity of the announcement, in
+// seconds). Walks the CRLF-delimited lines for the first CACHE-CONTROL field (case-insensitive),
+// then its comma-separated directives for the first max-age (also case-insensitive; whitespace
+// around '=' tolerated — UDA's own examples write "max-age = 1800"). Returns nullopt when the field
+// or the directive is absent, or the value is not a bare integer fitting uint32_t — the caller
+// applies its own default; bounding the value is also the caller's policy (DialProxy clamps the
+// grace it derives).
+[[nodiscard]] std::optional<uint32_t> ParseCacheControlMaxAge(std::span<const std::byte> payload) noexcept;
+
 // True if `payload` advertises the DIAL service — its service-type URN (urn:dial-multiscreen-org:service:dial)
 // appears anywhere in the message (ST/NT/USN). The SSDP path uses this to decide whether a response's LOCATION
 // should be rewritten through the DialProxy; DialProxy itself never parses SSDP.

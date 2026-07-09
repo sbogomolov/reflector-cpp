@@ -54,13 +54,19 @@ public:
     // An Open connection with no forwarded byte for this long is reaped (each forwarded byte refreshes its
     // idle deadline). Covers the half-open peer that completes the handshake then goes silent.
     static constexpr std::chrono::seconds IDLE_TIMEOUT{30};
-    // An unreferenced Discovery listener idle for this long is evicted. Discovery is a brief sweep then idle,
-    // so its grace is short — long enough to span a client's retries, short enough to free the listener soon.
-    static constexpr std::chrono::seconds DISCOVERY_ENDPOINT_GRACE{60};
-    // An unreferenced Rest listener idle for this long is evicted. Rest is the longer-lived role (a launched
-    // app keeps polling its REST endpoint), so its grace is longer than the discovery grace.
+    // An unreferenced Discovery listener is evicted once its advertised validity lapses. The
+    // advertisement's CACHE-CONTROL max-age sets that validity (and every advertisement refreshes it);
+    // absent or unparseable, this default applies — the UDA-recommended minimum device validity
+    // (DIAL's own example advertises max-age=1800).
+    static constexpr std::chrono::seconds DEFAULT_DISCOVERY_GRACE = std::chrono::minutes{30};
+    // Ceiling on an advertised max-age: the value is attacker-controlled and sets a proxy-slot
+    // eviction deadline, so bound how long one advertisement (a spoofed burst included) can pin a
+    // scarce slot. Well above any real device's re-advertise interval, so a live device still
+    // refreshes its grace in time.
+    static constexpr std::chrono::seconds MAX_DISCOVERY_GRACE = std::chrono::hours{2};
+    // An unreferenced Rest listener idle for this long is evicted. Rest listeners are minted from a
+    // description response (no advertisement, so no max-age at hand); client activity refreshes them.
     static constexpr std::chrono::seconds REST_ENDPOINT_GRACE{300};
-    static_assert(REST_ENDPOINT_GRACE > DISCOVERY_ENDPOINT_GRACE, "Rest is the longer-lived role");
     // The eviction sweep period — how often the reaper runs while either map is non-empty.
     static constexpr std::chrono::seconds EVICTION_INTERVAL{5};
     // Distinct devices whose REST endpoint we proxy (minted from each description's Application-URL). One per
@@ -80,8 +86,10 @@ public:
     // Find-or-create a Discovery listener for a device's description endpoint; returns the reflector
     // authority (source_if-addr:listener-port) to advertise in the rewritten LOCATION, or nullopt on a
     // cap/bind failure (the LOCATION is then injected unchanged — discovery still works via the router).
-    // Refreshes the endpoint's last_active.
-    [[nodiscard]] std::optional<IpEndpoint> EnsureDiscoveryListener(const IpEndpoint& device);
+    // Refreshes the endpoint's last_active and grace: `advertised_validity` is the advertisement's
+    // CACHE-CONTROL max-age, clamped to MAX_DISCOVERY_GRACE; absent, DEFAULT_DISCOVERY_GRACE applies.
+    [[nodiscard]] std::optional<IpEndpoint> EnsureDiscoveryListener(const IpEndpoint& device,
+        std::optional<std::chrono::seconds> advertised_validity = std::nullopt);
 
     // React to a possible source-interface address change. Every listener is bound to source_if's V4
     // address as it was at mint time, so once that address changes (or goes away) the listener's
@@ -106,6 +114,7 @@ private:
         Role role;
         TcpSocket listener;  // bound to source_if-addr:ephemeral
         std::chrono::steady_clock::time_point last_active;
+        std::chrono::seconds grace;  // evicted past last_active + grace (advertised validity for Discovery)
         size_t active_connections = 0;  // Connections pinned to this device; 0 = reapable, no connection scan
         Dispatcher::Registration accept_reg;  // declared LAST: dropped first on erase
     };
@@ -175,11 +184,14 @@ private:
     [[nodiscard]] std::optional<IpEndpoint> EnsureRestListener(const IpEndpoint& device);
 
     // Find-or-create the Endpoint for `device`: refresh last_active, promote Discovery -> Rest if `role`
-    // asks, and return its reflector authority. At first sight: Listen on source_if-addr:ephemeral, read
-    // the port, emplace the (node-stable) Endpoint, register its accept handler, return the authority.
-    // Enforces the role's cap (over cap -> nullopt, no listener leaked) and source_if SourceAddress(V4)
+    // asks, and return its reflector authority. A Discovery call is an advertisement, so it re-states the
+    // device's validity: `grace` replaces the endpoint's (a Rest touch leaves it — client activity
+    // refreshes last_active instead). At first sight: Listen on source_if-addr:ephemeral, read the port,
+    // emplace the (node-stable) Endpoint, register its accept handler, return the authority. Enforces the
+    // role's cap (over cap -> nullopt, no listener leaked) and source_if SourceAddress(V4)
     // (nullopt -> nullopt).
-    [[nodiscard]] std::optional<IpEndpoint> EnsureListener(const IpEndpoint& device, Endpoint::Role role);
+    [[nodiscard]] std::optional<IpEndpoint> EnsureListener(const IpEndpoint& device, Endpoint::Role role,
+        std::chrono::seconds grace);
 
     // The listener accept handler (registered by-fd, so it reverse-looks-up the Endpoint): accept the
     // client, egress-pinned-connect to the device, emplace the Connection, register both fds. Drops the
