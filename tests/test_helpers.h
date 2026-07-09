@@ -349,6 +349,12 @@ private:
             ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
             return RawSocket::ForTesting(iface, -1);
         }
+        // macOS defaults an AF_UNIX datagram socket to a ~2 KB receive buffer, too small to
+        // stage a full drain burst (MAX_PACKETS_PER_READ_EVENT+1 frames) before reading. Raise
+        // both ends so a bursty test can queue the whole batch up front.
+        const int bufsize = 1 << 20;
+        ::setsockopt(fds[0], SOL_SOCKET, SO_RCVBUF, &bufsize, sizeof(bufsize));
+        ::setsockopt(fds[1], SOL_SOCKET, SO_SNDBUF, &bufsize, sizeof(bufsize));
         if (::fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0) {
             ADD_FAILURE() << "fcntl(O_NONBLOCK) failed: " << std::strerror(errno);
             ::close(fds[0]);

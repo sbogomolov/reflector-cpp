@@ -64,6 +64,10 @@ protected:
     size_t CaptureSourceCount() const {
         return packet_dispatcher.capture_sources_.size();
     }
+
+    static constexpr size_t MaxPacketsPerReadEvent() noexcept {
+        return DefaultPacketDispatcher::MAX_PACKETS_PER_READ_EVENT;
+    }
 };
 
 // Registers a second callback the first time it runs, then disables itself so subsequent
@@ -536,6 +540,29 @@ TEST_F(DefaultPacketDispatcherTest, DispatchesNothingForUnparseableFrame) {
     // dispatchable packet.
     EXPECT_TRUE(poll_result) << output;
     EXPECT_EQ(counter.count, 0);
+}
+
+// DrainReadableFd caps a single drain at MAX_PACKETS_PER_READ_EVENT frames even when more are
+// already queued, so one bursty capture socket can't starve every other fd on the single-threaded
+// event loop. Stage one more frame than the cap before a single PollOnce: only the capped count is
+// delivered; the fd stays readable and the remainder is delivered on the next drain.
+TEST_F(DefaultPacketDispatcherTest, DrainStopsAtMaxPacketsPerReadEventThenResumesOnNextPoll) {
+    TestCaptureSocket capture;
+    PacketCounter counter;
+    const auto registration = packet_dispatcher.Register(
+        capture.socket, PacketFilter{}, CreateDelegate<&PacketCounter::OnPacket>(&counter));
+    ASSERT_TRUE(registration.IsValid());
+
+    const int cap = static_cast<int>(MaxPacketsPerReadEvent());
+    for (int i = 0; i < cap + 1; ++i) {
+        ASSERT_TRUE(capture.WriteFrame(MakeUdpFrame()));
+    }
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(counter.count, cap);  // the drain loop stops exactly at the cap, mid-burst
+
+    EXPECT_TRUE(dispatcher.PollOnce(std::chrono::milliseconds{1000}));
+    EXPECT_EQ(counter.count, cap + 1);  // fd still readable: the next drain delivers the rest
 }
 
 class DefaultPacketDispatcherRequiresRootTest : public ::testing::Test {

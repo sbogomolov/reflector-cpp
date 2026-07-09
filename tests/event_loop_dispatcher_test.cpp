@@ -281,6 +281,27 @@ TEST_F(EventLoopDispatcherTest, RegisterRejectsAlreadyWatchedFd) {
     EXPECT_EQ(RegistrationCount(), 1);
 }
 
+#if defined(__linux__)
+// epoll_ctl(EPOLL_CTL_ADD) rejects an fd that can't be polled (a directory) with EPERM, so Register
+// emplaces the callback then fails to program the kernel interest -- driving the rollback that removes
+// the interest and erases the map entry. A stranded entry would permanently reject re-registering the
+// fd and trip the destructor leak guard. kqueue accepts vnodes via EVFILT_READ, so this reproduces
+// only on the epoll lane.
+TEST_F(EventLoopDispatcherTest, RegisterRollsBackWhenKernelInterestFails) {
+    const int dir_fd = ::open("/", O_RDONLY | O_DIRECTORY);
+    ASSERT_GE(dir_fd, 0);
+    ReadableCounter counter;
+
+    const auto registration = dispatcher.Register(
+        dir_fd, CreateDelegate<&ReadableCounter::OnReadable>(&counter));
+
+    EXPECT_FALSE(registration.IsValid());
+    EXPECT_EQ(RegistrationCount(), 0);  // the partial map entry was rolled back, not left stale
+
+    ::close(dir_fd);
+}
+#endif
+
 TEST_F(EventLoopDispatcherTest, UnregisterStopsCallback) {
     ReadablePipe pipe;
     ASSERT_GE(pipe.ReadEnd(), 0);

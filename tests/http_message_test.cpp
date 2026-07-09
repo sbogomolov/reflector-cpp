@@ -451,6 +451,18 @@ TEST(HttpFramingMiscTest, AllowsIdenticalDuplicateContentLength) {
     EXPECT_TRUE(d.out.ends_with("hi"));
 }
 
+TEST(HttpFramingMiscTest, RefusesContentLengthThatOverflowsSizeT) {
+    // A value too large for size_t makes from_chars report result_out_of_range — reject rather than
+    // frame a truncated/garbage body length (the size_t counterpart of the chunk-size overflow guard).
+    UrlRewrite rewrite;
+    HttpFraming framing(AsRewrite(rewrite), HttpFraming::MessageType::Response);
+    Driver d{framing};
+    d.Read(
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Length: 999999999999999999999999999999\r\n\r\n");
+    EXPECT_FALSE(d.ok);
+}
+
 TEST(HttpFramingMiscTest, RefusesHeadRequest) {
     // A HEAD response is bodyless but may still carry Content-Length, which this framer would await
     // as phantom body bytes and desync the keep-alive stream. Refuse HEAD at the request side.
