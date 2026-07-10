@@ -172,7 +172,7 @@ FetchContent_MakeAvailable(tomlplusplus)
 # when changing both repos together), point at it with -D FETCHCONTENT_SOURCE_DIR_DELEGATE=/path/to/delegate.
 FetchContent_Declare(delegate
     GIT_REPOSITORY https://github.com/sbogomolov/delegate.git
-    GIT_TAG v0.1.0
+    GIT_TAG v0.1.1
 )
 FetchContent_MakeAvailable(delegate)
 
