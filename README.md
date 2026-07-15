@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **This project has been rewritten in Rust.**
-> [The Rust reflector](https://github.com/sbogomolov/reflector) reached full feature parity and is now
+> [The Rust netflector](https://github.com/netflector/netflector) reached full feature parity and is now
 > where all development happens — by the time you read this it may well have features this C++ version
 > lacks. This implementation still works and remains available, but new deployments should prefer the
 > Rust one.
