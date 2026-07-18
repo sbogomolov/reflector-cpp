@@ -206,7 +206,7 @@ jobs:
       # script inside it. The VM runs as root, so the RequiresRoot tests (BPF capture, epair pairs) run
       # instead of skipping; each fixture self-skips where its operation isn't available.
       - name: Build and test in a FreeBSD VM
-        uses: vmactions/freebsd-vm@5a72679103d223925653750faa878a143340fbd0 # v1
+        uses: vmactions/freebsd-vm@77ed28d336d03fe19a3f4f7266c1d2c4714dd79d # v1
         with:
           release: '14.2'  # 14.x base ships clang/libc++ >= 18 (std::println/format/expected); OPNsense 25.x tracks 14.3
           usesh: true
