@@ -353,7 +353,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     const auto source = interface_->SourceAddressFor(dst.addr);
     if (!source) {
         logger_.Error("Cannot send to {}: interface has no source address for that family",
-            dst.addr.ToString());
+            dst.addr);
         return false;
     }
 
@@ -367,7 +367,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
         : BuildUdpFrame(dst_mac, interface_->Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
 #endif
     if (length == 0) {
-        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr.ToString(),
+        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr,
             payload.size());
         return false;
     }
@@ -384,7 +384,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     const auto sent = write(fd_.Get(), frame.data(), length);
 #endif
     if (sent < 0 || static_cast<size_t>(sent) != length) {
-        logger_.Error("Cannot inject datagram to {}: {}", dst.addr.ToString(), Error::FromErrno());
+        logger_.Error("Cannot inject datagram to {}: {}", dst.addr, Error::FromErrno());
         return false;
     }
     return true;
@@ -406,7 +406,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     if (opened_now) {
         join_fd.Reset(socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
         if (!join_fd.IsValid()) {
-            logger_.Error("Cannot open multicast-join socket for {}: {}", group.ToString(), Error::FromErrno());
+            logger_.Error("Cannot open multicast-join socket for {}: {}", group, Error::FromErrno());
             return {};
         }
     }
@@ -421,7 +421,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
 
     const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(join_fd.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
-        logger_.Error("Cannot join multicast group {}: {}", group.ToString(), Error::FromErrno());
+        logger_.Error("Cannot join multicast group {}: {}", group, Error::FromErrno());
         if (opened_now) {
             join_fd.Reset();  // the fd we just opened holds no membership; drop it
         }
@@ -429,7 +429,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     }
 
     memberships.emplace(group, 1);
-    logger_.Debug("Joined multicast group {} (interface index {})", group.ToString(), interface_->Index());
+    logger_.Debug("Joined multicast group {} (interface index {})", group, interface_->Index());
     return MakeMembership(group);
 }
 
@@ -450,7 +450,7 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
         // Invariant: a live membership keeps its family's join fd open (it's closed only here, once
         // the family's last group leaves). An invalid fd with a membership still outstanding is a
         // bug in this bookkeeping, not a runtime condition.
-        logger_.Error("Cannot leave multicast group {}: its join fd is already closed", group.ToString());
+        logger_.Error("Cannot leave multicast group {}: its join fd is already closed", group);
         return true;
     }
 
@@ -462,9 +462,9 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
     // us, so a later leave fails with the group already gone — the intended end state (not joined)
     // is reached either way, so this is Debug, not Error.
     if (setsockopt(join_fd.Get(), level, MCAST_LEAVE_GROUP, &request, sizeof(request)) != 0) {
-        logger_.Debug("Leave of multicast group {} did not apply: {}", group.ToString(), Error::FromErrno());
+        logger_.Debug("Leave of multicast group {} did not apply: {}", group, Error::FromErrno());
     } else {
-        logger_.Debug("Left multicast group {}", group.ToString());
+        logger_.Debug("Left multicast group {}", group);
     }
 
     // The family's last group is gone, so free its join fd instead of carrying it for the socket's

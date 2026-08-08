@@ -35,6 +35,17 @@ TEST(IpAddressTest, AnyV4AndAnyV6AreFamilyWildcards) {
     EXPECT_NE(IpAddress::AnyV4(), IpAddress::AnyV6());
 }
 
+TEST(IpAddressTest, ToCharsWritesIntoTheCallersBuffer) {
+    const auto v6 = *IpAddress::FromString("ff02::c");
+    IpAddress::TextBuffer buffer;
+
+    const auto text = v6.ToChars(buffer);
+
+    EXPECT_EQ(text, "ff02::c");
+    EXPECT_EQ(text.data(), buffer.data());  // a view of the buffer, not of anything temporary
+    EXPECT_EQ(IpAddress::FromV4Bytes(192, 0, 2, 1).ToChars(buffer), "192.0.2.1");
+}
+
 TEST(IpAddressTest, IsV4AndIsV6AreMutuallyExclusive) {
     const auto v4 = IpAddress::FromV4Bytes(192, 0, 2, 1);
     EXPECT_TRUE(v4.IsV4());
