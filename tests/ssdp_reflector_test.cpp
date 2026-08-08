@@ -904,21 +904,29 @@ TEST_F(SsdpReflectorTest, SameSearcherAndGroupReusesOneSession) {
     EXPECT_EQ(RegistrationCount(), base + 1);  // but one shared session
 }
 
-TEST_F(SsdpReflectorTest, LogsDefaultedMxAtInfoWhenSearchHasNoMx) {
-    const ScopedMinLogLevel level{LogLevel::Info};
+TEST_F(SsdpReflectorTest, LogsDefaultedMxAtDebugOnly) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
 
-    // A non-conformant M-SEARCH with no MX header: reflected anyway with the default window, and the
-    // fallback flagged at INFO so it is visible in normal operation (the reflect line itself is DEBUG).
     const auto search_no_mx = Bytes(
         "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nST: ssdp:all\r\n\r\n");
-    const std::string output = CaptureStdout([&] {
-        packet_dispatcher.Deliver(source, MakePacket(search_no_mx, IpAddress::SsdpGroupV4()));
-    });
 
-    EXPECT_EQ(target.sent.size(), 1u);  // reflected despite the missing MX
-    EXPECT_NE(output.find("no/invalid MX"), std::string::npos) << output;
+    {
+        const ScopedMinLogLevel level{LogLevel::Info};
+        const std::string output = CaptureStdout([&] {
+            packet_dispatcher.Deliver(source, MakePacket(search_no_mx, IpAddress::SsdpGroupV4()));
+        });
+        EXPECT_EQ(target.sent.size(), 1u);  // reflected despite the missing MX
+        EXPECT_EQ(output.find("no/invalid MX"), std::string::npos) << output;
+    }
+    {
+        const ScopedMinLogLevel level{LogLevel::Debug};
+        const std::string output = CaptureStdout([&] {
+            packet_dispatcher.Deliver(source, MakePacket(search_no_mx, IpAddress::SsdpGroupV4()));
+        });
+        EXPECT_EQ(target.sent.size(), 2u);
+        EXPECT_NE(output.find("no/invalid MX"), std::string::npos) << output;
+    }
 }
 
 TEST_F(SsdpReflectorTest, DoesNotInfoLogWhenMxIsPresent) {
