@@ -2,12 +2,12 @@
 
 #include "reflector/util/no_copy.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <format>
-#include <print>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -110,10 +110,27 @@ public:
             localtime_r(&time, &tm_buf);
             char time_str[sizeof("yyyy-mm-dd hh:mm:ss")];
             std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
-            std::println("{} {} [{}] {} ({}:{})",
-                time_str, level, name_,
-                std::format(std::move(fmt.fmt), std::forward<Args>(args)...),
+
+            // Two buffers, so an over-long message loses its own tail rather than the source
+            // location after it. std::format plus std::println would allocate twice per record.
+            std::array<char, MAX_MESSAGE_SIZE> message_buffer;
+            const auto formatted = std::format_to_n(message_buffer.data(), message_buffer.size(),
+                std::move(fmt.fmt), std::forward<Args>(args)...);
+            const std::string_view message{message_buffer.data(),
+                static_cast<size_t>(formatted.out - message_buffer.data())};
+            // formatted.size is the length the message needed, not what fit, so this catches a cut.
+            const std::string_view elision =
+                static_cast<size_t>(formatted.size) > message_buffer.size() ? "[...]" : "";
+
+            // One slot is held back for the newline, so it lands even on a truncated record and the
+            // whole line still goes out in a single write.
+            std::array<char, MAX_RECORD_SIZE> record;
+            const auto emitted = std::format_to_n(record.data(), record.size() - 1, "{} {} [{}] {}{} ({}:{})",
+                time_str, level, name_, message, elision,
                 detail::Basename(fmt.loc.file_name()), fmt.loc.line());
+            const auto length = static_cast<size_t>(emitted.out - record.data());
+            record[length] = '\n';
+            std::fwrite(record.data(), 1, length + 1, stdout);
         } catch (...) {
             std::fputs("logger: failed to emit message\n", stderr);
         }
@@ -140,6 +157,10 @@ public:
     }
 
 private:
+    static constexpr size_t MAX_MESSAGE_SIZE = 1024;
+    // Plus the timestamp, level, logger name and source location wrapped around it.
+    static constexpr size_t MAX_RECORD_SIZE = MAX_MESSAGE_SIZE + 512;
+
     void ResetName() noexcept {
         owned_name_.clear();
         name_ = {};
