@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <netinet/in.h>
 #include <sys/socket.h>
 
 namespace reflector {
@@ -90,6 +91,16 @@ public:
     // pass their interface index unconditionally. Ignored for IPv4.
     socklen_t ToSockaddr(sockaddr_storage& storage, uint16_t port, unsigned scope_id = 0) const noexcept;
 
+    // Scratch for ToChars. The longest form is the mixed one, six hex groups then a dotted quad
+    // ("xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:255.255.255.255"), which INET6_ADDRSTRLEN covers with its NUL.
+    using TextBuffer = std::array<char, INET6_ADDRSTRLEN>;
+
+    // The presentation form, written into `buffer` and returned as a view of it — the formatter's
+    // path, which allocates nothing. Yields "<invalid_ip>" (a view of a literal) if conversion fails.
+    [[nodiscard]] std::string_view ToChars(TextBuffer& buffer) const noexcept;
+
+    // The same text, owned. Prefer formatting the address directly; this is for callers that need
+    // a string to keep.
     [[nodiscard]] std::string ToString() const;
 
     [[nodiscard]] bool operator==(const IpAddress&) const noexcept = default;
@@ -138,10 +149,12 @@ struct std::formatter<reflector::IpAddress, char>
 
     template <typename FmtContext>
     FmtContext::iterator format(const reflector::IpAddress& address, FmtContext& ctx) const {
+        reflector::IpAddress::TextBuffer buffer;
+        const auto text = address.ToChars(buffer);
         if (address.IsV6()) {
-            return std::format_to(ctx.out(), "[{}]", address.ToString());
+            return std::format_to(ctx.out(), "[{}]", text);
         }
-        return std::format_to(ctx.out(), "{}", address.ToString());
+        return std::format_to(ctx.out(), "{}", text);
     }
 };
 

@@ -220,31 +220,19 @@ socklen_t IpAddress::ToSockaddr(sockaddr_storage& storage, uint16_t port, unsign
     std::unreachable();
 }
 
-std::string IpAddress::ToString() const {
-    int address_family = 0;
-    size_t buffer_size = 0;
-    switch (family_) {
-    using enum Family;
-    case V4:
-        address_family = AF_INET;
-        buffer_size = INET_ADDRSTRLEN;
-        break;
-    case V6:
-        address_family = AF_INET6;
-        buffer_size = INET6_ADDRSTRLEN;
-        break;
-    }
-
-    std::string result;
-    result.resize(buffer_size);
-    if (inet_ntop(address_family, bytes_.data(), result.data(),
-            narrow_cast<socklen_t>(result.size())) == nullptr) {
+std::string_view IpAddress::ToChars(TextBuffer& buffer) const noexcept {
+    const int address_family = family_ == Family::V6 ? AF_INET6 : AF_INET;
+    if (inet_ntop(address_family, bytes_.data(), buffer.data(),
+            narrow_cast<socklen_t>(buffer.size())) == nullptr) {
         GetLogger().Error("Cannot convert IP address to string: {}", Error::FromErrno());
         return "<invalid_ip>";
     }
+    return {buffer.data(), std::char_traits<char>::length(buffer.data())};
+}
 
-    result.resize(std::char_traits<char>::length(result.c_str()));
-    return result;
+std::string IpAddress::ToString() const {
+    TextBuffer buffer;
+    return std::string{ToChars(buffer)};
 }
 
 } // namespace reflector
