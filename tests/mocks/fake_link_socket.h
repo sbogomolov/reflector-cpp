@@ -76,7 +76,10 @@ struct FakeLinkSocket : LinkSocket {
 
     FakeInterface iface;  // the owned identity; ignored when `borrowed` is set
     const Interface* borrowed = nullptr;
+    [[nodiscard]] bool LinkCarriesMacs() const noexcept override { return carries_macs; }
+
     bool valid = true;
+    bool carries_macs = true;
     int fd = -1;
     bool fail_send = false;
     bool fail_join = false;

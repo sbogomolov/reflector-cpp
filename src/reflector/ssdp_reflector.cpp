@@ -49,6 +49,11 @@ bool SsdpReflector::ValidateConfig(const SsdpConfig& config) {
 }
 
 void SsdpReflector::Initialize(const SsdpConfig& config) {
+    if (config.mac && !target_socket_->LinkCarriesMacs()) {
+        logger_.Error("Cannot create ssdp reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
+            config.name, config.target_if);
+        return;
+    }
     // SSDP is bidirectional, so a handled family must be sendable on BOTH interfaces (capability_
     // tracks the AND): the target re-emits reflected searches, the source re-emits advertisements.
     // A required family must already be reflectable; an optional one comes up later if it ever is.

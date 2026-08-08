@@ -77,6 +77,10 @@ public:
     // interface outlives the socket.
     [[nodiscard]] virtual const Interface& GetInterface() const noexcept = 0;
 
+    // Whether frames on this link carry L2 MAC addresses. False on DLT_NULL links (BSD loopback),
+    // where a frame-source MAC filter can never match.
+    [[nodiscard]] virtual bool LinkCarriesMacs() const noexcept = 0;
+
 protected:
     // Mints a membership for `group` owned by this socket; the join must already have happened.
     [[nodiscard]] MulticastMembership MakeMembership(const IpAddress& group) noexcept {
