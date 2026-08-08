@@ -20,4 +20,9 @@ inline constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
 inline constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
 inline constexpr uint8_t IP_PROTO_UDP = 17;
 
+// Ceiling for any frame the reflector handles, capture and egress alike: one datagram at a typical
+// Ethernet MTU plus headers, with headroom. Reflected traffic fits well below it; larger datagrams
+// would be IP-fragmented and the parser drops fragments anyway.
+inline constexpr size_t MAX_FRAME_SIZE = 4 * 1024;
+
 } // namespace reflector

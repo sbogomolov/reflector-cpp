@@ -735,6 +735,20 @@ TEST(RawSocketBatchTest, ReceiveDropsBpfTruncatedFrame) {
     });
     EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
+
+// A frame can be fully captured (datalen == caplen) yet exceed MAX_FRAME_SIZE when the batch
+// buffer is BIOCGBLEN-sized, as in macOS production; the walker drops it at capture like the
+// Linux MSG_TRUNC path does.
+TEST(RawSocketReceiveTest, DropsFullyCapturedFrameLargerThanTheFrameCeiling) {
+    TestCaptureSocket capture{"test", 4 * MAX_FRAME_SIZE};
+    const std::vector<std::byte> frame(MAX_FRAME_SIZE + 1, std::byte{0xff});
+    ASSERT_TRUE(capture.WriteFrame(frame));
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_FALSE(capture.socket.Receive().has_value());
+    });
+    EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
+}
 #endif  // !defined(__linux__)
 
 #if defined(__linux__)
