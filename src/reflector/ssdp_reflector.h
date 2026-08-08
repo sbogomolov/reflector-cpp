@@ -86,7 +86,9 @@ private:
     struct DialRewrite {
         enum class Action : uint8_t { ForwardOriginal, ForwardRewritten, Drop };
         Action action = Action::ForwardOriginal;
-        std::string payload{};  // set for ForwardRewritten
+        // ForwardRewritten only: a view into rewrite_scratch_, valid until the next rewrite. Both
+        // callers send it before returning, so nothing outlives it.
+        std::string_view payload{};
     };
 
     // When the DIAL proxy is enabled and `payload` is a DIAL advertisement/response, rewrites its LOCATION
@@ -111,6 +113,7 @@ private:
     PacketDispatcher* packet_dispatcher_;  // retained so OnSourcePacket can make response registrations
     std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response registration
     std::optional<DialProxy> dial_proxy_;  // the DIAL app proxy, engaged only when config.dial (IPv4-only)
+    std::string rewrite_scratch_;  // reserved to MAX_UDP_PAYLOAD_SIZE when DIAL is on, so a rewrite never allocates
     std::vector<Session> sessions_;
     Timer eviction_timer_;  // started only while sessions are in flight (lazy); declared last ->
                             // destroyed first (stops before the sessions it sweeps drop)

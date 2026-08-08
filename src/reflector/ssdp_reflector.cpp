@@ -7,10 +7,12 @@
 #include "util/delegate.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <format>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -80,6 +82,7 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
         dial_proxy_.emplace(packet_dispatcher_->UnderlyingDispatcher(), source_socket_->GetInterface(),
             target_socket_->GetInterface(),
             std::format("DialProxy:{}:{}->{}", config.name, config.source_if, config.target_if));
+        rewrite_scratch_.reserve(MAX_UDP_PAYLOAD_SIZE);
     }
 
     valid_ = true;
@@ -326,19 +329,33 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
             location->endpoint);
         return {};
     }
-    // Splice the reflector authority over exactly the LOCATION's host[:port] span. The port may have been
-    // omitted (defaulting to 80), in which case the span covers just the host — the inserted "addr:port"
-    // still lands correctly because it replaces that exact text.
-    std::string rewritten{reinterpret_cast<const char*>(payload.data()), payload.size()};
-    rewritten.replace(location->offset, location->length, std::format("{}", *reflector_authority));
-    if (rewritten.size() > MAX_UDP_PAYLOAD_SIZE) {
+    // Wide enough for a bracketed IPv6 authority, so the format never truncates.
+    std::array<char, 64> authority_text{};
+    const auto formatted = std::format_to_n(authority_text.data(), authority_text.size(), "{}",
+        *reflector_authority);
+    const std::string_view authority{authority_text.data(),
+        static_cast<size_t>(formatted.out - authority_text.data())};
+
+    // Size the result before building: an overflow is rejected without copying, and the splice below
+    // fits the reserved scratch by construction.
+    const std::string_view original{reinterpret_cast<const char*>(payload.data()), payload.size()};
+    const size_t rewritten_size = original.size() - location->length + authority.size();
+    if (rewritten_size > MAX_UDP_PAYLOAD_SIZE) {
         logger_.Error("DIAL: rewritten LOCATION for {} overflows the {}-byte payload ceiling; dropping the datagram",
             location->endpoint, MAX_UDP_PAYLOAD_SIZE);
         return {.action = DialRewrite::Action::Drop};
     }
+    // Splice the reflector authority over exactly the LOCATION's host[:port] span. The port may have been
+    // omitted (defaulting to 80), in which case the span covers just the host — the inserted "addr:port"
+    // still lands correctly because it replaces that exact text.
+    rewrite_scratch_.clear();
+    rewrite_scratch_ += original.substr(0, location->offset);
+    rewrite_scratch_ += authority;
+    rewrite_scratch_ += original.substr(location->offset + location->length);
+
     logger_.Debug("DIAL: rewrote device {} LOCATION to reflector listener {}",
         location->endpoint, *reflector_authority);
-    return {.action = DialRewrite::Action::ForwardRewritten, .payload = std::move(rewritten)};
+    return {.action = DialRewrite::Action::ForwardRewritten, .payload = rewrite_scratch_};
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
