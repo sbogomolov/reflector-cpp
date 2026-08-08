@@ -1048,6 +1048,27 @@ TEST_F(SsdpReflectorTest, DialDropsAnAdvertisementWhoseRewriteOverflowsThePayloa
     EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text.substr(0, 200);
 }
 
+// The rewrite scratch is reused across datagrams, so a short rewrite following a long one must not
+// carry its predecessor's tail.
+TEST_F(SsdpReflectorTest, DialRewriteDoesNotLeakThePreviousDatagram) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    packet_dispatcher.Deliver(target,
+        MakePacket(MakeGrowingDialAdvertisement(MAX_UDP_PAYLOAD_SIZE - 20), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 1u);
+
+    const auto small = MakeDialAdvertisement();
+    packet_dispatcher.Deliver(target, MakePacket(small, IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 2u);
+
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_LT(text.size(), small.size() + 32);  // ~4 KiB would mean the predecessor's bytes came along
+    EXPECT_TRUE(text.ends_with("NTS: ssdp:alive\r\n\r\n")) << text;
+}
+
 TEST_F(SsdpReflectorTest, DialRewritesUnicastResponseLocationWhenEnabled) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.dial = true;
