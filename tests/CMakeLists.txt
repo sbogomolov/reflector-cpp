@@ -27,6 +27,7 @@ add_executable(reflector_test
     ${CMAKE_CURRENT_SOURCE_DIR}/raw_socket_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/stream_buffer_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/tcp_socket_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/util/allocation_counter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/util/udp_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/udp_socket_test.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/wol_reflector_test.cpp
