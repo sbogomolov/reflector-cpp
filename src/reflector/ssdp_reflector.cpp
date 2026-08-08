@@ -163,7 +163,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 
     // One session per (client, group): a retransmit to the same group reuses its session, a new client —
     // or the same client searching a different group (a different reply scope) — gets a fresh one
-    // (reserved port + response capture), built locally so a failed reflect rolls it back via RAII.
+    // (reserved port + response registration), built locally so a failed reflect rolls it back via RAII.
     // Either way the search is reflected once, from the session's reserved port.
     const auto existing_session = std::ranges::find_if(sessions_, [&](const Session& session) {
         return session.searcher == packet.header.source && session.group == packet.header.dest.addr;
@@ -181,7 +181,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     if (!target_socket_->SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
-        return;  // a new session's reservation + capture RAII-drop here
+        return;  // a new session's reservation + response registration RAII-drop here
     }
     logger_.Debug("Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
         packet.header.source, port, static_cast<unsigned>(mx));
@@ -221,12 +221,12 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
     if (!reservation) {
         return std::nullopt;  // Create logged the cause
     }
-    // Register the 200-OK capture before the reflect, so a fast responder's reply can't arrive first.
-    auto capture = packet_dispatcher_->Register(*target_socket_,
+    // Make the 200-OK response registration before the reflect, so a fast responder's reply can't arrive first.
+    auto registration = packet_dispatcher_->Register(*target_socket_,
         PacketFilter{.dest_ip = our_address, .dest_port = reservation->Port(), .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnUnicastResponse>(this));
-    if (!capture.IsValid()) {
-        logger_.Error("Cannot reflect M-SEARCH from {}: response-capture registration failed",
+    if (!registration.IsValid()) {
+        logger_.Error("Cannot reflect M-SEARCH from {}: response registration failed",
             packet.header.source);
         return std::nullopt;  // reservation RAII-drops here, freeing the port
     }
@@ -236,7 +236,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         .searcher_mac = packet.header.source_mac,
         .expiry = expiry,
         .reservation = std::move(*reservation),
-        .capture = std::move(capture),
+        .registration = std::move(registration),
     };
 }
 
@@ -268,7 +268,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
             && session.searcher.addr.AddressFamily() == family;
     });
     if (it == sessions_.end()) {
-        // Defensive: the capture is released with its session, so a 200 OK normally only reaches us
+        // Defensive: the registration is released with its session, so a 200 OK normally only reaches us
         // while the session lives. If it's gone, so is the port reservation — nothing is left to
         // suppress the kernel's ICMP unreachable, and there's no searcher to forward to. Drop it.
         return;
