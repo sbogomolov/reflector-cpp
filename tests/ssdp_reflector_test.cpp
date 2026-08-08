@@ -87,6 +87,23 @@ protected:
             "NTS: ssdp:alive\r\n\r\n");
     }
 
+    // A DIAL advertisement padded to exactly `size` bytes. Its LOCATION names a bare host, so the
+    // rewrite to "127.0.0.1:<ephemeral port>" always grows the datagram whatever port is minted.
+    static std::vector<std::byte> MakeGrowingDialAdvertisement(size_t size) {
+        const std::string_view head =
+            "NOTIFY * HTTP/1.1\r\n"
+            "HOST: 239.255.255.250:1900\r\n"
+            "LOCATION: http://10.0.0.1/dd.xml\r\n"
+            "NT: urn:dial-multiscreen-org:service:dial:1\r\n"
+            "NTS: ssdp:alive\r\n"
+            "X-Pad: ";
+        const std::string_view tail = "\r\n\r\n";
+        std::string payload{head};
+        payload.append(size - head.size() - tail.size(), 'a');
+        payload += tail;
+        return Bytes(payload);
+    }
+
     static std::vector<std::byte> MakeDialResponse() {
         return Bytes(
             "HTTP/1.1 200 OK\r\n"
@@ -1004,6 +1021,31 @@ TEST_F(SsdpReflectorTest, DialAdvertisedMaxAgeExtendsTheListenerGrace) {
     packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
     ASSERT_EQ(source.sent.size(), 2u);
     EXPECT_EQ(AsText(source.sent.back().payload), first);  // same listener reused -> same rewrite
+}
+
+// Forwarding the original would advertise the device address the rewrite exists to replace, so an
+// overflowing rewrite drops the datagram instead.
+TEST_F(SsdpReflectorTest, DialDropsAnAdvertisementWhoseRewriteOverflowsThePayloadCeiling) {
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.dial = true;
+    SsdpReflector reflector{packet_dispatcher, source, target, config};
+    ASSERT_TRUE(reflector.IsValid());
+
+    // Already at the ceiling, so any growth overflows.
+    const auto advertisement = MakeGrowingDialAdvertisement(MAX_UDP_PAYLOAD_SIZE);
+    const std::string output = CaptureStdout([&] {
+        packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
+    });
+
+    EXPECT_TRUE(source.sent.empty());
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
+
+    // Room for the growth: the same message is rewritten and forwarded.
+    packet_dispatcher.Deliver(target,
+        MakePacket(MakeGrowingDialAdvertisement(MAX_UDP_PAYLOAD_SIZE - 20), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(source.sent.size(), 1u);
+    const auto text = AsText(source.sent.back().payload);
+    EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text.substr(0, 200);
 }
 
 TEST_F(SsdpReflectorTest, DialRewritesUnicastResponseLocationWhenEnabled) {

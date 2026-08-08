@@ -2,6 +2,7 @@
 
 #include "interface.h"
 #include "port_reservation.h"
+#include "protocol_constants.h"
 #include "ssdp_message.h"
 #include "util/delegate.h"
 
@@ -248,9 +249,12 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
     // A DIAL advertisement's LOCATION is first rewritten to a minted source_if listener (the string outlives
     // the send). Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the SSDP port, with a freshly reset hop limit (UDA 2.0 default).
-    const auto rewritten = RewriteDialLocation(packet.payload);
-    const auto payload = rewritten
-        ? std::as_bytes(std::span<const char>{*rewritten})
+    const auto rewrite = RewriteDialLocation(packet.payload);
+    if (rewrite.action == DialRewrite::Action::Drop) {
+        return;  // RewriteDialLocation logged the cause
+    }
+    const auto payload = rewrite.action == DialRewrite::Action::ForwardRewritten
+        ? std::as_bytes(std::span<const char>{rewrite.payload})
         : packet.payload;
     if (!source_socket_->SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
         logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
@@ -277,9 +281,12 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
     // Inject the 200 OK to the original searcher from our own source address (no spoofing), addressed to
     // the searcher's captured frame MAC — the split's plain SendUdpDatagram takes that dst MAC. A DIAL
     // response's LOCATION is first rewritten to a minted source_if listener (the string outlives the send).
-    const auto rewritten = RewriteDialLocation(packet.payload);
-    const auto payload = rewritten
-        ? std::as_bytes(std::span<const char>{*rewritten})
+    const auto rewrite = RewriteDialLocation(packet.payload);
+    if (rewrite.action == DialRewrite::Action::Drop) {
+        return;  // RewriteDialLocation logged the cause
+    }
+    const auto payload = rewrite.action == DialRewrite::Action::ForwardRewritten
+        ? std::as_bytes(std::span<const char>{rewrite.payload})
         : packet.payload;
     if (!source_socket_->SendUdpDatagram(session.searcher_mac, session.searcher,
             packet.header.source.port, payload, SSDP_TTL)) {
@@ -303,13 +310,13 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
     return *message_kind == kind;
 }
 
-std::optional<std::string> SsdpReflector::RewriteDialLocation(std::span<const std::byte> payload) noexcept {
+SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const std::byte> payload) noexcept {
     if (!dial_proxy_ || !IsDialServiceMessage(payload)) {
-        return std::nullopt;  // proxy disabled, or not a DIAL service message — forward unchanged
+        return {};  // proxy disabled, or not a DIAL service message — forward unchanged
     }
     const auto location = ParseDialLocationAuthority(payload);
     if (!location) {
-        return std::nullopt;  // a DIAL message with no/unparseable LOCATION: nothing to rewrite
+        return {};  // a DIAL message with no/unparseable LOCATION: nothing to rewrite
     }
     const auto max_age = ParseCacheControlMaxAge(payload);
     const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint,
@@ -317,16 +324,21 @@ std::optional<std::string> SsdpReflector::RewriteDialLocation(std::span<const st
     if (!reflector_authority) {
         logger_.Info("DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
             location->endpoint);
-        return std::nullopt;
+        return {};
     }
     // Splice the reflector authority over exactly the LOCATION's host[:port] span. The port may have been
     // omitted (defaulting to 80), in which case the span covers just the host — the inserted "addr:port"
     // still lands correctly because it replaces that exact text.
     std::string rewritten{reinterpret_cast<const char*>(payload.data()), payload.size()};
     rewritten.replace(location->offset, location->length, std::format("{}", *reflector_authority));
+    if (rewritten.size() > MAX_UDP_PAYLOAD_SIZE) {
+        logger_.Error("DIAL: rewritten LOCATION for {} overflows the {}-byte payload ceiling; dropping the datagram",
+            location->endpoint, MAX_UDP_PAYLOAD_SIZE);
+        return {.action = DialRewrite::Action::Drop};
+    }
     logger_.Debug("DIAL: rewrote device {} LOCATION to reflector listener {}",
         location->endpoint, *reflector_authority);
-    return rewritten;
+    return {.action = DialRewrite::Action::ForwardRewritten, .payload = std::move(rewritten)};
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
