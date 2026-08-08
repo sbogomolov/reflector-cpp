@@ -537,7 +537,14 @@ std::optional<Error> ApplyEnv(ConfigAccumulator& acc, std::span<const EnvVar> en
         if (param.empty()) {
             return Error{"environment variable \"{}\" is missing a parameter name after the tag", var.key};
         }
-        tags[std::string{tag}].insert_or_assign(AsciiToLower(param), std::string{var.value});
+        // Params fold case-insensitively, so REFLECTOR_TV_SOURCE_IF and REFLECTOR_TV_source_if land
+        // in the same slot.
+        const auto [it, inserted] =
+            tags[std::string{tag}].try_emplace(AsciiToLower(param), std::string{var.value});
+        if (!inserted) {
+            return Error{"environment variable \"{}\" sets \"{}\", which another variable already set (names are case-insensitive)",
+                var.key, it->first};
+        }
     }
 
     if (log_level_value) {
