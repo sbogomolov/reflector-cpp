@@ -25,4 +25,10 @@ inline constexpr uint8_t IP_PROTO_UDP = 17;
 // would be IP-fragmented and the parser drops fragments anyway.
 inline constexpr size_t MAX_FRAME_SIZE = 4 * 1024;
 
+// The largest UDP payload that still fits MAX_FRAME_SIZE once framed, under the worst-case header
+// stack (Ethernet over DLT_NULL's 4 bytes, IPv6 over IPv4, no extension headers since the builders
+// emit none): anything built within it is sendable on either family.
+inline constexpr size_t MAX_UDP_PAYLOAD_SIZE =
+    MAX_FRAME_SIZE - (ETHERNET_HEADER_SIZE + IPV6_HEADER_SIZE + UDP_HEADER_SIZE);
+
 } // namespace reflector

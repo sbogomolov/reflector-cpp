@@ -82,12 +82,21 @@ private:
     // SSDP request at all is logged and dropped (it shouldn't appear on the group); a message of the
     // other kind is dropped silently (normal bidirectional traffic).
     [[nodiscard]] bool ShouldReflect(const Packet& packet, SsdpMessageKind kind) noexcept;
+    // RewriteDialLocation's verdict on one datagram.
+    struct DialRewrite {
+        enum class Action : uint8_t { ForwardOriginal, ForwardRewritten, Drop };
+        Action action = Action::ForwardOriginal;
+        std::string payload{};  // set for ForwardRewritten
+    };
+
     // When the DIAL proxy is enabled and `payload` is a DIAL advertisement/response, rewrites its LOCATION
     // authority (the device -> a minted source_if listener) so a source client reaches the device's
-    // description endpoint across the boundary, returning the rewritten bytes. nullopt -> forward `payload`
-    // unchanged: proxy disabled, not a DIAL message, no/invalid LOCATION, or the listener mint hit a
-    // cap/bind failure (all benign — the original LOCATION still resolves for an on-subnet client).
-    [[nodiscard]] std::optional<std::string> RewriteDialLocation(std::span<const std::byte> payload) noexcept;
+    // description endpoint across the boundary. ForwardOriginal covers everything benign: proxy disabled,
+    // not a DIAL message, no/invalid LOCATION, or a listener mint that hit a cap/bind failure (the
+    // original LOCATION still resolves for a routed client). Drop means the rewrite was needed but the
+    // result would overflow MAX_UDP_PAYLOAD_SIZE — forwarding the original would advertise the very
+    // endpoint the rewrite exists to replace.
+    [[nodiscard]] DialRewrite RewriteDialLocation(std::span<const std::byte> payload) noexcept;
     // Reserves a port + makes the 200-OK response registration for a new client, returning the session to add
     // (not yet in the table) or nullopt (after logging) if the cap is hit or a step fails.
     [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet,
