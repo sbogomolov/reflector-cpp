@@ -580,7 +580,7 @@ TEST_F(SsdpReflectorTest, LogsErrorWhenSendFails) {
     });
 
     EXPECT_TRUE(target.sent.empty());
-    EXPECT_EQ(RegistrationCount(), base);  // the response capture is rolled back on the failed reflect
+    EXPECT_EQ(RegistrationCount(), base);  // the response registration is rolled back on the failed reflect
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
@@ -634,7 +634,7 @@ TEST_F(SsdpReflectorTest, MSearchReflectionOriginatesFromAReservedPortAndCreates
     EXPECT_NE(sent.src_port, SSDP_PORT);  // reflected from the reserved ephemeral port, not 1900
     EXPECT_NE(sent.src_port, 0u);
     EXPECT_EQ(sent.ttl, 2);
-    EXPECT_EQ(RegistrationCount(), before + 1);  // + the session's response capture
+    EXPECT_EQ(RegistrationCount(), before + 1);  // + the session's response registration
 }
 
 TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
@@ -652,11 +652,11 @@ TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
     EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
-TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenResponseCaptureRegistrationFails) {
+TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenResponseRegistrationFails) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
     const size_t base = RegistrationCount();             // the two multicast registrations
-    packet_dispatcher.fail_register_on_call = base + 1;  // fail the session's response-capture registration
+    packet_dispatcher.fail_register_on_call = base + 1;  // fail the session's response registration
 
     const std::string output = CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
@@ -753,7 +753,7 @@ TEST_F(SsdpReflectorTest, EvictionTimerKeepsUnexpiredSessions) {
     const size_t base = RegistrationCount();  // multicast registrations only
 
     packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
-    ASSERT_EQ(RegistrationCount(), base + 1);  // + the session's response capture
+    ASSERT_EQ(RegistrationCount(), base + 1);  // + the session's response registration
 
     // MX=2 + 2s grace hasn't elapsed, so firing the eviction timer now keeps the session — and the
     // timer stays armed because the table is still non-empty.
@@ -843,7 +843,7 @@ TEST_F(SsdpReflectorTest, RetransmittedMSearchReusesOneSessionAndReflectsEach) {
     }
 
     EXPECT_EQ(target.sent.size(), 3u);          // reflected every time
-    EXPECT_EQ(RegistrationCount(), base + 1);   // but only one session / response capture
+    EXPECT_EQ(RegistrationCount(), base + 1);   // but only one session / response registration
     const uint16_t port = target.sent.front().src_port;
     EXPECT_NE(port, SSDP_PORT);
     EXPECT_EQ(target.sent[1].src_port, port);   // all reflected from the same reserved port

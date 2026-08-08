@@ -63,7 +63,7 @@ private:
         MacAddress searcher_mac;
         std::chrono::steady_clock::time_point expiry;
         PortReservation reservation;
-        PacketDispatcher::Registration capture;
+        PacketDispatcher::Registration registration;
     };
 
     [[nodiscard]] bool ValidateConfig(const SsdpConfig& config);
@@ -88,7 +88,7 @@ private:
     // unchanged: proxy disabled, not a DIAL message, no/invalid LOCATION, or the listener mint hit a
     // cap/bind failure (all benign — the original LOCATION still resolves for an on-subnet client).
     [[nodiscard]] std::optional<std::string> RewriteDialLocation(std::span<const std::byte> payload) noexcept;
-    // Reserves a port + registers the 200-OK capture for a new client, returning the session to add
+    // Reserves a port + makes the 200-OK response registration for a new client, returning the session to add
     // (not yet in the table) or nullopt (after logging) if the cap is hit or a step fails.
     [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet,
         std::chrono::steady_clock::time_point expiry);
@@ -99,8 +99,8 @@ private:
 
     LinkSocket* source_socket_;
     LinkSocket* target_socket_;
-    PacketDispatcher* packet_dispatcher_;  // retained so OnSourcePacket can register response captures
-    std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response capture
+    PacketDispatcher* packet_dispatcher_;  // retained so OnSourcePacket can make response registrations
+    std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response registration
     std::optional<DialProxy> dial_proxy_;  // the DIAL app proxy, engaged only when config.dial (IPv4-only)
     std::vector<Session> sessions_;
     Timer eviction_timer_;  // started only while sessions are in flight (lazy); declared last ->

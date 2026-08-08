@@ -83,6 +83,10 @@ public:
     // span, so `n` overrunning the free tail is a caller bug, not a runtime (or wire-driven) condition: the
     // count is ours, never the peer's. Assert catches it in Debug/ASan; UB otherwise, like a narrow-contract
     // standard-library access.
+    //
+    // Must follow its ReserveTail() with no other mutating call in between: Consume() and a further
+    // ReserveTail() both compact, moving the live region and invalidating the span, so committing
+    // afterwards would publish whatever stale bytes now sit at the tail into the forwarded stream.
     void Commit(size_t n) noexcept {
         assert(n <= capacity_ - tail_);
         tail_ += n;

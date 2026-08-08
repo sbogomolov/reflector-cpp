@@ -233,7 +233,7 @@ void DialProxy::Connection::Forward(
             Abort();
             return;
         }
-        if (out->consumed == 0) {  // incomplete header: keep the bytes, wait for the next edge
+        if (out->consumed == 0) {  // incomplete message: keep the bytes, wait for the next edge
             break;
         }
         // Close-don't-forward: a u2c Rest-listener mint failed inside Feed and Aborted us, so the header

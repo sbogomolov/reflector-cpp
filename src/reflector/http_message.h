@@ -54,7 +54,8 @@ public:
     // The forwardable result of one Feed. `header` is the rewritten header block (a view into HttpFraming's
     // own scratch), empty while a body is still streaming across feeds. `body` is a slice of the fed input
     // (zero-copy), possibly empty. The owner forwards header then body together. `consumed` is how many fed
-    // bytes to drop; 0 means nothing was forwardable yet (an incomplete header) — read more and feed again.
+    // bytes to drop; 0 means nothing was forwardable yet — an incomplete header, or a chunk-size line
+    // split across reads — so read more and feed again.
     // Both views are valid until the next Feed (which reuses the scratch) or until the owner advances its
     // buffer past `consumed`.
     struct Output {

@@ -94,7 +94,7 @@ struct Driver {
                 return;
             }
             if (r->consumed == 0) {
-                break;  // needs more bytes (an incomplete header)
+                break;  // needs more bytes (an incomplete message)
             }
             out += r->header;
             out += r->body;
