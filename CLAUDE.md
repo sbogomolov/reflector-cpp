@@ -12,6 +12,7 @@
 - Pin Docker base images as `image:tag@sha256:digest` (don't drop the tag).
 - `auto`/`auto&`/`auto*` for locals and loop vars where the initializer makes the type clear; CTAD for aggregates (`std::array parts{a, b}`). Explicit type only when it genuinely clarifies (non-obvious conversion, pinning an interface).
 - Order struct members so padding lands at the end — place a trailing `bool` after a member with tail padding so it tucks in. A throwaway `static_assert(sizeof(X) == 0)` prints the actual size.
+- Mixed signed/unsigned comparison: `static_cast` when non-negativity is evident at the call site (a length, a count); `std::cmp_*` only when a side can actually be negative (an error-signalling `-1`, a difference).
 - Log level by failure, not blame: failure of an intended operation → `Error`, even if externally caused; deliberate skips (traffic not handled by design) → `Debug`. If Error volume becomes a problem, rate-limit — don't downgrade.
 
 ## Build
