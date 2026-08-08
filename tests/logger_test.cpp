@@ -3,6 +3,10 @@
 #include <gtest/gtest.h>
 
 #include "test_helpers.h"
+#include "util/allocation_counter.h"
+
+#include "reflector/ip_address.h"
+#include "reflector/mac_address.h"
 
 #include <charconv>
 #include <format>
@@ -201,6 +205,30 @@ TEST(LoggerTest, MarksAnOverlongMessageAndKeepsWhatFollowsIt) {
     EXPECT_NE(output.find("logger_test.cpp:"), std::string::npos) << tail;
     EXPECT_TRUE(output.ends_with("\n")) << tail;
 }
+
+#if defined(REFLECTOR_HAS_ALLOCATION_COUNTER)
+// Emitting a record stays off the heap end to end: the message and the record format into stack
+// buffers, and the IpAddress/MacAddress formatters write through the same sink rather than building
+// strings. An IPv6 address is the demanding case -- its text is far past any small-string capacity.
+TEST(LoggerTest, EmittingARecordDoesNotAllocate) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"LoggerTest"};
+    const auto address = *IpAddress::FromString("2001:db8:85a3:1234:5678:8a2e:370:7334");
+    const auto mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
+
+    size_t allocated = 0;
+    const std::string output = CaptureStdout([&] {
+        logger.Info("warm-up: the redirected stream buffers itself on its first write");
+        const ScopedAllocationCounter counter;
+        logger.Info("group {} via {} port {}", address, mac, 1900);
+        allocated = counter.Count();
+    });
+
+    EXPECT_EQ(allocated, 0u);
+    EXPECT_NE(output.find("[2001:db8:85a3:1234:5678:8a2e:370:7334]"), std::string::npos) << output;
+    EXPECT_NE(output.find("AA:BB:CC:DD:EE:FF"), std::string::npos) << output;
+}
+#endif  // REFLECTOR_HAS_ALLOCATION_COUNTER
 
 TEST(LoggerTest, EndsTheLineWhenEvenTheRecordIsTruncated) {
     const ScopedMinLogLevel level{LogLevel::Info};
