@@ -194,6 +194,18 @@ protected:
     }
 };
 
+// WoL matches the MAC inside the magic packet's payload, not the frame's L2 source, so MAC-less
+// links take a mac filter that mdns/ssdp would refuse.
+TEST_F(WolReflectorTest, MacFilterIsFineOnLinksWithoutMacs) {
+    source.carries_macs = false;
+    target.carries_macs = false;
+    auto config = MakeConfig(IpAddress::Family::V4);
+    config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
+
+    const auto reflector = BuildV4Reflector(config);
+    EXPECT_TRUE(reflector.IsValid());
+}
+
 TEST_F(WolReflectorTest, RejectsConfigWithEmptyPorts) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.ports = {};

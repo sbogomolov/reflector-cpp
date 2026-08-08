@@ -488,6 +488,29 @@ TEST_F(SsdpReflectorTest, DialProxySurvivesAFamilyTeardown) {
     EXPECT_NE(text.find("http://127.0.0.1:"), std::string_view::npos) << text;
 }
 
+TEST_F(SsdpReflectorTest, RejectsAMacFilterOnATargetLinkWithoutMacs) {
+    target.carries_macs = false;
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
+
+    const auto output = CaptureStdout([&] {
+        const SsdpReflector reflector{packet_dispatcher, source, target, config};
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(RegistrationCount(), 0);
+    });
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
+
+    // Same link without the filter is fine — only the source_mac match is impossible.
+    const SsdpReflector unfiltered{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    EXPECT_TRUE(unfiltered.IsValid());
+
+    // The filter reads target frames, so a MAC-less source link doesn't matter.
+    source.carries_macs = false;
+    target.carries_macs = true;
+    const SsdpReflector filtered{packet_dispatcher, source, target, config};
+    EXPECT_TRUE(filtered.IsValid());
+}
+
 TEST_F(SsdpReflectorTest, MacFilterReflectsOnlyTheConfiguredDevice) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");

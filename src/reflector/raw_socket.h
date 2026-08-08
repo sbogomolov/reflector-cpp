@@ -59,6 +59,14 @@ public:
 
     [[nodiscard]] const Interface& GetInterface() const noexcept override { return *interface_; }
 
+    [[nodiscard]] bool LinkCarriesMacs() const noexcept override {
+#if defined(__linux__)
+        return true;  // AF_PACKET delivers Ethernet framing everywhere, even on lo
+#else
+        return link_type_ == LinkType::Ethernet;
+#endif
+    }
+
     // Injects a UDP datagram out this interface as a raw L2 frame, building the Ethernet/IP/UDP
     // headers and checksums from the interface's cached source MAC/IP and writing the frame to the
     // kernel. These three differ only in the L2 destination: SendUdpDatagram takes an explicit

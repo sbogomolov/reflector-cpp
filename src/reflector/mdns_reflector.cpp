@@ -43,6 +43,11 @@ bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
 }
 
 void MdnsReflector::Initialize(const MdnsConfig& config) {
+    if (config.mac && !target_socket_->LinkCarriesMacs()) {
+        logger_.Error("Cannot create mdns reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
+            config.name, config.target_if);
+        return;
+    }
     // mDNS is bidirectional, so a handled family must be sendable on BOTH interfaces (capability_
     // tracks the AND): the target re-emits relayed queries, the source re-emits relayed responses.
     // A required family must already be reflectable; an optional one comes up later if it ever is.

@@ -410,6 +410,29 @@ TEST_F(MdnsReflectorTest, FailureBringingUpSecondFamilyRollsBackTheFirst) {
     EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::MdnsGroupV4()), source.left_groups.end());
 }
 
+TEST_F(MdnsReflectorTest, RejectsAMacFilterOnATargetLinkWithoutMacs) {
+    target.carries_macs = false;
+    auto config = MakeConfig(AddressFamily::IPv4);
+    config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
+
+    const auto output = CaptureStdout([&] {
+        const MdnsReflector reflector{packet_dispatcher, source, target, config};
+        EXPECT_FALSE(reflector.IsValid());
+        EXPECT_EQ(RegistrationCount(), 0);
+    });
+    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
+
+    // Same link without the filter is fine — only the source_mac match is impossible.
+    const MdnsReflector unfiltered{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    EXPECT_TRUE(unfiltered.IsValid());
+
+    // The filter reads target frames, so a MAC-less source link doesn't matter.
+    source.carries_macs = false;
+    target.carries_macs = true;
+    const MdnsReflector filtered{packet_dispatcher, source, target, config};
+    EXPECT_TRUE(filtered.IsValid());
+}
+
 TEST_F(MdnsReflectorTest, MacFilterRelaysOnlyTheConfiguredDevice) {
     auto config = MakeConfig(AddressFamily::IPv4);
     config.mac = *MacAddress::FromString("aa:bb:cc:dd:ee:ff");
