@@ -1758,6 +1758,22 @@ TEST(ConfigTest, EnvRejectsDuplicateNameAcrossTags) {
     EXPECT_FALSE(config.has_value());
 }
 
+TEST(ConfigTest, EnvRejectsAParamSetTwice) {
+    EXPECT_FALSE(Config::Load(std::nullopt, Env({
+        {"REFLECTOR_TV_SOURCE_IF", "eth0"},
+        {"REFLECTOR_TV_TARGET_IF", "eth1"},
+        {"REFLECTOR_TV_WOL", "true"},
+        {"REFLECTOR_TV_source_if", "eth2"},
+    })).has_value());
+
+    // The same set minus the duplicate is valid — the rejection above is the duplicate, not the shape.
+    EXPECT_TRUE(Config::Load(std::nullopt, Env({
+        {"REFLECTOR_TV_SOURCE_IF", "eth0"},
+        {"REFLECTOR_TV_TARGET_IF", "eth1"},
+        {"REFLECTOR_TV_WOL", "true"},
+    })).has_value());
+}
+
 TEST(ConfigTest, EnvRejectsTagsDifferingOnlyByCase) {
     // The tag map keys on the raw tag (case-sensitive), so TV and tv are two groups — but both
     // canonicalize to the reflector name "tv", so the second is rejected as a duplicate rather than
