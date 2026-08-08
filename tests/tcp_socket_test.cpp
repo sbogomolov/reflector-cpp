@@ -19,6 +19,8 @@
 #include <vector>
 #include <fcntl.h>
 #include <net/if.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -106,6 +108,28 @@ protected:
 INSTANTIATE_TEST_SUITE_P(Families, TcpSocketFamilyTest,
     ::testing::Values(IpAddress::Family::V4, IpAddress::Family::V6),
     [](const auto& family_info) { return family_info.param == IpAddress::Family::V6 ? "V6" : "V4"; });
+
+// The accepted-socket check stands on its own: NODELAY inheritance across accept isn't portable.
+TEST_P(TcpSocketFamilyTest, DataSocketsGetNodelayTheListenerDoesNot) {
+    const auto nodelay = [](int fd) -> bool {
+        int value = -1;
+        socklen_t len = sizeof(value);
+        EXPECT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &value, &len), 0) << std::strerror(errno);
+        return value;
+    };
+
+    auto listener = TcpSocket::Listen(iface, GetParam());
+    ASSERT_TRUE(listener.has_value());
+    auto client = TcpSocket::Connect(listener->LocalEndpoint());
+    ASSERT_TRUE(client.has_value());
+    ASSERT_TRUE(WaitReadable(listener->Fd()));
+    auto server = listener->Accept();
+    ASSERT_TRUE(server.has_value());
+
+    EXPECT_TRUE(nodelay(client->Fd()));
+    EXPECT_TRUE(nodelay(server->Fd()));
+    EXPECT_FALSE(nodelay(listener->Fd()));  // carries no data — Nagle stays
+}
 
 TEST_P(TcpSocketFamilyTest, ListenAssignsAnEphemeralPort) {
     auto listener = TcpSocket::Listen(iface, GetParam());

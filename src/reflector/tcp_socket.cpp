@@ -13,6 +13,7 @@
 #include <format>
 #include <utility>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -41,6 +42,17 @@ Logger& GetLogger() noexcept {
         return false;
     }
 #endif
+    return true;
+}
+
+// Disable Nagle on a data socket. Not for listeners: they carry no data, and the option doesn't
+// portably inherit across accept, so Accept sets it on each accepted fd instead.
+[[nodiscard]] bool SetNoDelay(int fd) noexcept {
+    const int on = 1;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0) {
+        GetLogger().Error("Cannot set TCP_NODELAY: {}", Error::FromErrno());
+        return false;
+    }
     return true;
 }
 
@@ -198,7 +210,7 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interfa
         return std::nullopt;
     }
     const unsigned scope_id = egress_if != nullptr ? egress_if->Index() : 0;
-    if (!ConfigureFd(fd) || (scope_id != 0 && !PinEgress(fd, af, *egress_if))) {
+    if (!ConfigureFd(fd) || !SetNoDelay(fd) || (scope_id != 0 && !PinEgress(fd, af, *egress_if))) {
         ::close(fd);
         return std::nullopt;
     }
@@ -250,6 +262,10 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
         return std::nullopt;
     }
 #endif
+    if (!SetNoDelay(client)) {  // SetNoDelay logged the cause
+        ::close(client);
+        return std::nullopt;
+    }
     // peer came from accept(); read the local endpoint once here (it matches the listener's bound address).
     auto local = LocalNameOf(client);
     if (!local) {
