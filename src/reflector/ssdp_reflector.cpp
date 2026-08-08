@@ -154,8 +154,9 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     const auto parsed_mx = ParseMSearchMx(packet.payload);
     const uint8_t mx = parsed_mx.value_or(MSEARCH_MX_DEFAULT);
     if (!parsed_mx) {
-        // A multicast M-SEARCH must carry MX (UDA 2.0); surface the non-conformant searcher at INFO.
-        logger_.Info("M-SEARCH from {} has no/invalid MX; using the default {}s window",
+        // A multicast M-SEARCH must carry MX (UDA 2.0), but this fires on every search including
+        // retransmits — one non-conformant client would flood any louder level.
+        logger_.Debug("M-SEARCH from {} has no/invalid MX; using the default {}s window",
             packet.header.source, static_cast<unsigned>(mx));
     }
     const auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds{mx} + SESSION_GRACE;
