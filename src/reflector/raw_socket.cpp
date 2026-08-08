@@ -138,19 +138,6 @@ std::array<BpfInsn, 9> LOOPBACK_UDP_FILTER{{
 }};
 #endif
 
-// Sized for one frame at a typical Ethernet MTU plus headers. The reflected traffic
-// classes (WoL, mDNS, SSDP) all fit comfortably below this; oversized datagrams would
-// be IP-fragmented and our parser drops fragments anyway. Used by the Linux production
-// constructor and by the test-only ForTesting constructor on both platforms; macOS
-// production instead sizes the buffer from BPF's own preferred size via BIOCGBLEN.
-constexpr size_t DEFAULT_RECEIVE_BUFFER_SIZE = 4 * 1024;
-
-// The frame to send is assembled into a stack buffer this size. Same rationale as the receive
-// buffer: one datagram at a typical MTU plus headers, with headroom; the traffic we emit (WoL,
-// later mDNS/SSDP) stays well under it and we don't fragment. BuildUdpFrame fails cleanly if a
-// caller ever exceeds it.
-constexpr size_t SEND_BUFFER_SIZE = 4 * 1024;
-
 #if !defined(__linux__)
 // DLT_NULL framing: 4 bytes of address family in host byte order, then the IP packet.
 constexpr size_t LOOPBACK_FAMILY_SIZE = 4;
@@ -220,7 +207,7 @@ RawSocket::RawSocket(const Interface& interface)
         return;
     }
 
-    receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
+    receive_buffer_.resize(MAX_FRAME_SIZE);
 
     logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_.Get());
 
@@ -324,22 +311,20 @@ RawSocket::RawSocket(const Interface& interface)
 #endif
 }
 
-RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept
+RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd,
+    size_t receive_buffer_size) noexcept
         : logger_{std::format("RawSocket:{}", interface.Name())}
         , interface_{&interface}
         , fd_{owned_fd} {
-    // Production sizes receive_buffer_ during setup (constant on Linux, BIOCGBLEN on macOS);
-    // tests skip that path, so use the same default the Linux production uses — enough for
-    // one full-MTU frame plus headers.
-    receive_buffer_.resize(DEFAULT_RECEIVE_BUFFER_SIZE);
+    receive_buffer_.resize(receive_buffer_size);
 }
 
-RawSocket RawSocket::ForTesting(const Interface& interface, int owned_fd) {
-    return RawSocket{TestingTag{}, interface, owned_fd};
+RawSocket RawSocket::ForTesting(const Interface& interface, int owned_fd, size_t receive_buffer_size) {
+    return RawSocket{TestingTag{}, interface, owned_fd, receive_buffer_size};
 }
 
 std::unique_ptr<RawSocket> RawSocket::ForTestingPtr(const Interface& interface, int owned_fd) {
-    return std::unique_ptr<RawSocket>(new RawSocket{TestingTag{}, interface, owned_fd});
+    return std::unique_ptr<RawSocket>(new RawSocket{TestingTag{}, interface, owned_fd, MAX_FRAME_SIZE});
 }
 
 RawSocket::~RawSocket() noexcept {
@@ -372,7 +357,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
         return false;
     }
 
-    std::array<std::byte, SEND_BUFFER_SIZE> frame{};
+    std::array<std::byte, MAX_FRAME_SIZE> frame{};
 #if defined(__linux__)
     const size_t length = BuildUdpFrame(dst_mac, interface_->Mac(), IpEndpoint{*source, src_port}, dst,
         payload, ttl, frame);
@@ -581,6 +566,15 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     if (header.bh_datalen > header.bh_caplen) {
         logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             header.bh_datalen, receive_buffer_.size());
+        return std::nullopt;
+    }
+
+    // Fully captured, but bigger than anything the send path can re-emit — the BIOCGBLEN-sized
+    // batch buffer admits frames the MAX_FRAME_SIZE-sized Linux scratch would have refused, so
+    // enforce the same ceiling here at capture.
+    if (header.bh_caplen > MAX_FRAME_SIZE) {
+        logger_.Warning("Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
+            header.bh_caplen, MAX_FRAME_SIZE);
         return std::nullopt;
     }
 

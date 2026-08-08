@@ -5,6 +5,7 @@
 #include "logger.h"
 #include "packet.h"
 #include "platform.h"
+#include "protocol_constants.h"
 #include "util/address_family_pair.h"
 #include "util/no_move.h"
 #include "util/unique_fd.h"
@@ -47,8 +48,10 @@ public:
     // Receive() consumes bytes from that fd the same way the production socket would,
     // so tests can either synthesize Packets via DefaultPacketDispatcher::DispatchPacket directly
     // (when nothing is written to the fd) or drive real frames end-to-end via
-    // TestCaptureSocket::WriteFrame.
-    [[nodiscard]] static RawSocket ForTesting(const Interface& interface, int owned_fd);
+    // TestCaptureSocket::WriteFrame. `receive_buffer_size` mimics macOS production's
+    // BIOCGBLEN-sized batches when a test needs a buffer larger than one frame.
+    [[nodiscard]] static RawSocket ForTesting(const Interface& interface, int owned_fd,
+        size_t receive_buffer_size = MAX_FRAME_SIZE);
 
     // unique_ptr counterpart to ForTesting, for owners that hold the (immovable) socket
     // behind a pointer — e.g. Application's injectable capture-socket factory.
@@ -109,7 +112,7 @@ private:
     friend class RawSocketInterfacePairRequiresRootTest;  // inspects the membership refcounts + join fds
 
     enum class TestingTag {};
-    RawSocket(TestingTag, const Interface& interface, int owned_fd) noexcept;
+    RawSocket(TestingTag, const Interface& interface, int owned_fd, size_t receive_buffer_size) noexcept;
 
     void Close() noexcept;
 

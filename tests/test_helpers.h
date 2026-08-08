@@ -8,6 +8,7 @@
 #include "reflector/mac_address.h"
 #include "reflector/packet.h"
 #include "reflector/packet_dispatcher.h"
+#include "reflector/protocol_constants.h"
 #include "reflector/raw_socket.h"
 #include "reflector/util/narrow_cast.h"
 
@@ -188,12 +189,8 @@ inline bool HasPacketCapturePrivileges() {
     return cached;
 }
 
-// Protocol constants used by the frame helpers below. Kept here so any test that builds
-// or inspects raw Ethernet frames has a single source of truth.
-constexpr uint16_t IPV4_ETHERTYPE = 0x0800;
-constexpr uint16_t IPV6_ETHERTYPE = 0x86dd;
+// Test-only protocol constants; the shared ones come from protocol_constants.h.
 constexpr uint16_t ARP_ETHERTYPE = 0x0806;
-constexpr uint8_t IP_PROTO_UDP = 17;
 constexpr uint8_t IPV6_NEXT_HOPOPT = 0;
 
 inline void AppendBytes(std::vector<std::byte>& out, std::span<const std::byte> bytes) {
@@ -301,8 +298,9 @@ struct TestCaptureSocket {
     FakeInterface iface;
     RawSocket socket;
 
-    explicit TestCaptureSocket(std::string_view interface = "test")
-            : iface{interface, 0, {}}, socket{MakeSocket()} {}
+    explicit TestCaptureSocket(std::string_view interface = "test",
+        size_t receive_buffer_size = MAX_FRAME_SIZE)
+            : iface{interface, 0, {}}, socket{MakeSocket(receive_buffer_size)} {}
 
     TestCaptureSocket(const TestCaptureSocket&) = delete;
     TestCaptureSocket& operator=(const TestCaptureSocket&) = delete;
@@ -343,7 +341,7 @@ struct TestCaptureSocket {
 #endif
 
 private:
-    RawSocket MakeSocket() {
+    RawSocket MakeSocket(size_t receive_buffer_size) {
         int fds[2];
         if (::socketpair(AF_UNIX, SOCK_DGRAM, 0, fds) != 0) {
             ADD_FAILURE() << "socketpair() failed: " << std::strerror(errno);
@@ -362,7 +360,7 @@ private:
             return RawSocket::ForTesting(iface, -1);
         }
         write_fd = fds[1];
-        return RawSocket::ForTesting(iface, fds[0]);
+        return RawSocket::ForTesting(iface, fds[0], receive_buffer_size);
     }
 
     static std::vector<std::byte> EncodeFrame(std::span<const std::byte> frame) {
