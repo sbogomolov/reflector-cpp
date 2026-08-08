@@ -181,4 +181,38 @@ TEST(LoggerTest, LogLineIncludesSourceLocation) {
     EXPECT_GT(line, 0) << output;
 }
 
+TEST(LoggerTest, MarksAnOverlongMessageAndKeepsWhatFollowsIt) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"LoggerTest"};
+
+    // Longer than any record buffer, so the message is cut wherever that boundary sits.
+    const std::string argument(8192, 'x');
+    const std::string output = CaptureStdout([&] {
+        logger.Info("{}", argument);
+    });
+
+    // The marker and the source location both land past the cut message, so the tail is what
+    // explains a failure here.
+    ASSERT_GT(output.size(), 100u);
+    const std::string tail = output.substr(output.size() - 100);
+
+    EXPECT_LT(output.size(), argument.size());  // cut, not grown to fit
+    EXPECT_NE(output.find("[...]"), std::string::npos) << tail;
+    EXPECT_NE(output.find("logger_test.cpp:"), std::string::npos) << tail;
+    EXPECT_TRUE(output.ends_with("\n")) << tail;
+}
+
+TEST(LoggerTest, EndsTheLineWhenEvenTheRecordIsTruncated) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{std::string(8192, 'n')};  // the name alone overruns the record buffer
+
+    const std::string output = CaptureStdout([&] {
+        logger.Info("a message");
+    });
+
+    // Exactly one newline, at the very end: the reserved slot held, and the record is a single line.
+    ASSERT_FALSE(output.empty());
+    EXPECT_EQ(output.find('\n'), output.size() - 1);
+}
+
 }  // namespace reflector
