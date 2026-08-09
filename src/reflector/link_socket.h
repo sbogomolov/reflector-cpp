@@ -81,6 +81,15 @@ public:
     // where a frame-source MAC filter can never match.
     [[nodiscard]] virtual bool LinkCarriesMacs() const noexcept = 0;
 
+    // Whether the capture is still attached to the live interface. A recreated interface can be
+    // handed back the index it had, so comparing indexes alone can miss the swap; this asks the
+    // kernel about the fd itself.
+    [[nodiscard]] virtual bool Attached() const noexcept = 0;
+
+    // Re-attaches the capture to its interface's current kernel object, keeping the same fd so
+    // registrations keyed by it stay valid. False (having logged) if the kernel refuses.
+    [[nodiscard]] virtual bool Rebind() noexcept = 0;
+
 protected:
     // Mints a membership for `group` owned by this socket; the join must already have happened.
     [[nodiscard]] MulticastMembership MakeMembership(const IpAddress& group) noexcept {
