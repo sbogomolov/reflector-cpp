@@ -44,6 +44,43 @@ TEST(InterfaceTest, RefreshKeepsLoopbackAddresses) {
     EXPECT_TRUE(iface.SourceAddress(IpAddress::Family::V4).has_value());
 }
 
+TEST(InterfaceTest, ReidentifyReportsNoChangeForALiveInterface) {
+    Interface iface{LoopbackInterface()};
+    ASSERT_TRUE(iface.IsValid());
+    const unsigned index = iface.Index();
+
+    EXPECT_EQ(iface.Reidentify(), Interface::IdentityChange::Unchanged);
+    EXPECT_EQ(iface.Index(), index);
+    EXPECT_TRUE(iface.SourceAddress(IpAddress::Family::V4).has_value());
+}
+
+// A name the kernel does not know reports Unchanged, not Parked: the reconcile pass runs on a
+// timer, so an absent interface that stays absent must not log or do work on every pass.
+TEST(InterfaceTest, ReidentifyIsQuietWhileAnInterfaceStaysAbsent) {
+    Interface iface{"nonex0"};
+    ASSERT_FALSE(iface.IsValid());
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_EQ(iface.Reidentify(), Interface::IdentityChange::Unchanged);
+        EXPECT_EQ(iface.Reidentify(), Interface::IdentityChange::Unchanged);
+    });
+
+    EXPECT_TRUE(output.empty()) << output;
+    EXPECT_FALSE(iface.IsValid());
+}
+
+// The name is checked once at construction; a retry cannot change it, so it stays silent too.
+TEST(InterfaceTest, ReidentifyIsQuietForAnOverlongName) {
+    Interface iface{std::string(IFNAMSIZ, 'x')};
+    ASSERT_FALSE(iface.IsValid());
+
+    const std::string output = CaptureStdout([&] {
+        EXPECT_EQ(iface.Reidentify(), Interface::IdentityChange::Unchanged);
+    });
+
+    EXPECT_TRUE(output.empty()) << output;
+}
+
 TEST(InterfaceTest, SourceAddressForMatchesTheDestinationScope) {
     const auto link_local = *IpAddress::FromString("fe80::1");
     const auto unique_local = *IpAddress::FromString("fd00::1");

@@ -391,6 +391,13 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
 }
 
 LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& group) noexcept {
+    // Index 0 is the kernel's "any interface" wildcard, so a parked interface would silently join
+    // on whichever one the routing table picks.
+    if (interface_->Index() == 0) {
+        logger_.Error("Cannot join multicast group {}: the interface is not resolvable", group);
+        return {};
+    }
+
     const auto family = group.AddressFamily();
     auto& memberships = group_memberships_.Get(family);
 

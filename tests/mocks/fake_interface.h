@@ -34,7 +34,31 @@ public:
 
     void Refresh() noexcept override { ++refresh_count; }
 
+    // Stages what the next lookup would report: a different index models a recreation, 0 the
+    // interface going away, nullopt a lookup that could not run. Unset, the fake keeps the
+    // identity it was built with.
+    void StageIndex(std::optional<unsigned> index) noexcept { staged_index_ = index; }
+
+    IdentityChange Reidentify() noexcept override {
+        if (!staged_index_) {
+            return IdentityChange::Unresolved;
+        }
+        if (*staged_index_ == index_) {
+            return IdentityChange::Unchanged;
+        }
+        index_ = *staged_index_;
+        if (index_ == 0) {
+            addresses_ = {};
+            return IdentityChange::Parked;
+        }
+        Refresh();
+        return IdentityChange::Repointed;
+    }
+
     unsigned refresh_count = 0;
+
+private:
+    std::optional<unsigned> staged_index_ = index_;
 };
 
 } // namespace reflector

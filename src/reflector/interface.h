@@ -48,16 +48,41 @@ public:
     // a change on this interface. Virtual so tests substitute a no-syscall fake.
     virtual void Refresh() noexcept;
 
+    // What re-resolving the identity changed. Anything but Unchanged is a transition the caller
+    // acts on; an interface that was already parked and still is reports Unchanged, so a retry
+    // loop neither logs nor works on every pass.
+    enum class IdentityChange : uint8_t {
+        Unchanged,   // same index as before
+        Repointed,   // a different index: the interface was recreated, so captures bound to the old
+                     // one are attached to a dead kernel object and must re-attach
+        Parked,      // no longer resolvable; index and addresses cleared so nothing sends or joins
+                     // against a dead identity until it comes back
+        Unresolved,  // the lookup could not run, which says nothing about the interface: identity
+                     // and addresses are kept as they were, and the caller retries
+    };
+
+    // Re-resolves the kernel index from the name, and the addresses when it resolves. The name is
+    // the stable identity — the index is not, since a recreated interface keeps the name and gets
+    // a new number. Virtual so tests substitute a no-syscall fake.
+    virtual IdentityChange Reidentify() noexcept;
+
 protected:
     // Test seam: fixed identity, no kernel lookups (see FakeInterface).
     Interface(std::string_view name, unsigned index, const InterfaceAddresses& addresses) noexcept;
 
     InterfaceAddresses addresses_;
+    // Protected so a fake can stage the identity a real Reidentify reads from the kernel.
+    unsigned index_ = 0;
 
 private:
+    // name_ -> kernel index: 0 when the name is over-long or the kernel does not know it, nullopt
+    // when the lookup could not run. if_nametoindex is not a pure lookup — glibc opens a socket
+    // inside it — so under fd or memory pressure it reports a live interface as absent, and acting
+    // on that would park a healthy interface.
+    [[nodiscard]] std::optional<unsigned> ResolveIndex() const noexcept;
+
     Logger logger_;
     std::string name_;
-    unsigned index_ = 0;
 };
 
 } // namespace reflector
