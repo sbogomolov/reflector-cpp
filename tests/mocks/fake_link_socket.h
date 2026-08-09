@@ -74,12 +74,29 @@ struct FakeLinkSocket : LinkSocket {
         return borrowed != nullptr ? *borrowed : iface;
     }
 
-    FakeInterface iface;  // the owned identity; ignored when `borrowed` is set
-    const Interface* borrowed = nullptr;
     [[nodiscard]] bool LinkCarriesMacs() const noexcept override { return carries_macs; }
 
+    [[nodiscard]] bool Attached() const noexcept override { return attached; }
+
+    [[nodiscard]] bool Rebind() noexcept override {
+        ++rebinds;
+        if (fail_rebind) {
+            return false;
+        }
+        attached = true;
+        return true;
+    }
+
+    FakeInterface iface;  // the owned identity; ignored when `borrowed` is set
+    const Interface* borrowed = nullptr;
     bool valid = true;
     bool carries_macs = true;
+    // Capture attachment, as the reconcile pass sees it: clear `attached` to model an interface
+    // that went away under the socket; `rebinds` counts recoveries so a test can assert the
+    // capture was actually re-attached rather than merely re-resolved.
+    bool attached = true;
+    bool fail_rebind = false;
+    size_t rebinds = 0;
     int fd = -1;
     bool fail_send = false;
     bool fail_join = false;

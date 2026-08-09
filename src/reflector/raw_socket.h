@@ -62,6 +62,9 @@ public:
 
     [[nodiscard]] const Interface& GetInterface() const noexcept override { return *interface_; }
 
+    [[nodiscard]] bool Attached() const noexcept override;
+    [[nodiscard]] bool Rebind() noexcept override;
+
     [[nodiscard]] bool LinkCarriesMacs() const noexcept override {
 #if defined(__linux__)
         return true;  // AF_PACKET delivers Ethernet framing everywhere, even on lo
@@ -113,6 +116,11 @@ private:
 
     enum class TestingTag {};
     RawSocket(TestingTag, const Interface& interface, int owned_fd, size_t receive_buffer_size) noexcept;
+
+    // Points the capture fd at interface_'s current kernel object: bind on Linux, the
+    // BIOCSETIF/BIOCGDLT/see-sent/filter sequence on the BSDs. Used at construction and by Rebind,
+    // so a recreated interface re-attaches through exactly the path that first attached it.
+    [[nodiscard]] bool AttachToInterface() noexcept;
 
     void Close() noexcept;
 

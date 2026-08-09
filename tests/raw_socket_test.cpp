@@ -124,6 +124,56 @@ public:
     [[nodiscard]] const std::string& InjectInterface() const noexcept { return inject_; }
     [[nodiscard]] const std::string& ReceiveInterface() const noexcept { return receive_; }
 
+    // Tears the pair down early, so a test can watch what a capture does once its interface is
+    // gone. The destructor then finds nothing left to remove.
+    void DestroyNow() { Destroy(); }
+
+    // Deletes the pair and creates it again under the same names, which the kernel gives fresh
+    // indexes — the recreation a reflector has to survive. Naming a unit explicitly re-creates
+    // that unit on every platform (`ifconfig` picks an arbitrary one only when the unit is
+    // omitted), so the names carry over.
+    [[nodiscard]] bool Recreate() {
+        Destroy();
+#if defined(__linux__)
+        if (!Run("ip link add " + inject_ + " type veth peer name " + receive_)) {
+            return false;
+        }
+        created_ = true;
+        valid_ = Run("ip addr add 10.99.0.1/24 dev " + inject_)
+            && Run("ip -6 addr add fe80::1/64 dev " + inject_ + " nodad")
+            && Run("ip link set " + inject_ + " up")
+            && Run("ip link set " + receive_ + " up");
+#elif defined(__APPLE__)
+        if (!Run("ifconfig " + inject_ + " create")) {
+            return false;
+        }
+        created_inject_ = true;
+        if (!Run("ifconfig " + receive_ + " create")) {
+            return false;
+        }
+        created_receive_ = true;
+        valid_ = Run("ifconfig " + inject_ + " peer " + receive_)
+            && Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
+            && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + receive_ + " up");
+#elif defined(__FreeBSD__)
+        // The cloner names the pair, not each end: creating unit "epair0" yields epair0a/epair0b.
+        std::string unit = inject_;
+        unit.pop_back();
+        if (!Run("ifconfig " + unit + " create")) {
+            return false;
+        }
+        created_ = true;
+        valid_ = Run("ifconfig " + inject_ + " inet 10.99.0.1/24 up")
+            && Run("ifconfig " + inject_ + " inet6 fe80::1 prefixlen 64")
+            && Run("ifconfig " + receive_ + " up");
+#endif
+        if (valid_) {
+            WaitUntilRunning();
+        }
+        return valid_;
+    }
+
 private:
     static bool Run(const std::string& command) {
         // POSIX std::system returns the wait status; a command that exits 0 yields 0.
@@ -1013,6 +1063,51 @@ protected:
     }
     static void CloseSocket(RawSocket& socket) { socket.Close(); }
 };
+
+// The capture holds an fd, not a name, so nothing in userland notices the interface leaving. Only
+// the kernel knows, which is what Attached() asks.
+TEST_F(RawSocketInterfacePairRequiresRootTest, AttachedTurnsFalseWhenTheInterfaceGoesAway) {
+    const Interface iface{pair.InjectInterface()};
+    ASSERT_TRUE(iface.IsValid());
+    const RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+    ASSERT_TRUE(socket.Attached());
+
+    pair.DestroyNow();
+
+    EXPECT_FALSE(socket.Attached());
+}
+
+// The recovery this milestone exists for: an interface destroyed and recreated under the same name
+// comes back with a new kernel index, and the capture -- still holding the same fd, so every
+// registration keyed by it stays valid -- re-attaches to the new one. Worth running on the BSDs
+// especially, where re-attaching redoes the whole BIOCSETIF/DLT/see-sent/filter sequence.
+TEST_F(RawSocketInterfacePairRequiresRootTest, RebindRestoresTheCaptureAfterRecreation) {
+    Interface iface{pair.InjectInterface()};
+    ASSERT_TRUE(iface.IsValid());
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+    const int fd = socket.Fd();
+    const unsigned original_index = iface.Index();
+
+    ASSERT_TRUE(pair.Recreate());
+
+    // Detached whatever the index did — this is the check that has to carry the decision, because
+    // the index alone cannot: Linux allocates a fresh one, while macOS hands the recreated unit
+    // the number it had, so there comparing indexes sees nothing at all.
+    EXPECT_FALSE(socket.Attached());
+    const auto change = iface.Reidentify();
+    EXPECT_NE(change, Interface::IdentityChange::Parked) << "the interface is back, so not parked";
+    if (iface.Index() == original_index) {
+        EXPECT_EQ(change, Interface::IdentityChange::Unchanged);  // index reused
+    } else {
+        EXPECT_EQ(change, Interface::IdentityChange::Repointed);
+    }
+
+    ASSERT_TRUE(socket.Rebind());
+    EXPECT_TRUE(socket.Attached());
+    EXPECT_EQ(socket.Fd(), fd);  // same fd throughout, so dispatcher registrations survive
+}
 
 TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPeer) {
     Interface inject_iface{pair.InjectInterface()};

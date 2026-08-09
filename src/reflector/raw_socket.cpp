@@ -197,12 +197,7 @@ RawSocket::RawSocket(const Interface& interface)
 
     // Start capturing: bind to the interface with protocol ETH_P_ALL. The filter is already in place,
     // so every delivered frame is filtered — there is no unfiltered-capture window.
-    sockaddr_ll addr{};
-    addr.sll_family = AF_PACKET;
-    addr.sll_protocol = htons(ETH_P_ALL);
-    addr.sll_ifindex = static_cast<int>(interface_->Index());
-    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
+    if (!AttachToInterface()) {
         Close();
         return;
     }
@@ -225,70 +220,7 @@ RawSocket::RawSocket(const Interface& interface)
         return;
     }
 
-    ifreq ifr{};
-    // ifr is zero-initialized and Interface guarantees Name().size() < IFNAMSIZ.
-    std::memcpy(ifr.ifr_name, interface_->Name().data(), interface_->Name().size());
-    if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
-        logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-
-    u_int dlt = 0;
-    if (ioctl(fd_.Get(), BIOCGDLT, &dlt) != 0) {
-        logger_.Error("Cannot query BPF link type: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-    if (dlt == DLT_EN10MB) {
-        link_type_ = LinkType::Ethernet;
-    } else if (dlt == DLT_NULL) {
-        link_type_ = LinkType::Loopback;
-    } else {
-        logger_.Error("BPF link type {} is not supported (need DLT_EN10MB or DLT_NULL)", dlt);
-        Close();
-        return;
-    }
-
-    u_int immediate = 1;
-    if (ioctl(fd_.Get(), BIOCIMMEDIATE, &immediate) != 0) {
-        logger_.Error("Cannot set BIOCIMMEDIATE: {}", Error::FromErrno());
-        Close();
-        return;
-    }
-
-    // Suppress locally-generated frames on Ethernet links: stops two mirrored reflector
-    // entries (A: eth0 → eth1, B: eth1 → eth0) from ping-ponging each other's egress. The
-    // same-interface case (source_if == target_if) is already rejected by WolConfig::Verify.
-    //
-    // Skip on DLT_NULL. The BSD loopback driver only taps once per frame, on the
-    // input path inside dlil_input_packet_list — lo_output has no output-side tap.
-    // That single delivery is always tagged outbound (the local stack generated it),
-    // so default BPF (BPF_D_INOUT) accepts it; setting SEESENT=0 (= BPF_D_IN) would
-    // drop every frame the driver gives us and silence lo0 entirely. BIOCSDIRECTION
-    // isn't an escape hatch — same ioctl, same kernel handler, just a wider value
-    // set. Linux doesn't need this gate: PACKET_IGNORE_OUTGOING on its AF_PACKET socket
-    // drops the egress copy, collapsing lo's egress+ingress duplication to the ingress
-    // copy.
-    if (link_type_ == LinkType::Ethernet) {
-        u_int see_sent = 0;
-        if (ioctl(fd_.Get(), BIOCSSEESENT, &see_sent) != 0) {
-            logger_.Error("Cannot clear BIOCSSEESENT: {}", Error::FromErrno());
-            Close();
-            return;
-        }
-    }
-
-    // Different link types need different filter programs because the byte offsets to the
-    // ethertype / IP protocol fields differ. Both programs accept IPv4 UDP and IPv6 UDP
-    // only; everything else is dropped in-kernel before reaching userland.
-    auto& filter = link_type_ == LinkType::Ethernet ? ETHERNET_UDP_FILTER : LOOPBACK_UDP_FILTER;
-    bpf_program program{
-        .bf_len = static_cast<u_int>(filter.size()),
-        .bf_insns = reinterpret_cast<bpf_insn*>(filter.data()),
-    };
-    if (ioctl(fd_.Get(), BIOCSETF, &program) != 0) {
-        logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
+    if (!AttachToInterface()) {
         Close();
         return;
     }
@@ -309,6 +241,131 @@ RawSocket::RawSocket(const Interface& interface)
 
     logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_.Get(), blen);
 #endif
+}
+
+bool RawSocket::AttachToInterface() noexcept {
+#if defined(__linux__)
+    // Bind with protocol ETH_P_ALL. The filter and PACKET_IGNORE_OUTGOING are socket options set
+    // before the first bind and survive a re-bind, so there is no unfiltered-capture window here.
+    sockaddr_ll addr{};
+    addr.sll_family = AF_PACKET;
+    addr.sll_protocol = htons(ETH_P_ALL);
+    addr.sll_ifindex = static_cast<int>(interface_->Index());
+    if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
+        logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
+        return false;
+    }
+    return true;
+#else
+    ifreq ifr{};
+    // ifr is zero-initialized and Interface guarantees Name().size() < IFNAMSIZ.
+    std::memcpy(ifr.ifr_name, interface_->Name().data(), interface_->Name().size());
+    if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
+        logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
+        return false;
+    }
+
+    // Re-read the framing every time: a recreated interface can come back as a different link
+    // type, and the see-sent mode and filter below are both chosen from it.
+    u_int dlt = 0;
+    if (ioctl(fd_.Get(), BIOCGDLT, &dlt) != 0) {
+        logger_.Error("Cannot query BPF link type: {}", Error::FromErrno());
+        return false;
+    }
+    if (dlt == DLT_EN10MB) {
+        link_type_ = LinkType::Ethernet;
+    } else if (dlt == DLT_NULL) {
+        link_type_ = LinkType::Loopback;
+    } else {
+        logger_.Error("BPF link type {} is not supported (need DLT_EN10MB or DLT_NULL)", dlt);
+        return false;
+    }
+
+    u_int immediate = 1;
+    if (ioctl(fd_.Get(), BIOCIMMEDIATE, &immediate) != 0) {
+        logger_.Error("Cannot set BIOCIMMEDIATE: {}", Error::FromErrno());
+        return false;
+    }
+
+    // Suppress locally-generated frames on Ethernet links: stops two mirrored reflector
+    // entries (A: eth0 → eth1, B: eth1 → eth0) from ping-ponging each other's egress. The
+    // same-interface case (source_if == target_if) is already rejected by WolConfig::Verify.
+    //
+    // Skip on DLT_NULL. The BSD loopback driver only taps once per frame, on the
+    // input path inside dlil_input_packet_list — lo_output has no output-side tap.
+    // That single delivery is always tagged outbound (the local stack generated it),
+    // so default BPF (BPF_D_INOUT) accepts it; setting SEESENT=0 (= BPF_D_IN) would
+    // drop every frame the driver gives us and silence lo0 entirely. BIOCSDIRECTION
+    // isn't an escape hatch — same ioctl, same kernel handler, just a wider value
+    // set. Linux doesn't need this gate: PACKET_IGNORE_OUTGOING on its AF_PACKET socket
+    // drops the egress copy, collapsing lo's egress+ingress duplication to the ingress
+    // copy. Set both ways, so a re-attach onto different framing restores the right mode.
+    u_int see_sent = link_type_ == LinkType::Ethernet ? 0 : 1;
+    if (ioctl(fd_.Get(), BIOCSSEESENT, &see_sent) != 0) {
+        logger_.Error("Cannot set BIOCSSEESENT: {}", Error::FromErrno());
+        return false;
+    }
+
+    // Different link types need different filter programs because the byte offsets to the
+    // ethertype / IP protocol fields differ. Both programs accept IPv4 UDP and IPv6 UDP
+    // only; everything else is dropped in-kernel before reaching userland.
+    auto& filter = link_type_ == LinkType::Ethernet ? ETHERNET_UDP_FILTER : LOOPBACK_UDP_FILTER;
+    bpf_program program{
+        .bf_len = static_cast<u_int>(filter.size()),
+        .bf_insns = reinterpret_cast<bpf_insn*>(filter.data()),
+    };
+    if (ioctl(fd_.Get(), BIOCSETF, &program) != 0) {
+        logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool RawSocket::Attached() const noexcept {
+    if (!fd_) {
+        return false;
+    }
+#if defined(__linux__)
+    // The kernel clears the binding when the interface unregisters, so the bound index no longer
+    // matches — including the case where a recreated interface was handed back its old number.
+    sockaddr_ll addr{};
+    socklen_t length = sizeof(addr);
+    if (getsockname(fd_.Get(), reinterpret_cast<sockaddr*>(&addr), &length) != 0) {
+        return false;
+    }
+    return addr.sll_ifindex > 0
+        && static_cast<unsigned>(addr.sll_ifindex) == interface_->Index();
+#else
+    // BPF detaches the descriptor with its interface, after which even this query fails.
+    u_int dlt = 0;
+    return ioctl(fd_.Get(), BIOCGDLT, &dlt) == 0;
+#endif
+}
+
+bool RawSocket::Rebind() noexcept {
+    if (!fd_ || interface_->Index() == 0) {
+        return false;
+    }
+    if (!AttachToInterface()) {
+        return false;
+    }
+#if defined(__linux__)
+    // The kernel parked ENETDOWN on the socket when the old interface died; consume it so the
+    // first recv after this surfaces frames rather than the stale failure.
+    int pending = 0;
+    socklen_t length = sizeof(pending);
+    if (getsockopt(fd_.Get(), SOL_SOCKET, SO_ERROR, &pending, &length) == 0 && pending != 0) {
+        logger_.Debug("Cleared a pending error on the re-bound capture: {}", Error::FromErrno(pending));
+    }
+#else
+    // BPF reset its buffer at the re-attach, so drop the drained-batch cursor to match rather
+    // than walking frames the old interface left behind.
+    receive_buffer_filled_ = 0;
+    receive_buffer_offset_ = 0;
+#endif
+    logger_.Debug("Re-bound capture to interface index {}", interface_->Index());
+    return true;
 }
 
 RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd,
