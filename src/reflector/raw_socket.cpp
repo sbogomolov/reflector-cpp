@@ -525,14 +525,13 @@ bool RawSocket::RejoinGroups() noexcept {
             continue;
         }
         // A fresh fd rather than a re-join on the old one: where a recreated interface is handed
-        // back the number it had, the kernel still has the old fd down for that (group, index) and
-        // refuses the join as a duplicate — and a membership it keeps for a dead index still counts
-        // against the socket's join cap (Linux igmp_max_memberships, 20 by default, and not
-        // raisable on a locked-down router), so kept sockets would exhaust it after a handful of
-        // recreations. Closed before the reopen rather than after, so the descriptor it frees is
-        // the one the reopen takes: at the process fd limit that is the difference between
-        // recovering and staying deaf. Refcounts are untouched, so the memberships already handed
-        // to reflectors stay valid.
+        // back the number it had, the kernel refuses the duplicate (group, index) join — and a
+        // membership it keeps for a dead index still counts against igmp_max_memberships, so a
+        // kept fd stops joining after 20 recreations (measured; see the recreation-cap test).
+        // Closed before the reopen rather than after, so the descriptor it frees is the one the
+        // reopen takes: at the process fd limit that is the difference between recovering and
+        // staying deaf. Refcounts are untouched, so the memberships already handed to reflectors
+        // stay valid.
         auto& join_fd = join_fds_.Get(family);
         join_fd.Reset();
         join_fd.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
