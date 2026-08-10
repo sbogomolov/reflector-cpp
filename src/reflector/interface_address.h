@@ -53,16 +53,19 @@ void SelectSourceAddresses(std::span<const IpAddress> candidates, InterfaceAddre
 } // namespace detail
 
 // Resolves an interface's MAC and per-family source addresses; fields are left empty for
-// anything it lacks (or if it's unknown). The IPv6 result prefers a link-local address (the
+// anything it lacks (or if it's unknown). nullopt means the enumeration could not run at all —
+// distinct from an interface that genuinely has no addresses, which resolves to an empty set, so
+// a caller can keep what it had rather than blank a live interface over a transient failure.
+// The IPv6 result prefers a link-local address (the
 // correct source for the link-local multicast we send), falling back to ULA then GUA, and skips
 // tentative/deprecated/duplicated addresses. Needs no special privilege.
 //
 // Keyed by the identifier each platform resolves natively — and that RawSocket already holds:
 // the kernel interface index on Linux (netlink), the interface name on macOS (getifaddrs).
 #if defined(__linux__)
-[[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(unsigned interface_index) noexcept;
+[[nodiscard]] std::optional<InterfaceAddresses> ResolveInterfaceAddresses(unsigned interface_index) noexcept;
 #else
-[[nodiscard]] InterfaceAddresses ResolveInterfaceAddresses(std::string_view interface) noexcept;
+[[nodiscard]] std::optional<InterfaceAddresses> ResolveInterfaceAddresses(std::string_view interface) noexcept;
 #endif
 
 } // namespace reflector

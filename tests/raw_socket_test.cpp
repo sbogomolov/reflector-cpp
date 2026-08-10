@@ -1047,7 +1047,7 @@ protected:
 #else
             const auto addresses = ResolveInterfaceAddresses(pair.ReceiveInterface());
 #endif
-            if (addresses.v6 && addresses.v6->IsLinkLocal()) {
+            if (addresses && addresses->v6 && addresses->v6->IsLinkLocal()) {
                 return true;
             }
             ::poll(nullptr, 0, POLL_SLICE_MS);
