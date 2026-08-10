@@ -95,8 +95,14 @@ public:
     [[nodiscard]] virtual bool Attached() const noexcept = 0;
 
     // Re-attaches the capture to its interface's current kernel object, keeping the same fd so
-    // registrations keyed by it stay valid. False (having logged) if the kernel refuses.
+    // registrations keyed by it stay valid, and re-programs its group memberships on that object.
+    // False (having logged) if the kernel refuses either.
     [[nodiscard]] virtual bool Rebind() noexcept = 0;
+
+    // Whether this socket's multicast memberships are programmed on the interface's current kernel
+    // object. They do not survive a recreation, and an attached capture whose groups are gone
+    // receives nothing — so this is a second, independent reason to rebind.
+    [[nodiscard]] virtual bool GroupsJoined() const noexcept = 0;
 
 protected:
     // Mints a membership for `group` owned by this socket; the join must already have happened.

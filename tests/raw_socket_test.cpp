@@ -16,8 +16,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
+#include <format>
+#include <fstream>
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <optional>
@@ -271,6 +274,37 @@ void ExpectReceived(reflector::UdpSocket& receiver, std::span<const std::byte> e
     EXPECT_EQ(std::vector<std::byte>(buffer.begin(), buffer.begin() + received),
         std::vector<std::byte>(expected.begin(), expected.end()));
 }
+
+#if defined(__linux__)
+// Whether the kernel currently holds an IPv4 membership for `group` on `interface`, read from
+// /proc/net/igmp: the device's line carries its name, and each membership below it carries the
+// group as a little-endian hex word. Asking the kernel rather than the socket is the point --
+// the socket's own bookkeeping would still claim the group after the interface behind it died.
+[[nodiscard]] bool KernelHasMembership(const std::string& interface, const reflector::IpAddress& group) {
+    std::ifstream igmp{"/proc/net/igmp"};
+    EXPECT_TRUE(igmp.is_open()) << "cannot read /proc/net/igmp";
+
+    // The kernel prints the group's network-order 32 bits with %08X, so formatting s_addr the same
+    // way matches on either endianness.
+    in_addr addr{};
+    EXPECT_EQ(inet_pton(AF_INET, std::string{group.ToString()}.c_str(), &addr), 1);
+    const auto wanted = std::format("{:08X}", addr.s_addr);
+
+    bool in_device = false;
+    for (std::string line; std::getline(igmp, line);) {
+        if (!line.starts_with('\t') && !line.starts_with(' ')) {
+            // A device header: "<idx>\t<name>       : ...". Membership lines below it are indented.
+            in_device = line.find(" " + interface + " ") != std::string::npos
+                || line.find("\t" + interface + " ") != std::string::npos;
+            continue;
+        }
+        if (in_device && line.find(wanted) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
 
 } // namespace
 
@@ -1117,6 +1151,33 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, RebindRestoresTheCaptureAfterRecr
     EXPECT_TRUE(socket.Attached());
     EXPECT_EQ(socket.Fd(), fd);  // same fd throughout, so dispatcher registrations survive
 }
+
+#if defined(__linux__)
+// The capture re-attaching is not enough: without the re-join the socket comes back attached and
+// permanently deaf on every group it had.
+TEST_F(RawSocketInterfacePairRequiresRootTest, RebindRestoresGroupMemberships) {
+    Interface iface{pair.InjectInterface()};
+    ASSERT_TRUE(iface.IsValid());
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+
+    const auto group = IpAddress::MdnsGroupV4();
+    auto membership = socket.JoinMulticastGroup(group);
+    ASSERT_TRUE(membership.IsValid());
+    ASSERT_TRUE(KernelHasMembership(pair.InjectInterface(), group)) << "the join did not program";
+
+    ASSERT_TRUE(pair.Recreate());
+    ASSERT_NE(iface.Reidentify(), Interface::IdentityChange::Parked);
+    ASSERT_FALSE(KernelHasMembership(pair.InjectInterface(), group))
+        << "a recreated interface starts with none of the old object's memberships";
+
+    ASSERT_TRUE(socket.Rebind());
+
+    EXPECT_TRUE(socket.GroupsJoined());
+    EXPECT_TRUE(KernelHasMembership(pair.InjectInterface(), group))
+        << "the membership must be re-programmed on the interface's new kernel object";
+}
+#endif  // defined(__linux__)
 
 TEST_F(RawSocketInterfacePairRequiresRootTest, InjectsIpv4BroadcastCapturedOnPeer) {
     Interface inject_iface{pair.InjectInterface()};
