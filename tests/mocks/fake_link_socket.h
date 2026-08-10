@@ -81,12 +81,15 @@ struct FakeLinkSocket : LinkSocket {
 
     [[nodiscard]] bool Attached() const noexcept override { return attached; }
 
+    [[nodiscard]] bool GroupsJoined() const noexcept override { return groups_joined; }
+
     [[nodiscard]] bool Rebind() noexcept override {
         ++rebinds;
         if (fail_rebind) {
             return false;
         }
         attached = true;
+        groups_joined = true;
         return true;
     }
 
@@ -98,6 +101,8 @@ struct FakeLinkSocket : LinkSocket {
     // that went away under the socket; `rebinds` counts recoveries so a test can assert the
     // capture was actually re-attached rather than merely re-resolved.
     bool attached = true;
+    // Clear it to model a capture that is still attached but whose memberships are gone.
+    bool groups_joined = true;
     // What Receive() reports; ReceiveError::Failed models a read the kernel refused.
     ReceiveError receive_error = ReceiveError::WouldBlock;
     bool fail_rebind = false;

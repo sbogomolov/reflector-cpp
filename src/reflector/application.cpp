@@ -180,8 +180,8 @@ bool Application::ReconcileInterfaces(std::span<const unsigned> indexes, bool re
         // proves its interface has not gone anywhere. A rename is the exception — it keeps both
         // the index and the capture, so only the name lookup sees it — but it also announces
         // itself, which is why a requested interface resolves regardless.
-        const bool attached = socket.Attached();
-        if (attached && !refresh_requested) {
+        const bool capturing = socket.Attached() && socket.GroupsJoined();
+        if (capturing && !refresh_requested) {
             continue;
         }
 
@@ -201,7 +201,7 @@ bool Application::ReconcileInterfaces(std::span<const unsigned> indexes, bool re
         if (!iface->IsValid()) {
             continue;  // parked, so there is nothing to bind to until it comes back
         }
-        if ((!attached || change == Interface::IdentityChange::Repointed) && !socket.Rebind()) {
+        if ((!capturing || change == Interface::IdentityChange::Repointed) && !socket.Rebind()) {
             outstanding = true;  // Rebind logs its own failure
         }
     }

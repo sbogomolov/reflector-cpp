@@ -65,6 +65,7 @@ public:
 
     [[nodiscard]] bool Attached() const noexcept override;
     [[nodiscard]] bool Rebind() noexcept override;
+    [[nodiscard]] bool GroupsJoined() const noexcept override { return groups_joined_; }
 
     [[nodiscard]] bool LinkCarriesMacs() const noexcept override {
 #if defined(__linux__)
@@ -123,6 +124,13 @@ private:
     // so a recreated interface re-attaches through exactly the path that first attached it.
     [[nodiscard]] bool AttachToInterface() noexcept;
 
+    // Re-programs the interface's current kernel object with every group this socket holds a
+    // membership for, on a freshly opened join fd per family.
+    [[nodiscard]] bool RejoinGroups() noexcept;
+    // The kernel join of `group` on `join_fd` at the interface's current index; shared by the
+    // first join and the re-join after a rebind.
+    [[nodiscard]] bool JoinInKernel(int join_fd, const IpAddress& group) noexcept;
+
     void Close() noexcept;
 
     // Drops one membership of `group`: leaves the group in the kernel when its last membership
@@ -155,6 +163,8 @@ private:
     // capture/inject socket).
     AddressFamilyPair<UniqueFd> join_fds_;
     AddressFamilyPair<std::unordered_map<IpAddress, size_t>> group_memberships_;
+    // False once a re-join failed: the capture is attached but deaf, which nothing else reports.
+    bool groups_joined_ = true;
 
     // Linux: holds one frame per recv() into receive_buffer_.
     // macOS: holds a batch of bpf_hdr-prefixed frames per read(); receive_buffer_filled_

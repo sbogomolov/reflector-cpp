@@ -365,7 +365,9 @@ bool RawSocket::Rebind() noexcept {
     receive_buffer_offset_ = 0;
 #endif
     logger_.Debug("Re-bound capture to interface index {}", interface_->Index());
-    return true;
+    // Nothing else re-joins them: a family that keeps its addresses across a recreation is no
+    // transition, so the reflector's own bring-up never runs.
+    return RejoinGroups();
 }
 
 RawSocket::RawSocket(TestingTag, const Interface& interface, int owned_fd,
@@ -475,6 +477,18 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
         }
     }
 
+    if (!JoinInKernel(join_fd.Get(), group)) {
+        if (opened_now) {
+            join_fd.Reset();  // the fd we just opened holds no membership; drop it
+        }
+        return {};
+    }
+
+    memberships.emplace(group, 1);
+    return MakeMembership(group);
+}
+
+bool RawSocket::JoinInKernel(int join_fd, const IpAddress& group) noexcept {
     // MCAST_JOIN_GROUP (RFC 3678) is protocol-independent and selects the interface strictly by
     // index, so one path covers both families with no IPv4 by-address fallback to a wrong
     // (default) interface. The group goes in as a sockaddr; ToSockaddr also sets the BSD sockaddr
@@ -483,18 +497,55 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     request.gr_interface = interface_->Index();
     group.ToSockaddr(request.gr_group, /*port=*/0);
 
-    const int level = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
-    if (setsockopt(join_fd.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
-        logger_.Error("Cannot join multicast group {}: {}", group, Error::FromErrno());
-        if (opened_now) {
-            join_fd.Reset();  // the fd we just opened holds no membership; drop it
-        }
-        return {};
+    const int level = group.IsV6() ? IPPROTO_IPV6 : IPPROTO_IP;
+    if (setsockopt(join_fd, level, MCAST_JOIN_GROUP, &request, sizeof(request)) == 0) {
+        logger_.Debug("Joined multicast group {} (interface index {})", group, interface_->Index());
+        return true;
     }
 
-    memberships.emplace(group, 1);
-    logger_.Debug("Joined multicast group {} (interface index {})", group, interface_->Index());
-    return MakeMembership(group);
+    const int error = errno;
+    if (error == EADDRINUSE) {
+        return true;  // an any-source re-join of a membership already held: the end state we want
+    }
+    if (error == EADDRNOTAVAIL) {
+        // No address of this group's family yet: the family's teardown drops the membership, or
+        // the repair retry replays the join once one arrives. A wait, not a failure.
+        logger_.Debug("Join of multicast group {} deferred: {}", group, Error::FromErrno(error));
+        return false;
+    }
+    logger_.Error("Cannot join multicast group {}: {}", group, Error::FromErrno(error));
+    return false;
+}
+
+bool RawSocket::RejoinGroups() noexcept {
+    groups_joined_ = true;
+    for (const auto family : {IpAddress::Family::V4, IpAddress::Family::V6}) {
+        const auto& memberships = group_memberships_.Get(family);
+        if (memberships.empty()) {
+            continue;
+        }
+        // A fresh fd rather than a re-join on the old one: where a recreated interface is handed
+        // back the number it had, the kernel still has the old fd down for that (group, index) and
+        // refuses the join as a duplicate — and a membership it keeps for a dead index still counts
+        // against the socket's join cap (Linux igmp_max_memberships, 20 by default, and not
+        // raisable on a locked-down router), so kept sockets would exhaust it after a handful of
+        // recreations. Closed before the reopen rather than after, so the descriptor it frees is
+        // the one the reopen takes: at the process fd limit that is the difference between
+        // recovering and staying deaf. Refcounts are untouched, so the memberships already handed
+        // to reflectors stay valid.
+        auto& join_fd = join_fds_.Get(family);
+        join_fd.Reset();
+        join_fd.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
+        if (!join_fd.IsValid()) {
+            logger_.Error("Cannot reopen the multicast-join socket: {}", Error::FromErrno());
+            groups_joined_ = false;
+            continue;
+        }
+        for (const auto& [group, count] : memberships) {
+            groups_joined_ = JoinInKernel(join_fd.Get(), group) && groups_joined_;
+        }
+    }
+    return groups_joined_;
 }
 
 bool RawSocket::Unregister(const IpAddress& group) noexcept {
@@ -511,10 +562,9 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
 
     auto& join_fd = join_fds_.Get(family);
     if (!join_fd.IsValid()) {
-        // Invariant: a live membership keeps its family's join fd open (it's closed only here, once
-        // the family's last group leaves). An invalid fd with a membership still outstanding is a
-        // bug in this bookkeeping, not a runtime condition.
-        logger_.Error("Cannot leave multicast group {}: its join fd is already closed", group);
+        // The family's last group already left, or a rebind closed the socket and could not reopen
+        // it. Closing is what drops the kernel membership, so the group is left either way.
+        logger_.Debug("Multicast group {} was already left with its join socket", group);
         return true;
     }
 

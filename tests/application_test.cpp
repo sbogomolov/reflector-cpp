@@ -597,6 +597,21 @@ TEST_F(ApplicationTest, TheBackstopRebindsADetachedCapture) {
     EXPECT_EQ(Socket("dst")->rebinds, 0u);
 }
 
+// An attached capture can still be deaf, and this is the only thing that reports it.
+TEST_F(ApplicationTest, RebindsACaptureWhoseGroupsAreGone) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Socket("src")->groups_joined = false;  // attached stays true
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_EQ(Socket("src")->rebinds, 1u);
+    EXPECT_TRUE(Socket("src")->groups_joined);
+    EXPECT_EQ(Socket("dst")->rebinds, 0u);
+}
+
 // A rebind that failed has no announcement coming, so the pass has to schedule its own retry —
 // and stop it again once the repair lands, so a healthy daemon runs only the backstop.
 TEST_F(ApplicationTest, RetriesUntilAFailedRepairCompletes) {
