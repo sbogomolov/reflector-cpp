@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <arpa/inet.h>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <format>
 #include <fstream>
@@ -1151,6 +1152,32 @@ TEST_F(RawSocketInterfacePairRequiresRootTest, RebindRestoresTheCaptureAfterRecr
     EXPECT_TRUE(socket.Attached());
     EXPECT_EQ(socket.Fd(), fd);  // same fd throughout, so dispatcher registrations survive
 }
+
+#if defined(__linux__)
+// A kept join fd would exhaust the socket's membership cap: a destroyed interface's memberships are
+// not scrubbed from a surviving socket, so every recreation's join adds another. Measured here at
+// the default igmp_max_memberships of 20 -- the 21st join on a kept fd fails with ENOBUFS -- which
+// is why the rebind reopens rather than re-joining in place.
+TEST_F(RawSocketInterfacePairRequiresRootTest, SurvivesRepeatedRecreationsWithoutExhaustingTheJoinCap) {
+    Interface iface{pair.InjectInterface()};
+    ASSERT_TRUE(iface.IsValid());
+    RawSocket socket{iface};
+    ASSERT_TRUE(socket.IsValid());
+    const auto group = IpAddress::MdnsGroupV4();
+    auto membership = socket.JoinMulticastGroup(group);
+    ASSERT_TRUE(membership.IsValid());
+
+    // Comfortably past the cap, so a rebind holding its join fd runs out partway through.
+    for (int i = 0; i < 25; ++i) {
+        ASSERT_TRUE(pair.Recreate()) << "recreation " << i;
+        ASSERT_NE(iface.Reidentify(), Interface::IdentityChange::Parked) << "recreation " << i;
+        ASSERT_TRUE(socket.Rebind()) << "recreation " << i;
+        ASSERT_TRUE(socket.GroupsJoined()) << "recreation " << i;
+    }
+
+    EXPECT_TRUE(KernelHasMembership(pair.InjectInterface(), group));
+}
+#endif
 
 #if defined(__linux__)
 // The capture re-attaching is not enough: without the re-join the socket comes back attached and
