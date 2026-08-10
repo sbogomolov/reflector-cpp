@@ -61,6 +61,7 @@ private:
         IpEndpoint searcher;
         IpAddress group;
         MacAddress searcher_mac;
+        IpAddress reserved_address;
         std::chrono::steady_clock::time_point expiry;
         PortReservation reservation;
         PacketDispatcher::Registration registration;
@@ -103,6 +104,10 @@ private:
     // (not yet in the table) or nullopt (after logging) if the cap is hit or a step fails.
     [[nodiscard]] std::optional<Session> MakeSession(const Packet& packet,
         std::chrono::steady_clock::time_point expiry);
+    // Drops sessions the target leg can no longer answer on: all of them when its kernel object
+    // was replaced, otherwise those whose reserved address it no longer has.
+    void EvictStaleSessions() noexcept;
+
     // The eviction-timer callback (its signature is the timer's): drops sessions past their expiry.
     // `now` is the reactor's fire-cycle time, which is also the test seam — FakeDispatcher::FireTimers
     // passes it, so expiry is driven without reading the real clock.
@@ -110,6 +115,7 @@ private:
 
     LinkSocket* source_socket_;
     LinkSocket* target_socket_;
+    InterfaceRef target_if_;
     PacketDispatcher* packet_dispatcher_;  // retained so OnSourcePacket can make response registrations
     std::optional<MacAddress> config_mac_;  // device-scoping filter, reused on the response registration
     std::optional<DialProxy> dial_proxy_;  // the DIAL app proxy, engaged only when config.dial (IPv4-only)

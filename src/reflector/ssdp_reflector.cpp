@@ -33,6 +33,7 @@ SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
               target_socket.GetInterface(), FamilyCapability::PolicyOf(config)}
         , source_socket_{&source_socket}
         , target_socket_{&target_socket}
+        , target_if_{target_socket.GetInterface()}
         , packet_dispatcher_{&packet_dispatcher}
         , config_mac_{config.mac}
         , eviction_timer_{packet_dispatcher.UnderlyingDispatcher()} {
@@ -94,6 +95,7 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
 
 void SsdpReflector::OnInterfaceChanged() noexcept {
     DynamicFamilyReflector::OnInterfaceChanged();  // re-gate families: join/leave groups + (un)register captures
+    EvictStaleSessions();
     if (dial_proxy_) {
         // Drops listeners bound to a now-changed source_if address; the next reflected DIAL advertisement
         // re-mints them lazily (RewriteDialLocation -> EnsureDiscoveryListener), against the fresh address.
@@ -238,6 +240,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         .searcher = packet.header.source,
         .group = packet.header.dest.addr,
         .searcher_mac = packet.header.source_mac,
+        .reserved_address = *our_address,
         .expiry = expiry,
         .reservation = std::move(*reservation),
         .registration = std::move(registration),
@@ -356,6 +359,30 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
     logger_.Debug("DIAL: rewrote device {} LOCATION to reflector listener {}",
         location->endpoint, *reflector_authority);
     return {.action = DialRewrite::Action::ForwardRewritten, .payload = rewrite_scratch_};
+}
+
+void SsdpReflector::EvictStaleSessions() noexcept {
+    // Wholesale, since every session sits on the same target leg.
+    size_t removed = sessions_.size();
+    if (target_if_.TakeReplaced()) {
+        sessions_.clear();
+    } else {
+        // The target kept its identity but may have been re-addressed under the reservations.
+        // Responders reply to the address the search went out from, and the reservation is bound
+        // to it, so a session whose address is gone can never be answered.
+        removed = std::erase_if(sessions_, [this](const Session& session) {
+            const auto current = target_if_->SourceAddressFor(session.group);
+            return !current || *current != session.reserved_address;
+        });
+    }
+
+    if (removed == 0) {
+        return;
+    }
+    logger_.Info("Dropped {} search session(s) whose reserved address on the target is gone", removed);
+    if (sessions_.empty()) {
+        eviction_timer_.Stop();  // nothing left to sweep
+    }
 }
 
 void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noexcept {
