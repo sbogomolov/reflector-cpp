@@ -722,8 +722,9 @@ TEST(RawSocketBatchTest, ReceiveWalksMultiFrameBpfBatch) {
     EXPECT_EQ(received, frame_count);
     EXPECT_TRUE(observed_buffered)
         << "Expected the buffer walker to leave bytes between frames — got single-frame reads";
-    EXPECT_FALSE(capture.socket.Receive().has_value())
-        << "Expected no more frames after draining the batch";
+    const auto drained = capture.socket.Receive();
+    ASSERT_FALSE(drained.has_value()) << "Expected no more frames after draining the batch";
+    EXPECT_EQ(drained.error(), LinkSocket::ReceiveError::WouldBlock);
 }
 
 TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
@@ -758,7 +759,9 @@ TEST(RawSocketBatchTest, ReceiveAdvancesPastUnparseableFrameInBatch) {
     EXPECT_EQ(first->header.source.port, 11111);
 
     CaptureStdout([&] {
-        EXPECT_FALSE(capture.socket.Receive().has_value());
+        const auto skipped = capture.socket.Receive();
+        ASSERT_FALSE(skipped.has_value());
+        EXPECT_EQ(skipped.error(), LinkSocket::ReceiveError::Dropped);
     });
 
     const auto last = capture.socket.Receive();
@@ -781,7 +784,9 @@ TEST(RawSocketBatchTest, ReceiveDropsBpfTruncatedFrame) {
     ASSERT_TRUE(capture.WriteTruncatedFrame(f.bytes, 70000));
 
     const std::string output = CaptureStdout([&] {
-        EXPECT_FALSE(capture.socket.Receive().has_value());
+        const auto dropped = capture.socket.Receive();
+        ASSERT_FALSE(dropped.has_value());
+        EXPECT_EQ(dropped.error(), LinkSocket::ReceiveError::Dropped);
     });
     EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
@@ -795,7 +800,9 @@ TEST(RawSocketReceiveTest, DropsFullyCapturedFrameLargerThanTheFrameCeiling) {
     ASSERT_TRUE(capture.WriteFrame(frame));
 
     const std::string output = CaptureStdout([&] {
-        EXPECT_FALSE(capture.socket.Receive().has_value());
+        const auto dropped = capture.socket.Receive();
+        ASSERT_FALSE(dropped.has_value());
+        EXPECT_EQ(dropped.error(), LinkSocket::ReceiveError::Dropped);
     });
     EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
@@ -810,7 +817,9 @@ TEST(RawSocketReceiveTest, DropsFrameLargerThanReceiveBuffer) {
     ASSERT_TRUE(capture.WriteFrame(frame));
 
     const std::string output = CaptureStdout([&] {
-        EXPECT_FALSE(capture.socket.Receive().has_value());
+        const auto dropped = capture.socket.Receive();
+        ASSERT_FALSE(dropped.has_value());
+        EXPECT_EQ(dropped.error(), LinkSocket::ReceiveError::Dropped);
     });
     EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
@@ -844,7 +853,7 @@ protected:
             if (packet) {
                 if (packet->header.dest.port == listener_port
                         && packet->header.dest.addr == IpAddress::LoopbackV4()) {
-                    return packet;
+                    return *packet;
                 }
                 continue;
             }
@@ -945,7 +954,7 @@ TEST_F(RawSocketRequiresRootTest, CapturesInjectedDatagramOnLoopback) {
         auto packet = socket->Receive();
         if (packet && packet->header.source.port == INJECT_SRC_PORT
                 && packet->header.dest.addr == IpAddress::BroadcastV4()) {
-            captured = std::move(packet);
+            captured = std::move(*packet);
             break;
         }
         if (!packet) {
@@ -1016,7 +1025,7 @@ protected:
             auto frame = peer.Receive();
             if (frame && frame->header.source.port == INJECT_SRC_PORT
                     && frame->header.dest.addr == dest_ip) {
-                return frame;
+                return *frame;
             }
             if (!frame) {
                 pollfd pfd{.fd = peer.Fd(), .events = POLLIN, .revents = 0};

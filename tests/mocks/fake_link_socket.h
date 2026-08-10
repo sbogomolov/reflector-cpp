@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -42,7 +43,9 @@ struct FakeLinkSocket : LinkSocket {
 
     [[nodiscard]] bool IsValid() const noexcept override { return valid; }
     [[nodiscard]] int Fd() const noexcept override { return fd; }
-    [[nodiscard]] std::optional<Packet> Receive() noexcept override { return std::nullopt; }
+    [[nodiscard]] std::expected<Packet, ReceiveError> Receive() noexcept override {
+        return std::unexpected(receive_error);
+    }
 #if !defined(__linux__)
     [[nodiscard]] bool HasBufferedData() const noexcept override { return false; }
 #endif
@@ -95,6 +98,8 @@ struct FakeLinkSocket : LinkSocket {
     // that went away under the socket; `rebinds` counts recoveries so a test can assert the
     // capture was actually re-attached rather than merely re-resolved.
     bool attached = true;
+    // What Receive() reports; ReceiveError::Failed models a read the kernel refused.
+    ReceiveError receive_error = ReceiveError::WouldBlock;
     bool fail_rebind = false;
     size_t rebinds = 0;
     int fd = -1;

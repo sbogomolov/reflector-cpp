@@ -29,6 +29,15 @@ public:
 
     [[nodiscard]] Dispatcher& UnderlyingDispatcher() noexcept override { return *dispatcher_; }
 
+    // Invoked after a drain whose capture reported a read failure — the kernel saying the capture
+    // is broken, which the owner repairs. Carries no argument: the owner has to re-examine every
+    // interface anyway, and one failing capture does not tell it which others also died.
+    using CaptureFailureCallback = Delegate<void()>;
+
+    void OnCaptureFailure(const CaptureFailureCallback& callback) noexcept {
+        on_capture_failure_ = callback;
+    }
+
 private:
     friend class DefaultPacketDispatcherTest;
 
@@ -93,7 +102,9 @@ private:
 
     bool Unregister(RegistrationId id) noexcept override;
     void OnReadable(int fd) noexcept;
-    void DrainReadableFd(LinkSocket& socket) noexcept;
+    // False when the capture read failed — the kernel reporting the capture rather than a frame,
+    // which is the owner's cue to re-examine the interface; the drain draws no conclusion itself.
+    [[nodiscard]] bool DrainReadableFd(LinkSocket& socket) noexcept;
     void DispatchPacket(const LinkSocket& socket, const Packet& packet) const;
     // Erases the registrations Unregister marked disabled (their dtors release the capture-source count),
     // then drops every capture source left at 0. Runs after DrainReadableFd's drain -- never mid-walk,
@@ -101,6 +112,8 @@ private:
     void Sweep() noexcept;
 
     Dispatcher* dispatcher_;
+    // Unbound unless the owner asked to hear about broken captures; OnReadable checks before use.
+    CaptureFailureCallback on_capture_failure_;
     // capture_sources_ is declared before registrations_ so registrations_ is destroyed FIRST: each
     // entry's dtor releases its CaptureSource's count, so the sources must still be alive.
     std::unordered_map<int, CaptureSource> capture_sources_;
