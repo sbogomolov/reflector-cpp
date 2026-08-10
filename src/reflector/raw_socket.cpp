@@ -566,9 +566,11 @@ void RawSocket::Close() noexcept {
 #endif
 }
 
-std::optional<Packet> RawSocket::Receive() noexcept {
+std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     if (!fd_) {
-        return std::nullopt;
+        // Defensive: an invalid socket is never watched. Reporting Failed here would ask for a
+        // repair that re-attaching cannot deliver.
+        return std::unexpected(ReceiveError::WouldBlock);
     }
 
 #if defined(__linux__)
@@ -577,30 +579,36 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     const ssize_t bytes = recv(fd_.Get(), receive_buffer_.data(), receive_buffer_.size(), MSG_TRUNC);
     if (bytes < 0) {
         if (IsWouldBlockErrno(errno)) {
-            return std::nullopt;
+            return std::unexpected(ReceiveError::WouldBlock);
         }
+        // Reported for any non-would-block errno rather than a guessed list: this only asks the
+        // owner to re-examine the interface, and Attached() is what decides.
         logger_.Error("Cannot receive frame: {}", Error::FromErrno());
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Failed);
     }
     if (static_cast<size_t>(bytes) > receive_buffer_.size()) {
         logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             bytes, receive_buffer_.size());
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Dropped);
     }
-    return ParseFrame({receive_buffer_.data(), static_cast<size_t>(bytes)});
+    auto packet = ParseFrame({receive_buffer_.data(), static_cast<size_t>(bytes)});
+    if (!packet) {
+        return std::unexpected(ReceiveError::Dropped);  // ParseFrame logged the reason
+    }
+    return *packet;
 
 #else
     if (receive_buffer_offset_ >= receive_buffer_filled_) {
         const ssize_t bytes = read(fd_.Get(), receive_buffer_.data(), receive_buffer_.size());
         if (bytes < 0) {
             if (IsWouldBlockErrno(errno)) {
-                return std::nullopt;
+                return std::unexpected(ReceiveError::WouldBlock);
             }
             logger_.Error("Cannot receive frame: {}", Error::FromErrno());
-            return std::nullopt;
+            return std::unexpected(ReceiveError::Failed);
         }
         if (bytes == 0) {
-            return std::nullopt;
+            return std::unexpected(ReceiveError::WouldBlock);
         }
         receive_buffer_filled_ = static_cast<size_t>(bytes);
         receive_buffer_offset_ = 0;
@@ -610,7 +618,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
         logger_.Error("BPF batch truncated: {} bytes remaining, need at least {} for header",
             receive_buffer_filled_ - receive_buffer_offset_, sizeof(bpf_hdr));
         receive_buffer_offset_ = receive_buffer_filled_;
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Dropped);
     }
     bpf_hdr header{};
     std::memcpy(&header, receive_buffer_.data() + receive_buffer_offset_, sizeof(header));
@@ -621,7 +629,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
         logger_.Error("BPF frame extends past batch end (frame_end {} > filled {})",
             frame_end, receive_buffer_filled_);
         receive_buffer_offset_ = receive_buffer_filled_;
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Dropped);
     }
     receive_buffer_offset_ = BPF_WORDALIGN(frame_offset + header.bh_caplen);
 
@@ -630,7 +638,7 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     if (header.bh_datalen > header.bh_caplen) {
         logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             header.bh_datalen, receive_buffer_.size());
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Dropped);
     }
 
     // Fully captured, but bigger than anything the send path can re-emit — the BIOCGBLEN-sized
@@ -639,10 +647,14 @@ std::optional<Packet> RawSocket::Receive() noexcept {
     if (header.bh_caplen > MAX_FRAME_SIZE) {
         logger_.Warning("Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
             header.bh_caplen, MAX_FRAME_SIZE);
-        return std::nullopt;
+        return std::unexpected(ReceiveError::Dropped);
     }
 
-    return ParseFrame({receive_buffer_.data() + frame_offset, header.bh_caplen});
+    auto packet = ParseFrame({receive_buffer_.data() + frame_offset, header.bh_caplen});
+    if (!packet) {
+        return std::unexpected(ReceiveError::Dropped);  // ParseFrame logged the reason
+    }
+    return *packet;
 #endif
 }
 

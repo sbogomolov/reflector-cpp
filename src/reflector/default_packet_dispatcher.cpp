@@ -86,15 +86,20 @@ void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
         GetLogger().Warning("Readable callback for unknown capture fd {}", fd);
         return;
     }
-    DrainReadableFd(*it->second.socket);
+    // Reported after the drain, not from inside it: the sweep may have dropped this capture
+    // source, and the owner's repair is not work to do underneath a drain.
+    if (!DrainReadableFd(*it->second.socket) && on_capture_failure_.IsValid()) {
+        on_capture_failure_();
+    }
 }
 
-void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
+bool DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
     // Bracket the whole drain: a callback's Unregister only marks its entry disabled (DispatchPacket
     // skips it from here on), and the single sweep below erases the marked entries plus any now-orphaned
     // capture source. A socket whose last registration is dropped mid-drain just dispatches to nothing
     // for the rest of the drain, then loses its capture source in the sweep.
     dispatching_ = true;
+    bool failed = false;
 
 #if defined(__linux__)
     for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
@@ -103,11 +108,15 @@ void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
 #endif
         const auto packet = socket.Receive();
         if (!packet) {
+            if (packet.error() == LinkSocket::ReceiveError::Failed) {
+                failed = true;  // the kernel refusing the capture, not just this frame
+            }
 #if !defined(__linux__)
             if (socket.HasBufferedData()) {
                 // Drain all userland-buffered frames. kqueue/epoll only fire on kernel-side
-                // activity, so if we leave frames buffered they'll stall. Only macOS BPF
-                // buffers in userland; HasBufferedData is not defined on Linux.
+                // activity, so if we leave frames buffered they'll stall. Only macOS BPF buffers
+                // in userland; HasBufferedData is not defined on Linux. Deliberately not gated on
+                // `failed`: frames captured before a read failed are still worth dispatching.
                 continue;
             }
 #endif
@@ -119,6 +128,7 @@ void DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
 
     dispatching_ = false;
     Sweep();
+    return !failed;
 }
 
 void DefaultPacketDispatcher::DispatchPacket(const LinkSocket& socket, const Packet& packet) const {

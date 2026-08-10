@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <expected>
 #include <optional>
 #include <span>
 #include <unordered_map>
@@ -98,7 +99,7 @@ public:
     // Returns nullopt when no datagram is currently available (EAGAIN), or when the next
     // frame is unparseable / fragmented — caller treats both the same way and tries again
     // on the next read event.
-    [[nodiscard]] std::optional<Packet> Receive() noexcept override;
+    [[nodiscard]] std::expected<Packet, ReceiveError> Receive() noexcept override;
 
 #if !defined(__linux__)
     // True if there are unparsed bytes in the socket's userland buffer. macOS BPF batches

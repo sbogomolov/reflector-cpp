@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <span>
 
@@ -33,10 +34,17 @@ public:
     [[nodiscard]] virtual bool IsValid() const noexcept = 0;
     [[nodiscard]] virtual int Fd() const noexcept = 0;
 
-    // The next parsed datagram, or nullopt when none is currently available (EAGAIN) or the
-    // next frame is unparseable. The payload may span the socket's buffer and stays valid only
+    // Why Receive() yielded no packet. Only Failed says anything about the interface; the others
+    // are ordinary outcomes of draining a queue.
+    enum class ReceiveError : uint8_t {
+        WouldBlock,  // nothing queued right now
+        Dropped,     // a frame arrived but is not one we forward: unparseable, or too big to hold
+        Failed,      // the read itself failed; the socket has already logged the errno
+    };
+
+    // The next parsed datagram. The payload may span the socket's buffer and stays valid only
     // until the next Receive() on the same socket.
-    [[nodiscard]] virtual std::optional<Packet> Receive() noexcept = 0;
+    [[nodiscard]] virtual std::expected<Packet, ReceiveError> Receive() noexcept = 0;
 
 #if !defined(__linux__)
     // macOS BPF batches several frames into one read(); this lets the dispatcher keep draining the
