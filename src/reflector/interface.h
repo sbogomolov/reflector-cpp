@@ -6,9 +6,11 @@
 #include "mac_address.h"
 #include "util/no_move.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace reflector {
 
@@ -66,6 +68,17 @@ public:
     // a new number. Virtual so tests substitute a no-syscall fake.
     virtual IdentityChange Reidentify() noexcept;
 
+    // Which kernel object this interface's name currently denotes. The index cannot stand in: a
+    // recreated interface may be handed back the number it had. Anything minted against the old
+    // object is dead however the replacement resolves, so a holder records this and compares
+    // (see InterfaceRef).
+    [[nodiscard]] uint32_t Generation() const noexcept { return generation_; }
+
+    // Records that this name now denotes a different kernel object. Application is the only
+    // correct caller: the evidence is split between Reidentify's verdict and the capture's
+    // attachment probe, and neither sees it alone on every platform.
+    void MarkReplaced() noexcept { ++generation_; }
+
 protected:
     // Test seam: fixed identity, no kernel lookups (see FakeInterface).
     Interface(std::string_view name, unsigned index, const InterfaceAddresses& addresses) noexcept;
@@ -83,6 +96,34 @@ private:
 
     Logger logger_;
     std::string name_;
+    uint32_t generation_ = 0;
+};
+
+// A borrowed Interface plus the generation the holder last saw it at. Application re-points an
+// Interface rather than replacing it, so a raw pointer stays valid across a recreation and reports
+// nothing about it; the generation is what moves. operator-> leaves ordinary reads unchanged.
+class InterfaceRef {
+public:
+    explicit InterfaceRef(const Interface& interface) noexcept
+            : interface_{&interface}, generation_{interface.Generation()} {}
+
+    const Interface* operator->() const noexcept { return interface_; }
+    const Interface& operator*() const noexcept { return *interface_; }
+    // For the few APIs that take a `const Interface*`; keeping it explicit means storing the bare
+    // pointer somewhere else, and losing the tracking with it, has to be deliberate.
+    [[nodiscard]] const Interface* Get() const noexcept { return interface_; }
+
+    // Whether the kernel object was replaced since this last reported it, consuming the transition
+    // so the next call says false. Check and acknowledge in one step: a separate acknowledgement
+    // would leave a holder that forgot it evicting on every notification forever.
+    [[nodiscard]] bool TakeReplaced() noexcept {
+        const uint32_t current = interface_->Generation();
+        return std::exchange(generation_, current) != current;
+    }
+
+private:
+    const Interface* interface_;
+    uint32_t generation_;
 };
 
 } // namespace reflector

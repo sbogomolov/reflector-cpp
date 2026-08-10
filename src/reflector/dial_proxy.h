@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dispatcher.h"
+#include "interface.h"
 #include "http_message.h"
 #include "ip_endpoint.h"
 #include "logger.h"
@@ -18,7 +19,6 @@
 
 namespace reflector {
 
-class Interface;
 
 // The DIAL (DIscovery And Launch) application proxy. A DIAL-capable device (a smart TV) restricts
 // its description/REST endpoints to its own subnet; this proxy mints a per-device TCP listener on the
@@ -214,8 +214,10 @@ private:
 
     Logger logger_;  // "DialProxy:{name}:{src}->{tgt}" — passed in by SsdpReflector
     Dispatcher* dispatcher_;
-    const Interface* source_if_;
-    const Interface* target_if_;
+    // Refs, not pointers: the listeners bind an address on one leg and every upstream is
+    // egress-pinned to the other, so both need to notice a recreation.
+    InterfaceRef source_if_;
+    InterfaceRef target_if_;
 
     // Keyed by the device endpoint via std::hash<IpEndpoint>. Node-stable so a FindEndpointByListenerFd
     // result stays valid across an unrelated mint, and so OnAccept can re-enter EnsureRestListener (which

@@ -686,6 +686,38 @@ TEST_F(ApplicationTest, ACaptureReadFailureLeavesAnAttachedCaptureAlone) {
     EXPECT_EQ(dispatcher_->TimerCount(), 1u);  // nothing outstanding, so the retry stands down
 }
 
+// A detached capture means the kernel object itself went.
+TEST_F(ApplicationTest, ReportsAReplacementWhenTheCaptureDetaches) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+    const auto before = Iface("src")->Generation();
+    const auto dst_before = Iface("dst")->Generation();
+
+    Socket("src")->attached = false;
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_NE(Iface("src")->Generation(), before);
+    EXPECT_EQ(Iface("dst")->Generation(), dst_before);
+}
+
+// Memberships gone from a still-attached capture is a failed re-join on a live interface. It needs
+// repairing, but evicting a reflector's state over it would throw away perfectly good listeners.
+TEST_F(ApplicationTest, DoesNotReportAReplacementWhenOnlyTheGroupsAreGone) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+    const auto before = Iface("src")->Generation();
+
+    Socket("src")->groups_joined = false;  // attached stays true
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_EQ(Iface("src")->Generation(), before);
+    EXPECT_EQ(Socket("src")->rebinds, 1u);  // still repaired, just not counted as a replacement
+}
+
 TEST_F(ApplicationTest, FailsConfigureWhenTheInterfaceIsInvalid) {
     ConfigureSocket("src", {.interface_valid = false});
     auto app = MakeApp();

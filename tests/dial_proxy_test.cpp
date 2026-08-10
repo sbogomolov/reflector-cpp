@@ -471,6 +471,39 @@ TEST_F(DialProxyTest, OnInterfaceChangedDropsListenersBoundToAChangedSourceAddre
     EXPECT_EQ(dispatcher.TimerCount(), 0u);       // nothing left to sweep -> the reaper stopped
 }
 
+// A source_if recreated with the SAME address evicts nothing by the address predicate.
+TEST_F(DialProxyTest, OnInterfaceReplacedDropsEverythingWhenTheSourceIsReplaced) {
+    auto proxy = MakeProxy();
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(2)).has_value());
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(3)).has_value());
+    const int fd = ListenerFd(proxy, Device(2));
+    ASSERT_TRUE(dispatcher.IsWatching(fd));
+
+    source_if.MarkReplaced();  // the address is untouched; the kernel object is not
+    proxy.OnInterfaceChanged();
+
+    EXPECT_EQ(EndpointCount(proxy), 0u);
+    EXPECT_EQ(ConnectionCount(proxy), 0u);
+    EXPECT_FALSE(dispatcher.IsWatching(fd));
+    EXPECT_EQ(dispatcher.TimerCount(), 0u);  // nothing left to sweep -> the reaper stopped
+}
+
+// A listener never pins the target, so a target replacement must not cost the client its
+// listener. The next connect pins the fresh target itself, since Connect reads it live.
+TEST_F(DialProxyTest, OnInterfaceReplacedKeepsListenersWhenTheTargetIsReplaced) {
+    auto proxy = MakeProxy();
+    ASSERT_TRUE(proxy.EnsureDiscoveryListener(Device(2)).has_value());
+    const int fd = ListenerFd(proxy, Device(2));
+    ASSERT_TRUE(dispatcher.IsWatching(fd));
+
+    target_if.MarkReplaced();
+    proxy.OnInterfaceChanged();
+
+    EXPECT_EQ(EndpointCount(proxy), 1u);
+    EXPECT_TRUE(dispatcher.IsWatching(fd));
+    EXPECT_EQ(ConnectionCount(proxy), 0u);
+}
+
 // An OnInterfaceChanged that does not actually change source_if's V4 source leaves the listeners untouched —
 // no needless re-mint churn, no dropped in-flight discovery.
 TEST_F(DialProxyTest, OnInterfaceChangedKeepsListenersWhenSourceAddressUnchanged) {

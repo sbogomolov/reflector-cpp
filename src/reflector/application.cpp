@@ -180,7 +180,8 @@ bool Application::ReconcileInterfaces(std::span<const unsigned> indexes, bool re
         // proves its interface has not gone anywhere. A rename is the exception — it keeps both
         // the index and the capture, so only the name lookup sees it — but it also announces
         // itself, which is why a requested interface resolves regardless.
-        const bool capturing = socket.Attached() && socket.GroupsJoined();
+        const bool attached = socket.Attached();
+        const bool capturing = attached && socket.GroupsJoined();
         if (capturing && !refresh_requested) {
             continue;
         }
@@ -192,6 +193,14 @@ bool Application::ReconcileInterfaces(std::span<const unsigned> indexes, bool re
         }
         if (change == Interface::IdentityChange::Unchanged && refresh_requested) {
             iface->Refresh();  // Reidentify already refreshed the other cases
+        }
+
+        // Only a detached capture or a moved index means the kernel object itself was replaced;
+        // memberships gone from an attached capture is a failed re-join on a live one, and
+        // evicting state over that would be wrong. A counter rather than a call, so the write
+        // carries none of the ordering the post-loop broadcast has to respect.
+        if (!attached || change == Interface::IdentityChange::Repointed) {
+            iface->MarkReplaced();
         }
 
         // A capture is bound to a kernel object, not to a name, so it does not follow the
