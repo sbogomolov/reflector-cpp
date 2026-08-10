@@ -13,7 +13,6 @@
 #include <cstddef>
 #include <cstring>
 #include <span>
-#include <vector>
 #include <net/if.h>
 #include <sys/socket.h>
 
@@ -44,15 +43,6 @@ constexpr size_t NOTIFICATION_BUFFER_SIZE = 8 * 1024;
 // netlink already defaults to the system max, so it isn't grown.
 constexpr int ROUTE_RECEIVE_BUFFER_BYTES = 256 * 1024;
 #endif
-
-void AddUnique(std::vector<unsigned>& indices, unsigned index) {
-    if (index == 0) {
-        return;  // names no interface (kernel indices are >= 1) — and 0 is the refresh-all sentinel
-    }
-    if (std::ranges::find(indices, index) == indices.end()) {
-        indices.push_back(index);
-    }
-}
 
 } // namespace
 
@@ -91,7 +81,7 @@ DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, 
     return DefaultAddressMonitor{dispatcher, fd, verify_sender};
 }
 
-bool DefaultAddressMonitor::Start(const OnInterfaceChanged& on_change) noexcept {
+bool DefaultAddressMonitor::Start(const OnInterfacesChanged& on_change) noexcept {
     if (!on_change.IsValid()) {
         GetLogger().Error("Cannot start address monitor: the change callback is not bound");
         Close();
@@ -181,9 +171,9 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
 #endif
     std::array<std::byte, NOTIFICATION_BUFFER_SIZE> buffer;
 
-    // Coalesce a whole drain into one callback per interface: a burst commonly repeats the same
-    // index, and on overflow we drop the partial list and emit a single refresh-all instead.
-    std::vector<unsigned> changed;
+    // Coalesce a whole drain into one callback: a burst commonly repeats the same index, and on
+    // overflow we drop the partial list and report refresh-all instead.
+    ChangedInterfaces changed;
     bool overflowed = false;
     while (true) {
         sockaddr_storage src{};
@@ -224,12 +214,30 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
 
     if (overflowed) {
         GetLogger().Warning("Address notifications overflowed; refreshing all interfaces");
-        on_change_(0u);
+    } else if (changed.overflowed) {
+        GetLogger().Debug("More than {} interfaces changed in one drain; refreshing all",
+            MAX_CHANGED_INTERFACES);
+    } else if (changed.count == 0) {
+        return;  // the drain carried nothing we track, so there is nothing to tell anyone
     } else {
-        for (const unsigned index : changed) {
-            on_change_(index);
-        }
+        on_change_(changed.Indexes(), false);
+        return;
     }
+    on_change_(std::span<const unsigned>{}, true);
+}
+
+void DefaultAddressMonitor::ChangedInterfaces::Add(unsigned index) noexcept {
+    if (index == 0) {
+        return;  // names no interface; kernel indices are >= 1
+    }
+    if (std::ranges::find(Indexes(), index) != Indexes().end()) {
+        return;
+    }
+    if (count == MAX_CHANGED_INTERFACES) {
+        overflowed = true;
+        return;
+    }
+    indexes[count++] = index;
 }
 
 #if defined(__linux__)
@@ -247,16 +255,16 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
 #pragma GCC diagnostic ignored "-Wconversion"
 
 void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messages,
-        std::vector<unsigned>& changed) const noexcept {
+        ChangedInterfaces& changed) const noexcept {
     auto* header = start_lifetime_as<nlmsghdr>(messages.data());
     for (int length = static_cast<int>(messages.size()); NLMSG_OK(header, length);
             header = start_lifetime_as<nlmsghdr>(NLMSG_NEXT(header, length))) {
         if (header->nlmsg_type == RTM_NEWADDR || header->nlmsg_type == RTM_DELADDR) {
             const auto* address = start_lifetime_as<ifaddrmsg>(NLMSG_DATA(header));
-            AddUnique(changed, address->ifa_index);
+            changed.Add(address->ifa_index);
         } else if (header->nlmsg_type == RTM_NEWLINK || header->nlmsg_type == RTM_DELLINK) {
             const auto* link = start_lifetime_as<ifinfomsg>(NLMSG_DATA(header));
-            AddUnique(changed, static_cast<unsigned>(link->ifi_index));
+            changed.Add(static_cast<unsigned>(link->ifi_index));
         }
     }
 }
@@ -266,7 +274,7 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messag
 #else
 
 void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messages,
-        std::vector<unsigned>& changed) const noexcept {
+        ChangedInterfaces& changed) const noexcept {
     // PF_ROUTE messages pack back-to-back; each begins with rt_msghdr's prefix (u_short msglen;
     // u_char version; u_char type). Read the fields with memcpy — the buffer carries no
     // alignment guarantee and the messages aren't a single struct type.
@@ -288,7 +296,7 @@ void DefaultAddressMonitor::CollectChangedInterfaces(std::span<std::byte> messag
                 && message_length >= index_end) {
             u_short index = 0;
             std::memcpy(&index, messages.data() + offset + offsetof(ifa_msghdr, ifam_index), sizeof(index));
-            AddUnique(changed, index);
+            changed.Add(index);
         }
         offset += message_length;
     }

@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -74,7 +75,7 @@ private:
     Application(std::unique_ptr<Dispatcher> dispatcher, std::unique_ptr<AddressMonitor> monitor,
         InterfaceFactory interface_factory, SocketFactory socket_factory);
 
-    // Starts the address monitor, routing changes to OnInterfaceChanged. Logs a warning and
+    // Starts the address monitor, routing changes to OnInterfacesChanged. Logs a warning and
     // continues if it can't start — address refresh is best-effort, not required to run.
     void StartMonitor();
 
@@ -99,9 +100,30 @@ private:
     // the caller logs with the interface's role (source vs target).
     [[nodiscard]] LinkSocket* GetOrCreateSocket(const std::string& interface);
 
-    // Address-monitor callback: re-resolve the source addresses of the changed interface, or of
-    // every interface when index == 0 (the monitor's overflow signal).
-    void OnInterfaceChanged(unsigned interface_index) noexcept;
+    // Address-monitor callback: reconcile against the kernel, then let every reflector react.
+    void OnInterfacesChanged(std::span<const unsigned> indexes, bool refresh_all) noexcept;
+
+    // Both reconcile timers fire this: the backstop, and the retry while a repair is outstanding.
+    // The fire-time argument is unused.
+    void OnReconcileTick(std::chrono::steady_clock::time_point) noexcept;
+
+    // Brings every interface and its capture back in line with the kernel, refreshing the
+    // addresses of the interfaces in `indexes` (all of them when `refresh_all`, which is what the
+    // monitor reports when it lost notifications). Returns whether a repair did not complete, so
+    // the pass must run again.
+    [[nodiscard]] bool ReconcileInterfaces(
+        std::span<const unsigned> indexes, bool refresh_all) noexcept;
+
+    // Packet-dispatcher callback: a capture read failed, so the kernel has already reported what a
+    // probe would. Schedules the repair instead of running it inside the drain.
+    void OnCaptureFailure() noexcept;
+
+    // Runs the retry timer while `outstanding`, stops it otherwise.
+    void ArmRepairRetry(bool outstanding) noexcept;
+
+    // Lets every reflector re-gate families, join/leave groups and log transitions off the
+    // interface state the reconcile just refreshed.
+    void NotifyReflectors() noexcept;
 
     // Drains the signal-wakeup self-pipe set up by PrepareSignalWakeup. The byte exists only to wake the
     // poll; the loop's stop_requested check ends the run. Level-triggered, so drain fully.
@@ -133,6 +155,13 @@ private:
     // footprint diagnostic). Holds a timer registration bound to `this` on dispatcher_, so it must
     // tear down before dispatcher_ — it does, being declared after it.
     std::optional<Timer> memory_timer_;
+
+    // The reconcile backstop, armed for the daemon's life: the only channel that does not depend
+    // on the kernel telling us something, so it is what covers a notification we never got.
+    Timer reconcile_timer_{*dispatcher_};
+    // Armed only while a repair is outstanding. A rebind that failed on a transient error has no
+    // external announcement coming, so nothing else would ever finish it.
+    Timer repair_timer_{*dispatcher_};
 
     // Signal-wakeup self-pipe (best-effort; populated by PrepareSignalWakeup, otherwise empty). Declared
     // last so it tears down first: wakeup_reg_ unregisters from dispatcher_ while it is still alive, then

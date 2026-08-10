@@ -27,11 +27,18 @@
 
 namespace {
 
-// Records the interface indices the monitor reports, so tests assert on its actual on_change output.
+// Records what the monitor reports, so tests assert on its actual on_change output. Indexes
+// accumulate across drains; `drains` counts the calls, which is what pins one-call-per-drain.
 struct RecordingChangeSink {
-    void OnChange(unsigned interface_index) noexcept { changed.push_back(interface_index); }
+    void OnChange(std::span<const unsigned> indexes, bool all) noexcept {
+        changed.insert(changed.end(), indexes.begin(), indexes.end());
+        refresh_all += all ? 1 : 0;
+        ++drains;
+    }
 
     std::vector<unsigned> changed;
+    int refresh_all = 0;
+    int drains = 0;
 };
 
 #if defined(__linux__)
@@ -281,8 +288,8 @@ TEST_F(DefaultAddressMonitorTest, IgnoresUnrelatedMessages) {
 }
 
 TEST_F(DefaultAddressMonitorTest, NeverForwardsIndexZero) {
-    // 0 names no interface (kernel indices are >= 1) and is the overflow path's refresh-all
-    // sentinel — a stray 0 in a kernel message must not masquerade as it.
+    // Kernel indices are >= 1, so a 0 in a message names no interface and would only make a
+    // subscriber resolve something that cannot exist.
     auto monitor = MakeMonitor();
     ASSERT_TRUE(StartWatching(monitor));
     std::vector<std::byte> messages;
@@ -294,6 +301,40 @@ TEST_F(DefaultAddressMonitorTest, NeverForwardsIndexZero) {
     FireReadable();
 
     EXPECT_EQ(sink.changed, (std::vector<unsigned>{6}));
+}
+
+TEST_F(DefaultAddressMonitorTest, ReportsAWholeDrainAsOneCall) {
+    auto monitor = MakeMonitor();
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    AppendAddrMessage(messages, ADDR_MESSAGE, 3);
+    AppendAddrMessage(messages, ADDR_MESSAGE, 5);
+    AppendAddrMessage(messages, ADDR_MESSAGE, 3);  // a repeat, coalesced away
+
+    Write(messages);
+    FireReadable();
+
+    EXPECT_EQ(sink.drains, 1);
+    EXPECT_EQ(sink.changed, (std::vector<unsigned>{3, 5}));
+    EXPECT_EQ(sink.refresh_all, 0);
+}
+
+TEST_F(DefaultAddressMonitorTest, ReportsRefreshAllWhenOneDrainNamesMoreThanItLists) {
+    auto monitor = MakeMonitor();
+    ASSERT_TRUE(StartWatching(monitor));
+    std::vector<std::byte> messages;
+    for (size_t index = 1; index <= DefaultAddressMonitor::MAX_CHANGED_INTERFACES + 1; ++index) {
+        // The two platform helpers take different index widths; uint16_t converts cleanly to both.
+        AppendAddrMessage(messages, ADDR_MESSAGE, narrow_cast<uint16_t>(index));
+    }
+
+    Write(messages);
+    FireReadable();
+
+    // A partial list would silently skip whichever interfaces fell off the end, so the drain says
+    // "re-resolve everything" instead.
+    EXPECT_EQ(sink.refresh_all, 1);
+    EXPECT_TRUE(sink.changed.empty());
 }
 
 #if defined(__linux__)

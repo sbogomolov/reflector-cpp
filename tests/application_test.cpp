@@ -187,8 +187,8 @@ TEST_F(ApplicationTest, StartsMemoryReportTimerWhenDebugMemoryEnabled) {
 
     ASSERT_TRUE(app.Configure(config));
 
-    // A WoL-only config starts no timers of its own, so the periodic memory report is the only one.
-    EXPECT_EQ(dispatcher_->TimerCount(), 1u);
+    // The reconcile backstop always runs; debug_memory adds the periodic report on top of it.
+    EXPECT_EQ(dispatcher_->TimerCount(), 2u);
     // Firing it exercises the ReportMemory callback (reads /proc + mallinfo2 on glibc); must not crash.
     dispatcher_->FireTimers(std::chrono::steady_clock::now());
 }
@@ -201,7 +201,7 @@ TEST_F(ApplicationTest, NoMemoryReportTimerByDefault) {
 
     ASSERT_TRUE(app.Configure(config));
 
-    EXPECT_EQ(dispatcher_->TimerCount(), 0u);
+    EXPECT_EQ(dispatcher_->TimerCount(), 1u);  // the reconcile backstop, and nothing else
 }
 
 TEST_F(ApplicationTest, CreatesDistinctSocketsForDistinctInterfaces) {
@@ -503,7 +503,7 @@ TEST_F(ApplicationTest, RefreshesAllInterfacesOnOverflowSignal) {
     auto app = MakeApp();
     ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
 
-    monitor_->FireChange(0); // 0 is the "refresh everything" overflow signal
+    monitor_->FireOverflow(); // the drain that lost its list and can only say "re-resolve all"
 
     EXPECT_EQ(Iface("src")->refresh_count, 1u);
     EXPECT_EQ(Iface("dst")->refresh_count, 1u);
@@ -519,6 +519,156 @@ TEST_F(ApplicationTest, RefreshesNothingForUnknownInterface) {
 
     EXPECT_EQ(Iface("src")->refresh_count, 0u);
     EXPECT_EQ(Iface("dst")->refresh_count, 0u);
+}
+
+// A recreated interface keeps its name but gets a new kernel index; the capture was bound to the
+// old object, so it has to re-attach.
+TEST_F(ApplicationTest, RebindsTheCaptureWhenTheInterfaceIsRecreated) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Iface("src")->StageIndex(12);
+    monitor_->FireChange(5);
+
+    EXPECT_EQ(Iface("src")->Index(), 12u);
+    EXPECT_EQ(Socket("src")->rebinds, 1u);
+    EXPECT_EQ(Socket("dst")->rebinds, 0u);  // untouched interface, untouched capture
+}
+
+// The other recreation mode, and the reason Attached() exists: a kernel that hands the recreated
+// interface the number it had leaves the index looking untouched while the capture points at a
+// dead object. Measured on macOS; Linux takes the branch above.
+TEST_F(ApplicationTest, RebindsTheCaptureWhenTheIndexIsReusedOnRecreation) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Socket("src")->attached = false;  // same index, capture detached under it
+    monitor_->FireChange(5);
+
+    EXPECT_EQ(Socket("src")->rebinds, 1u);
+    EXPECT_TRUE(Socket("src")->attached);
+}
+
+// An interface that is gone has no kernel object to bind to, so retrying the capture would only
+// fail. It waits parked until an index resolves again.
+TEST_F(ApplicationTest, DoesNotRebindWhileTheInterfaceIsGone) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Iface("src")->StageIndex(0);
+    Socket("src")->attached = false;
+    monitor_->FireChange(5);
+
+    EXPECT_FALSE(Iface("src")->IsValid());
+    EXPECT_EQ(Socket("src")->rebinds, 0u);
+}
+
+// Monitor traffic is constant on a busy link; a plain address change must not tear the capture
+// down and rebuild it.
+TEST_F(ApplicationTest, LeavesTheCaptureAloneOnAnAddressChange) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    monitor_->FireChange(5);
+
+    EXPECT_EQ(Socket("src")->rebinds, 0u);
+    EXPECT_EQ(Iface("src")->refresh_count, 1u);
+}
+
+// The backstop is the only channel that does not wait on the kernel: no notification here at all.
+TEST_F(ApplicationTest, TheBackstopRebindsADetachedCapture) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Socket("src")->attached = false;
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_EQ(Socket("src")->rebinds, 1u);
+    EXPECT_EQ(Socket("dst")->rebinds, 0u);
+}
+
+// A rebind that failed has no announcement coming, so the pass has to schedule its own retry —
+// and stop it again once the repair lands, so a healthy daemon runs only the backstop.
+TEST_F(ApplicationTest, RetriesUntilAFailedRepairCompletes) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Socket("src")->attached = false;
+    Socket("src")->fail_rebind = true;
+    monitor_->FireChange(5);
+    EXPECT_EQ(dispatcher_->TimerCount(), 2u);  // backstop plus the retry
+
+    Socket("src")->fail_rebind = false;
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_TRUE(Socket("src")->attached);
+    EXPECT_EQ(dispatcher_->TimerCount(), 1u);  // repaired, so the retry stands down
+}
+
+// A lookup that cannot run says nothing about the interface. Reading it as absence would clear a
+// live interface's addresses and shut its egress gate over a transient fd shortage.
+TEST_F(ApplicationTest, KeepsTheIdentityWhenTheLookupCannotRun) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    Iface("src")->StageIndex(std::nullopt);
+    monitor_->FireChange(5);
+
+    EXPECT_EQ(Iface("src")->Index(), 5u);
+    EXPECT_TRUE(Iface("src")->CanSend(IpAddress::Family::V4));
+    EXPECT_EQ(Socket("src")->rebinds, 0u);
+    EXPECT_EQ(dispatcher_->TimerCount(), 2u);  // retried rather than acted on
+}
+
+// A failed read is a reason to re-examine the interface, and on a link whose notification never
+// arrives it is the only one that shows up.
+TEST_F(ApplicationTest, ACaptureReadFailureSchedulesTheRepair) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+    ASSERT_EQ(dispatcher_->TimerCount(), 1u);  // just the backstop
+
+    Socket("src")->receive_error = LinkSocket::ReceiveError::Failed;
+    Socket("src")->attached = false;  // the interface really did go away under it
+    dispatcher_->FireReadable(Socket("src")->fd);
+    EXPECT_EQ(dispatcher_->TimerCount(), 2u);  // repaired on the retry, not inside the drain
+
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_EQ(Socket("src")->rebinds, 1u);
+    EXPECT_EQ(dispatcher_->TimerCount(), 1u);
+}
+
+// The read error that is not about the interface: the kernel parks ENETDOWN on a capture whose
+// interface merely went down, and re-attaching a capture that is still attached fixes nothing.
+TEST_F(ApplicationTest, ACaptureReadFailureLeavesAnAttachedCaptureAlone) {
+    ConfigureSocket("src", {.interface_index = 5});
+    ConfigureSocket("dst", {.interface_index = 9});
+    auto app = MakeApp();
+    ASSERT_TRUE(app.Configure(TestConfigBuilder{}.Add(MakeWolConfig("tv", "src", "dst", {9})).Build()));
+
+    // attached stays true: the interface is still there
+    Socket("src")->receive_error = LinkSocket::ReceiveError::Failed;
+    dispatcher_->FireReadable(Socket("src")->fd);
+    dispatcher_->FireTimers(std::chrono::steady_clock::now());
+
+    EXPECT_EQ(Socket("src")->rebinds, 0u);
+    EXPECT_EQ(dispatcher_->TimerCount(), 1u);  // nothing outstanding, so the retry stands down
 }
 
 TEST_F(ApplicationTest, FailsConfigureWhenTheInterfaceIsInvalid) {

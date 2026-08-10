@@ -5,9 +5,9 @@
 #include "util/no_move.h"
 #include "util/unique_fd.h"
 
+#include <array>
 #include <cstddef>
 #include <span>
-#include <vector>
 #include <sys/socket.h>
 
 namespace reflector {
@@ -43,9 +43,13 @@ public:
     [[nodiscard]] static DefaultAddressMonitor ForTesting(Dispatcher& dispatcher, int fd,
         bool verify_sender = false);
 
-    [[nodiscard]] bool Start(const OnInterfaceChanged& on_change) noexcept override;
+    [[nodiscard]] bool Start(const OnInterfacesChanged& on_change) noexcept override;
 
     [[nodiscard]] bool IsValid() const noexcept { return fd_.IsValid(); }
+
+    // How many distinct interfaces one drain can list before it degrades to refresh-all. Public so
+    // a test can drive that degrade path.
+    static constexpr size_t MAX_CHANGED_INTERFACES = 32;
 
 private:
     // Used by ForTesting: adopts an already-open `fd` instead of opening the kernel socket.
@@ -66,18 +70,34 @@ private:
     // the Dispatcher fd callback by Watch(); the int argument (the ready fd) is unused.
     void OnReadable(int fd) noexcept;
 
+    // The interfaces one drain named, deduplicated. Fixed capacity keeps the notification path
+    // free of allocation; a drain naming more than it holds sets `overflowed`, which reports as
+    // refresh-all — the correct answer for "more changed than this can list".
+    struct ChangedInterfaces {
+        // Appends `index` unless it is already listed; sets `overflowed` instead once full.
+        void Add(unsigned index) noexcept;
+
+        [[nodiscard]] std::span<const unsigned> Indexes() const noexcept {
+            return std::span{indexes}.first(count);
+        }
+
+        std::array<unsigned, MAX_CHANGED_INTERFACES> indexes{};
+        size_t count = 0;
+        bool overflowed = false;
+    };
+
     // Parses a buffer of kernel notification messages and appends each changed interface index to
     // `changed`, skipping any already present. Split out from OnReadable so tests can drive it with
     // synthesized messages. The span is mutable because the Linux walk start_lifetime_as's the
     // netlink structs over the received bytes, which reuses that storage.
     void CollectChangedInterfaces(std::span<std::byte> messages,
-        std::vector<unsigned>& changed) const noexcept;
+        ChangedInterfaces& changed) const noexcept;
 
     Dispatcher* dispatcher_;
     // Invalid (default-constructed) until Start() binds it (the testing constructor leaves it
     // unbound, so tests must call Start() too). Always valid by the time the fd is watched —
     // Watch() runs only inside Start(), after the bind — so OnReadable can call it.
-    OnInterfaceChanged on_change_;
+    OnInterfacesChanged on_change_;
     Dispatcher::Registration registration_;
     UniqueFd fd_;
     // Whether OnReadable rejects datagrams whose source isn't the kernel (production always does;
