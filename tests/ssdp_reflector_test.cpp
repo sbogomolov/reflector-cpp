@@ -654,6 +654,66 @@ TEST_F(SsdpReflectorTest, MSearchReflectionOriginatesFromAReservedPortAndCreates
     EXPECT_EQ(RegistrationCount(), before + 1);  // + the session's response registration
 }
 
+// A target recreated under the SAME address strands every session, and the address predicate
+// cannot see it.
+TEST_F(SsdpReflectorTest, DropsSessionsWhenTheTargetIsReplaced) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(RegistrationCount(), base + 1);
+
+    target.iface.MarkReplaced();  // the addresses are untouched; the kernel object is not
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), base);
+}
+
+// Live without any recreation: a re-addressed target can never receive the 200 OK.
+TEST_F(SsdpReflectorTest, DropsSessionsWhenTheTargetIsReAddressed) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(RegistrationCount(), base + 1);
+
+    // A different address, not none: the family stays sendable, so only the session goes.
+    target.iface.SetV4(IpAddress::FromV4Bytes(10, 0, 0, 7));
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), base);
+}
+
+// Nothing in a session is pinned to the source leg, so a change there must not cost the searcher
+// its in-flight discovery.
+TEST_F(SsdpReflectorTest, KeepsSessionsWhenOnlyTheSourceChanges) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(RegistrationCount(), base + 1);
+
+    source.iface.MarkReplaced();
+    source.iface.SetV4(IpAddress::FromV4Bytes(10, 0, 0, 7));
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), base + 1);
+}
+
+// The reconcile broadcasts on every pass, including the quiet backstop tick, so a session must
+// survive one that reports nothing.
+TEST_F(SsdpReflectorTest, KeepsSessionsWhenNothingChanged) {
+    SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
+    ASSERT_TRUE(reflector.IsValid());
+    const size_t base = RegistrationCount();
+    packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
+    ASSERT_EQ(RegistrationCount(), base + 1);
+
+    reflector.OnInterfaceChanged();
+
+    EXPECT_EQ(RegistrationCount(), base + 1);
+}
+
 TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
