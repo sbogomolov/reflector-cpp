@@ -101,10 +101,17 @@ bool Interface::CanSend(IpAddress::Family family) const noexcept {
 
 void Interface::Refresh() noexcept {
 #if defined(__linux__)
-    addresses_ = ResolveInterfaceAddresses(index_);
+    auto resolved = ResolveInterfaceAddresses(index_);
 #else
-    addresses_ = ResolveInterfaceAddresses(name_);
+    auto resolved = ResolveInterfaceAddresses(name_);
 #endif
+    if (!resolved) {
+        // The enumeration could not run (it logged why), which says nothing about the interface.
+        // Keeping the last known addresses beats closing a live interface's egress gate over a
+        // transient shortage.
+        return;
+    }
+    addresses_ = *resolved;
     logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}, IPv6 routable {}", index_,
         addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
         addresses_.v6 ? addresses_.v6->ToString() : "none",

@@ -103,7 +103,7 @@ bool IsUsable(uint32_t ifa_flags) noexcept {
 // `handle` until NLMSG_DONE. Dumps everything and lets the handler filter by interface index —
 // simpler and uniformly terminated than a single-interface request, and the set is tiny.
 template <typename Handler>
-bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) noexcept {
+[[nodiscard]] bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) noexcept {
     struct {
         nlmsghdr header;
         union {
@@ -179,14 +179,14 @@ bool NetlinkDump(int fd, uint16_t request_type, uint32_t seq, Handler&& handle) 
     }
 }
 
-void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
+bool ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
     const int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (fd < 0) {
         GetLogger().Error("Cannot open netlink socket: {}", Error::FromErrno());
-        return;
+        return false;
     }
 
-    NetlinkDump(fd, RTM_GETLINK, 1, [&](nlmsghdr* header) {
+    const bool link_dumped = NetlinkDump(fd, RTM_GETLINK, 1, [&](nlmsghdr* header) {
         const auto* link = start_lifetime_as<ifinfomsg>(NLMSG_DATA(header));
         if (static_cast<unsigned>(link->ifi_index) != index) {
             return;
@@ -203,7 +203,7 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
     });
 
     std::vector<IpAddress> candidates;
-    NetlinkDump(fd, RTM_GETADDR, 2, [&](nlmsghdr* header) {
+    const bool addresses_dumped = NetlinkDump(fd, RTM_GETADDR, 2, [&](nlmsghdr* header) {
         const auto* addr = start_lifetime_as<ifaddrmsg>(NLMSG_DATA(header));
         if (addr->ifa_index != index) {
             return;
@@ -252,6 +252,9 @@ void ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
     close(fd);
 
     detail::SelectSourceAddresses(candidates, result);
+    // Either dump failing means we did not see the interface's whole address set, so the caller
+    // must not read the result as "it has none".
+    return link_dumped && addresses_dumped;
 }
 
 #pragma GCC diagnostic pop
@@ -274,21 +277,21 @@ bool IsUsableIpv6(int inet6_fd, const char* interface, const sockaddr_in6& sin6)
     return detail::Ipv6SourceFlagsUsable(request.ifr_ifru.ifru_flags6);
 }
 
-void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result) noexcept {
+bool ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result) noexcept {
     // Unbound datagram socket for the per-address SIOCGIFAFLAG_IN6 flag queries. On a host with
     // IPv6 addresses to enumerate this effectively always succeeds; if it can't be opened we
     // can't verify any IPv6 source, so fail early rather than guess.
     const int inet6_fd = socket(AF_INET6, SOCK_DGRAM, 0);
     if (inet6_fd < 0) {
         GetLogger().Error("Cannot open IPv6 socket to query address flags: {}", Error::FromErrno());
-        return;
+        return false;
     }
 
     ifaddrs* head = nullptr;
     if (getifaddrs(&head) != 0) {
         GetLogger().Error("Cannot enumerate interface addresses: {}", Error::FromErrno());
         close(inet6_fd);
-        return;
+        return false;
     }
 
     std::vector<IpAddress> candidates;
@@ -331,6 +334,7 @@ void ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
     freeifaddrs(head);
 
     detail::SelectSourceAddresses(candidates, result);
+    return true;
 }
 
 #endif
@@ -384,17 +388,21 @@ IpAddress CanonicalizeLinkLocalV6(const IpAddress& address) noexcept {
 
 #if defined(__linux__)
 
-InterfaceAddresses ResolveInterfaceAddresses(unsigned interface_index) noexcept {
+std::optional<InterfaceAddresses> ResolveInterfaceAddresses(unsigned interface_index) noexcept {
     InterfaceAddresses result;
-    ResolveViaNetlink(interface_index, result);
+    if (!ResolveViaNetlink(interface_index, result)) {
+        return std::nullopt;
+    }
     return result;
 }
 
 #else
 
-InterfaceAddresses ResolveInterfaceAddresses(std::string_view interface) noexcept {
+std::optional<InterfaceAddresses> ResolveInterfaceAddresses(std::string_view interface) noexcept {
     InterfaceAddresses result;
-    ResolveViaGetifaddrs(interface, result);
+    if (!ResolveViaGetifaddrs(interface, result)) {
+        return std::nullopt;
+    }
     return result;
 }
 

@@ -29,10 +29,12 @@ using namespace reflector;
 // netlink resolver and production refresh use), name on macOS.
 InterfaceAddresses ResolveLoopback() {
 #if defined(__linux__)
-    return ResolveInterfaceAddresses(if_nametoindex(std::string{LoopbackInterface()}.c_str()));
+    auto addresses = ResolveInterfaceAddresses(if_nametoindex(std::string{LoopbackInterface()}.c_str()));
 #else
-    return ResolveInterfaceAddresses(LoopbackInterface());
+    auto addresses = ResolveInterfaceAddresses(LoopbackInterface());
 #endif
+    EXPECT_TRUE(addresses.has_value()) << "loopback address enumeration did not run";
+    return addresses.value_or(InterfaceAddresses{});
 }
 
 } // namespace
@@ -82,9 +84,12 @@ TEST(InterfaceAddressTest, UnknownInterfaceResolvesNothing) {
 #else
     const auto addresses = ResolveInterfaceAddresses("nonexistent-reflector-iface");
 #endif
-    EXPECT_FALSE(addresses.v4.has_value());
-    EXPECT_FALSE(addresses.v6.has_value());
-    EXPECT_EQ(addresses.mac, MacAddress{});
+    // The enumeration ran and found nothing, which is not the same as failing to run — the
+    // caller keeps its addresses in the second case and clears them in this one.
+    ASSERT_TRUE(addresses.has_value());
+    EXPECT_FALSE(addresses->v4.has_value());
+    EXPECT_FALSE(addresses->v6.has_value());
+    EXPECT_EQ(addresses->mac, MacAddress{});
 }
 
 // The source-selection policy, driven directly with synthetic candidate lists — the part the
