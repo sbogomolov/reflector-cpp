@@ -19,8 +19,8 @@ DialProxy::DialProxy(Dispatcher& dispatcher, const Interface& source_if, const I
     std::string logger_name)
         : logger_{std::move(logger_name)}
         , dispatcher_{&dispatcher}
-        , source_if_{&source_if}
-        , target_if_{&target_if}
+        , source_if_{source_if}
+        , target_if_{target_if}
         , eviction_timer_{dispatcher} {}
 
 std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& device,
@@ -32,6 +32,27 @@ std::optional<IpEndpoint> DialProxy::EnsureDiscoveryListener(const IpEndpoint& d
 }
 
 void DialProxy::OnInterfaceChanged() noexcept {
+    // Asymmetric, because a listener binds a source_if address while every upstream is
+    // egress-pinned to target_if: a target replacement costs the connections and leaves the
+    // listeners serving, since the next connect pins the fresh interface on its own.
+    const bool source_replaced = source_if_.TakeReplaced();
+    if (source_replaced || target_if_.TakeReplaced()) {
+        // Connections first: a Connection borrows an Endpoint* and its dtor decrements that
+        // endpoint's active_connections, so erasing an endpoint with one still pinned would dangle
+        // it. Erased outright rather than through Abort's deferred teardown, since this runs from
+        // the reconcile, never with a connection's handler on the stack.
+        const auto connections = connections_.size();
+        connections_.clear();
+        const auto listeners = source_replaced ? endpoints_.size() : 0;
+        if (source_replaced) {
+            endpoints_.clear();
+        }
+        if (connections > 0 || listeners > 0) {
+            logger_.Info("{}_if was replaced; dropped {} connection(s) and {} listener(s)",
+                source_replaced ? "source" : "target", connections, listeners);
+        }
+    }
+
     const auto current = source_if_->SourceAddress(IpAddress::Family::V4);
 
     // A listener is stale when its bind address no longer matches source_if's current V4 source — the
@@ -309,7 +330,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 
-    auto upstream = TcpSocket::Connect(ep->device, target_if_);
+    auto upstream = TcpSocket::Connect(ep->device, target_if_.Get());
     if (!upstream) {
         logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;
