@@ -201,7 +201,7 @@ CgroupMemory ReadCgroupMemory() noexcept {
 void LogCgroupMemory() {
     const auto cg = ReadCgroupMemory();
     if (!cg.available) {
-        GetLogger().Info("cgroup memory unavailable (not cgroup v2, or /sys/fs/cgroup not mounted)");
+        NFL_LOG_INFO(GetLogger(), "cgroup memory unavailable (not cgroup v2, or /sys/fs/cgroup not mounted)");
         return;
     }
     const auto kib = [](size_t bytes) { return bytes / 1024; };
@@ -220,7 +220,7 @@ void LogCgroupMemory() {
         + val(cg.slab_unreclaimable) + val(cg.pagetables) + val(cg.sec_pagetables) + val(cg.kernel_stack)
         + val(cg.percpu) + val(cg.vmalloc) + val(cg.zswap);
     const size_t other = cg.current > known ? cg.current - known : 0;
-    GetLogger().Info(
+    NFL_LOG_INFO(GetLogger(), 
         "cgroup (KiB) {} | breakdown: anon={} file={} (shmem={}) sock={} slab_reclaimable={} "
         "slab_unreclaimable={} pagetables={} sec_pagetables={} kernel_stack={} percpu={} vmalloc={} "
         "zswap={} other={}",
@@ -242,16 +242,16 @@ void LogMemoryReport() {
     const size_t rss = StatusValueKib("VmRSS").value_or(0);
 #if defined(REFLECTOR_HAVE_MALLINFO2)
     const auto info = mallinfo2();
-    GetLogger().Info(
+    NFL_LOG_INFO(GetLogger(), 
         "rss={} KiB, peak={} KiB; heap in_use={} KiB, free_retained={} KiB, arena={} KiB, mmap={} KiB",
         rss, peak, info.uordblks / 1024, info.fordblks / 1024, info.arena / 1024, info.hblkhd / 1024);
 #else
-    GetLogger().Info("rss={} KiB, peak={} KiB (heap arena stats need glibc >= 2.33)", rss, peak);
+    NFL_LOG_INFO(GetLogger(), "rss={} KiB, peak={} KiB (heap arena stats need glibc >= 2.33)", rss, peak);
 #endif
     LogCgroupMemory();
 #else
     // Non-Linux (macOS/FreeBSD): no /proc or cgroup; getrusage still gives the peak RSS.
-    GetLogger().Info("peak={} KiB (detailed RSS/heap/cgroup stats are glibc/Linux-only)", peak);
+    NFL_LOG_INFO(GetLogger(), "peak={} KiB (detailed RSS/heap/cgroup stats are glibc/Linux-only)", peak);
 #endif
 }
 

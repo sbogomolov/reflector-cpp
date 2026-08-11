@@ -76,7 +76,7 @@ void Application::StartMonitor() {
     // Address-change refresh is best-effort: if the monitor can't start (it logs the cause),
     // carry on without it rather than failing the daemon.
     if (!address_monitor_->Start(CreateDelegate<&Application::OnInterfacesChanged>(this))) {
-        GetLogger().Warn("Address monitor unavailable; source addresses will not refresh on interface changes");
+        NFL_LOG_WARN(GetLogger(), "Address monitor unavailable; source addresses will not refresh on interface changes");
     }
 }
 
@@ -111,20 +111,20 @@ bool Application::ConfigureReflectors(const std::vector<ConfigType>& configs, st
     for (const auto& config : configs) {
         auto* source_socket = GetOrCreateSocket(config.source_if);
         if (source_socket == nullptr) {
-            GetLogger().Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+            NFL_LOG_ERROR(GetLogger(), "Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
                 protocol, config.name, config.source_if);
             return false;
         }
         auto* target_socket = GetOrCreateSocket(config.target_if);
         if (target_socket == nullptr) {
-            GetLogger().Error("Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
+            NFL_LOG_ERROR(GetLogger(), "Cannot configure {} reflector \"{}\": socket on interface \"{}\" is invalid",
                 protocol, config.name, config.target_if);
             return false;
         }
 
         auto reflector = std::make_unique<ReflectorType>(packet_dispatcher_, *source_socket, *target_socket, config);
         if (!reflector->IsValid()) {
-            GetLogger().Error("Cannot configure {} reflector \"{}\": setup failed", protocol, config.name);
+            NFL_LOG_ERROR(GetLogger(), "Cannot configure {} reflector \"{}\": setup failed", protocol, config.name);
             return false;
         }
         reflectors_.push_back(std::move(reflector));
@@ -139,7 +139,7 @@ bool Application::Configure(const Config& config) {
         reconcile_timer_.Start(
             RECONCILE_BACKSTOP_INTERVAL, CreateDelegate<&Application::OnReconcileTick>(this));
         if (config.DebugMemory()) {
-            GetLogger().Info("Memory diagnostics enabled; reporting RSS/heap every {}s",
+            NFL_LOG_INFO(GetLogger(), "Memory diagnostics enabled; reporting RSS/heap every {}s",
                 MEMORY_REPORT_INTERVAL.count());
             LogMemoryReport();  // a baseline at startup, then every interval via the timer
             memory_timer_.emplace(*dispatcher_);
@@ -246,7 +246,7 @@ void Application::NotifyReflectors() noexcept {
 int Application::PrepareSignalWakeup() {
     int fds[2];
     if (::pipe(fds) != 0) {
-        GetLogger().Warn("Cannot create signal wakeup pipe: {}; shutdown bounded by the poll interval",
+        NFL_LOG_WARN(GetLogger(), "Cannot create signal wakeup pipe: {}; shutdown bounded by the poll interval",
             Error::FromErrno());
         return -1;
     }
@@ -258,7 +258,7 @@ int Application::PrepareSignalWakeup() {
     // the daemon never execs (like every other fd here), so there is nothing to leak across an exec.
     for (const int fd : {wakeup_read_.Get(), wakeup_write_.Get()}) {
         if (!SetNonBlocking(fd)) {
-            GetLogger().Warn("Cannot configure signal wakeup pipe: {}; shutdown bounded by the poll interval",
+            NFL_LOG_WARN(GetLogger(), "Cannot configure signal wakeup pipe: {}; shutdown bounded by the poll interval",
                 Error::FromErrno());
             wakeup_read_.Reset();
             wakeup_write_.Reset();
@@ -268,7 +268,7 @@ int Application::PrepareSignalWakeup() {
 
     wakeup_reg_ = dispatcher_->Register(wakeup_read_.Get(), CreateDelegate<&Application::OnWakeup>(this));
     if (!wakeup_reg_.IsValid()) {
-        GetLogger().Warn("Cannot register the signal wakeup pipe; shutdown bounded by the poll interval");
+        NFL_LOG_WARN(GetLogger(), "Cannot register the signal wakeup pipe; shutdown bounded by the poll interval");
         wakeup_read_.Reset();
         wakeup_write_.Reset();
         return -1;

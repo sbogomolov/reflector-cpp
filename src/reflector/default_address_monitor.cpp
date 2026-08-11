@@ -83,7 +83,7 @@ DefaultAddressMonitor DefaultAddressMonitor::ForTesting(Dispatcher& dispatcher, 
 
 bool DefaultAddressMonitor::Start(const OnInterfacesChanged& on_change) noexcept {
     if (!on_change.IsValid()) {
-        GetLogger().Error("Cannot start address monitor: the change callback is not bound");
+        NFL_LOG_ERROR(GetLogger(), "Cannot start address monitor: the change callback is not bound");
         Close();
         return false;
     }
@@ -101,7 +101,7 @@ bool DefaultAddressMonitor::Open() noexcept {
 #if defined(__linux__)
     fd_.Reset(socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK, NETLINK_ROUTE));
     if (!fd_) {
-        GetLogger().Error("Cannot open netlink socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot open netlink socket: {}", Error::FromErrno());
         return false;
     }
 
@@ -109,24 +109,24 @@ bool DefaultAddressMonitor::Open() noexcept {
     address.nl_family = AF_NETLINK;
     address.nl_groups = RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR | RTMGRP_LINK;
     if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
-        GetLogger().Error("Cannot subscribe to netlink notification groups: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot subscribe to netlink notification groups: {}", Error::FromErrno());
         return false;
     }
 #else
     fd_.Reset(socket(PF_ROUTE, SOCK_RAW, 0));
     if (!fd_) {
-        GetLogger().Error("Cannot open route socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot open route socket: {}", Error::FromErrno());
         return false;
     }
     if (!SetNonBlocking(fd_.Get())) {
-        GetLogger().Error("Cannot set route socket non-blocking: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set route socket non-blocking: {}", Error::FromErrno());
         return false;
     }
     // Best-effort: a bigger receive queue so a routing-message burst is less likely to overflow it.
     // Kernel-clamped, and the default still works, so a failure only warns — it doesn't fail Open.
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_RCVBUF,
             &ROUTE_RECEIVE_BUFFER_BYTES, sizeof(ROUTE_RECEIVE_BUFFER_BYTES)) != 0) {
-        GetLogger().Warn("Cannot enlarge the route socket receive buffer: {}", Error::FromErrno());
+        NFL_LOG_WARN(GetLogger(), "Cannot enlarge the route socket receive buffer: {}", Error::FromErrno());
     }
 #if defined(__FreeBSD__)
     // Without SO_RERROR (FreeBSD 13+) a receive-buffer overflow is dropped silently, so the ENOBUFS
@@ -134,7 +134,7 @@ bool DefaultAddressMonitor::Open() noexcept {
     // Enabling it surfaces the overflow as ENOBUFS on the next recv. macOS has no equivalent.
     const int rerror = 1;
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_RERROR, &rerror, sizeof(rerror)) != 0) {
-        GetLogger().Error("Cannot enable SO_RERROR on the route socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot enable SO_RERROR on the route socket: {}", Error::FromErrno());
         return false;
     }
 #endif
@@ -146,10 +146,10 @@ bool DefaultAddressMonitor::Open() noexcept {
 bool DefaultAddressMonitor::Watch() noexcept {
     registration_ = dispatcher_->Register(fd_.Get(), CreateDelegate<&DefaultAddressMonitor::OnReadable>(this));
     if (!registration_.IsValid()) {
-        GetLogger().Error("Cannot register the address-notification socket with the dispatcher");
+        NFL_LOG_ERROR(GetLogger(), "Cannot register the address-notification socket with the dispatcher");
         return false;
     }
-    GetLogger().Debug("Watching for interface address changes on fd {}", fd_.Get());
+    NFL_LOG_DEBUG(GetLogger(), "Watching for interface address changes on fd {}", fd_.Get());
     return true;
 }
 
@@ -192,7 +192,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
                 overflowed = true;
                 continue;
             }
-            GetLogger().Error("Cannot read address notifications: {}", Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot read address notifications: {}", Error::FromErrno());
             break;
         }
         if (received == 0) {
@@ -201,7 +201,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
         // A local process can unicast a netlink datagram to this socket (user-to-user needs no
         // privilege), spoofing an address change; drop anything whose source isn't the kernel.
         if (verify_sender_ && !detail::NetlinkSenderIsKernel(src, addrlen)) {
-            GetLogger().Debug("Dropping an address notification from a non-kernel sender");
+            NFL_LOG_DEBUG(GetLogger(), "Dropping an address notification from a non-kernel sender");
             continue;
         }
         // Once overflowed we'll emit a single refresh-all, so keep draining the socket but stop
@@ -213,9 +213,9 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     }
 
     if (overflowed) {
-        GetLogger().Warn("Address notifications overflowed; refreshing all interfaces");
+        NFL_LOG_WARN(GetLogger(), "Address notifications overflowed; refreshing all interfaces");
     } else if (changed.overflowed) {
-        GetLogger().Debug("More than {} interfaces changed in one drain; refreshing all",
+        NFL_LOG_DEBUG(GetLogger(), "More than {} interfaces changed in one drain; refreshing all",
             MAX_CHANGED_INTERFACES);
     } else if (changed.count == 0) {
         return;  // the drain carried nothing we track, so there is nothing to tell anyone

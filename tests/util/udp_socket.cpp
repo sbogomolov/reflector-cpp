@@ -13,13 +13,13 @@
 namespace reflector {
 
 UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
-    logger_.Debug("Creating socket");
+    NFL_LOG_DEBUG(logger_, "Creating socket");
     fd_.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP));
     if (!fd_) {
         if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) {
-            logger_.Warn("Cannot create socket: address family not supported: {}", Error::FromErrno());
+            NFL_LOG_WARN(logger_, "Cannot create socket: address family not supported: {}", Error::FromErrno());
         } else {
-            logger_.Error("Cannot create socket: {}", Error::FromErrno());
+            NFL_LOG_ERROR(logger_, "Cannot create socket: {}", Error::FromErrno());
         }
         return;
     }
@@ -27,7 +27,7 @@ UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
     logger_.SetName(std::format("UdpSocket:{}", fd_.Get()));
 
     if (!SetNonBlocking(fd_.Get())) {
-        logger_.Error("Cannot set socket non-blocking: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set socket non-blocking: {}", Error::FromErrno());
         Close();
     }
 }
@@ -38,14 +38,14 @@ UdpSocket::~UdpSocket() noexcept {
 
 void UdpSocket::Close() noexcept {
     if (fd_) {
-        logger_.Debug("Closing socket");
+        NFL_LOG_DEBUG(logger_, "Closing socket");
         fd_.Reset();
     }
 }
 
 bool UdpSocket::IsInterfaceConsistent(const std::string& interface, unsigned int index) noexcept {
     if (interface_index_ != 0 && interface_index_ != index) {
-        logger_.Error("Cannot use interface \"{}\": socket is already bound to a different interface (index {})",
+        NFL_LOG_ERROR(logger_, "Cannot use interface \"{}\": socket is already bound to a different interface (index {})",
                       interface, interface_index_);
         return false;
     }
@@ -54,15 +54,15 @@ bool UdpSocket::IsInterfaceConsistent(const std::string& interface, unsigned int
 
 bool UdpSocket::SetInterface(const std::string& interface) {
     if (!IsValid()) {
-        logger_.Error("Cannot set interface to \"{}\": socket is invalid", interface);
+        NFL_LOG_ERROR(logger_, "Cannot set interface to \"{}\": socket is invalid", interface);
         return false;
     }
 
-    logger_.Info("Setting interface to \"{}\"", interface);
+    NFL_LOG_INFO(logger_, "Setting interface to \"{}\"", interface);
 
     const unsigned int idx = if_nametoindex(interface.c_str());
     if (idx == 0) {
-        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
     if (!IsInterfaceConsistent(interface, idx)) {
@@ -72,18 +72,18 @@ bool UdpSocket::SetInterface(const std::string& interface) {
 #if defined(__linux__)
     const auto interface_size = interface.size() + 1;
     if (interface_size > IF_NAMESIZE) {
-        logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": interface name is too long", interface);
+        NFL_LOG_ERROR(logger_, "Cannot set SO_BINDTODEVICE to \"{}\": interface name is too long", interface);
         return false;
     }
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_BINDTODEVICE, interface.c_str(), static_cast<socklen_t>(interface_size)) != 0) {
-        logger_.Error("Cannot set SO_BINDTODEVICE to \"{}\": {}", interface, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set SO_BINDTODEVICE to \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
     const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
     const int option = family_ == IpAddress::Family::V6 ? IPV6_BOUND_IF : IP_BOUND_IF;
     if (setsockopt(fd_.Get(), level, option, &idx, sizeof(idx)) != 0) {
-        logger_.Error("Cannot bind socket to interface \"{}\" (index {}): {}",
+        NFL_LOG_ERROR(logger_, "Cannot bind socket to interface \"{}\" (index {}): {}",
                       interface, idx, Error::FromErrno());
         return false;
     }
@@ -98,13 +98,13 @@ bool UdpSocket::SetInterface(const std::string& interface) {
 
 bool UdpSocket::SetBroadcast(bool enabled) noexcept {
     if (!IsValid()) {
-        logger_.Error("Cannot set SO_BROADCAST to {}: socket is invalid", enabled);
+        NFL_LOG_ERROR(logger_, "Cannot set SO_BROADCAST to {}: socket is invalid", enabled);
         return false;
     }
 
     int value = enabled ? 1 : 0;
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) != 0) {
-        logger_.Error("Cannot set SO_BROADCAST to {}: {}", enabled, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set SO_BROADCAST to {}: {}", enabled, Error::FromErrno());
         return false;
     }
 
@@ -113,13 +113,13 @@ bool UdpSocket::SetBroadcast(bool enabled) noexcept {
 
 bool UdpSocket::SetReuseAddr(bool enabled) noexcept {
     if (!IsValid()) {
-        logger_.Error("Cannot set SO_REUSEADDR to {}: socket is invalid", enabled);
+        NFL_LOG_ERROR(logger_, "Cannot set SO_REUSEADDR to {}: socket is invalid", enabled);
         return false;
     }
 
     int value = enabled ? 1 : 0;
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) != 0) {
-        logger_.Error("Cannot set SO_REUSEADDR to {}: {}", enabled, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set SO_REUSEADDR to {}: {}", enabled, Error::FromErrno());
         return false;
     }
 
@@ -128,17 +128,17 @@ bool UdpSocket::SetReuseAddr(bool enabled) noexcept {
 
 bool UdpSocket::SetV6Only(bool enabled) noexcept {
     if (!IsValid()) {
-        logger_.Error("Cannot set IPV6_V6ONLY to {}: socket is invalid", enabled);
+        NFL_LOG_ERROR(logger_, "Cannot set IPV6_V6ONLY to {}: socket is invalid", enabled);
         return false;
     }
     if (family_ != IpAddress::Family::V6) {
-        logger_.Error("Cannot set IPV6_V6ONLY to {}: socket is not IPv6", enabled);
+        NFL_LOG_ERROR(logger_, "Cannot set IPV6_V6ONLY to {}: socket is not IPv6", enabled);
         return false;
     }
 
     int value = enabled ? 1 : 0;
     if (setsockopt(fd_.Get(), IPPROTO_IPV6, IPV6_V6ONLY, &value, sizeof(value)) != 0) {
-        logger_.Error("Cannot set IPV6_V6ONLY to {}: {}", enabled, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set IPV6_V6ONLY to {}: {}", enabled, Error::FromErrno());
         return false;
     }
 
@@ -147,17 +147,17 @@ bool UdpSocket::SetV6Only(bool enabled) noexcept {
 
 bool UdpSocket::SetMulticastInterface(const std::string& interface) {
     if (!IsValid()) {
-        logger_.Error("Cannot set multicast interface to \"{}\": socket is invalid", interface);
+        NFL_LOG_ERROR(logger_, "Cannot set multicast interface to \"{}\": socket is invalid", interface);
         return false;
     }
     if (family_ != IpAddress::Family::V6) {
-        logger_.Error("Cannot set multicast interface to \"{}\": socket is not IPv6", interface);
+        NFL_LOG_ERROR(logger_, "Cannot set multicast interface to \"{}\": socket is not IPv6", interface);
         return false;
     }
 
     const unsigned int idx = if_nametoindex(interface.c_str());
     if (idx == 0) {
-        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
     if (!IsInterfaceConsistent(interface, idx)) {
@@ -165,7 +165,7 @@ bool UdpSocket::SetMulticastInterface(const std::string& interface) {
     }
 
     if (setsockopt(fd_.Get(), IPPROTO_IPV6, IPV6_MULTICAST_IF, &idx, sizeof(idx)) != 0) {
-        logger_.Error("Cannot set IPV6_MULTICAST_IF to \"{}\" (index {}): {}",
+        NFL_LOG_ERROR(logger_, "Cannot set IPV6_MULTICAST_IF to \"{}\" (index {}): {}",
                       interface, idx, Error::FromErrno());
         return false;
     }
@@ -176,18 +176,18 @@ bool UdpSocket::SetMulticastInterface(const std::string& interface) {
 
 bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& interface) {
     if (!IsValid()) {
-        logger_.Error("Cannot join multicast group {}: socket is invalid", group);
+        NFL_LOG_ERROR(logger_, "Cannot join multicast group {}: socket is invalid", group);
         return false;
     }
     if (group.AddressFamily() != family_) {
-        logger_.Error("Cannot join multicast group {}: address family does not match the socket",
+        NFL_LOG_ERROR(logger_, "Cannot join multicast group {}: address family does not match the socket",
                       group);
         return false;
     }
 
     const unsigned int idx = if_nametoindex(interface.c_str());
     if (idx == 0) {
-        logger_.Error("Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot resolve interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
 
@@ -199,7 +199,7 @@ bool UdpSocket::JoinMulticastGroup(const IpAddress& group, const std::string& in
     group.ToSockaddr(request.gr_group, /*port=*/0);
     const int level = family_ == IpAddress::Family::V6 ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(fd_.Get(), level, MCAST_JOIN_GROUP, &request, sizeof(request)) != 0) {
-        logger_.Error("Cannot join multicast group {} on \"{}\": {}", group, interface,
+        NFL_LOG_ERROR(logger_, "Cannot join multicast group {} on \"{}\": {}", group, interface,
                       Error::FromErrno());
         return false;
     }
@@ -213,34 +213,34 @@ bool UdpSocket::Bind(uint16_t port) {
 
 bool UdpSocket::Bind(const IpEndpoint& endpoint) {
     if (!IsValid()) {
-        logger_.Error("Cannot bind to {}: socket is invalid", endpoint);
+        NFL_LOG_ERROR(logger_, "Cannot bind to {}: socket is invalid", endpoint);
         return false;
     }
     if (endpoint.addr.AddressFamily() != family_) {
-        logger_.Error("Cannot bind to {}: address family does not match the socket's", endpoint);
+        NFL_LOG_ERROR(logger_, "Cannot bind to {}: address family does not match the socket's", endpoint);
         return false;
     }
 
-    logger_.Info("Binding socket to {}", endpoint);
+    NFL_LOG_INFO(logger_, "Binding socket to {}", endpoint);
 
     sockaddr_storage storage{};
     const socklen_t length = endpoint.ToSockaddr(storage);
     if (bind(fd_.Get(), reinterpret_cast<sockaddr*>(&storage), length) != 0) {
-        logger_.Error("Cannot bind UDP socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot bind UDP socket: {}", Error::FromErrno());
         return false;
     }
 
-    logger_.Debug("Bound UDP socket to {}", endpoint);
+    NFL_LOG_DEBUG(logger_, "Bound UDP socket to {}", endpoint);
     return true;
 }
 
 bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpEndpoint& endpoint) noexcept {
     if (!IsValid()) {
-        logger_.Error("Cannot send to {}: socket is invalid", endpoint);
+        NFL_LOG_ERROR(logger_, "Cannot send to {}: socket is invalid", endpoint);
         return false;
     }
     if (endpoint.addr.AddressFamily() != family_) {
-        logger_.Error("Cannot send to {}: address family does not match the socket's", endpoint);
+        NFL_LOG_ERROR(logger_, "Cannot send to {}: address family does not match the socket's", endpoint);
         return false;
     }
 
@@ -257,11 +257,11 @@ bool UdpSocket::SendTo(std::span<const std::byte> payload, const IpEndpoint& end
             length);
     } while (bytes_sent < 0 && errno == EINTR);
     if (bytes_sent < 0) {
-        logger_.Error("Cannot send UDP packet to {}: {}", endpoint, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot send UDP packet to {}: {}", endpoint, Error::FromErrno());
         return false;
     }
 
-    logger_.Debug("Sent {} bytes to {}", bytes_sent, endpoint);
+    NFL_LOG_DEBUG(logger_, "Sent {} bytes to {}", bytes_sent, endpoint);
     return true;
 }
 

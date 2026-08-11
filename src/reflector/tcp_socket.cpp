@@ -32,13 +32,13 @@ Logger& GetLogger() noexcept {
 // is set once here instead.
 [[nodiscard]] bool ConfigureFd(int fd) noexcept {
     if (!SetNonBlocking(fd)) {
-        GetLogger().Error("Cannot set socket non-blocking: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set socket non-blocking: {}", Error::FromErrno());
         return false;
     }
 #if !defined(__linux__)
     const int on = 1;
     if (::setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)) != 0) {
-        GetLogger().Error("Cannot set SO_NOSIGPIPE: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set SO_NOSIGPIPE: {}", Error::FromErrno());
         return false;
     }
 #endif
@@ -50,7 +50,7 @@ Logger& GetLogger() noexcept {
 [[nodiscard]] bool SetNoDelay(int fd) noexcept {
     const int on = 1;
     if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on)) != 0) {
-        GetLogger().Error("Cannot set TCP_NODELAY: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set TCP_NODELAY: {}", Error::FromErrno());
         return false;
     }
     return true;
@@ -64,7 +64,7 @@ Logger& GetLogger() noexcept {
 #if defined(__linux__)
     const auto name = egress_if.Name();
     if (::setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, name.data(), narrow_cast<socklen_t>(name.size())) != 0) {
-        GetLogger().Error("Cannot pin egress to interface \"{}\": {}", name, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot pin egress to interface \"{}\": {}", name, Error::FromErrno());
         return false;
     }
 #elif defined(__APPLE__)
@@ -72,7 +72,7 @@ Logger& GetLogger() noexcept {
     const int level = family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IP;
     const int optname = family == AF_INET6 ? IPV6_BOUND_IF : IP_BOUND_IF;
     if (::setsockopt(fd, level, optname, &ifindex, sizeof(ifindex)) != 0) {
-        GetLogger().Error("Cannot pin egress to interface index {}: {}", ifindex, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot pin egress to interface index {}: {}", ifindex, Error::FromErrno());
         return false;
     }
 #else
@@ -80,7 +80,7 @@ Logger& GetLogger() noexcept {
     // the source-address bind the caller performs before connect() (and, for link-local IPv6, the scope
     // id in the destination sockaddr). Correct when the peer is on a directly-connected subnet of
     // egress_if — the route to it then leaves via egress_if anyway; otherwise the routing table decides.
-    GetLogger().Debug("No egress-pin primitive; relying on source-address bind to reach via \"{}\"",
+    NFL_LOG_DEBUG(GetLogger(), "No egress-pin primitive; relying on source-address bind to reach via \"{}\"",
         egress_if.Name());
 #endif
     return true;
@@ -92,7 +92,7 @@ Logger& GetLogger() noexcept {
     sockaddr_storage addr{};
     socklen_t len = sizeof(addr);
     if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-        GetLogger().Error("Cannot read local endpoint for fd {}: {}", fd, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot read local endpoint for fd {}: {}", fd, Error::FromErrno());
         return std::nullopt;
     }
     // getsockname filled the bytes; begin a sockaddr's lifetime over them for FromSockaddr's
@@ -143,7 +143,7 @@ void TcpSocket::Shutdown() noexcept {
 
 void TcpSocket::Close() noexcept {
     if (fd_) {
-        logger_.Debug("Closing socket");
+        NFL_LOG_DEBUG(logger_, "Closing socket");
         fd_.Reset();
     }
 }
@@ -152,7 +152,7 @@ std::optional<TcpSocket> TcpSocket::Listen(const Interface& iface, IpAddress::Fa
     uint16_t port) {
     const auto address = iface.SourceAddress(family);
     if (!address) {
-        GetLogger().Error("Cannot listen on \"{}\": the interface has no {} source address",
+        NFL_LOG_ERROR(GetLogger(), "Cannot listen on \"{}\": the interface has no {} source address",
             iface.Name(), family);
         return std::nullopt;
     }
@@ -160,7 +160,7 @@ std::optional<TcpSocket> TcpSocket::Listen(const Interface& iface, IpAddress::Fa
     const int af = bind.addr.IsV6() ? AF_INET6 : AF_INET;
     const int fd = ::socket(af, SOCK_STREAM, 0);
     if (fd < 0) {
-        GetLogger().Error("Cannot create listening socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot create listening socket: {}", Error::FromErrno());
         return std::nullopt;
     }
     const int on = 1;
@@ -169,7 +169,7 @@ std::optional<TcpSocket> TcpSocket::Listen(const Interface& iface, IpAddress::Fa
         return std::nullopt;
     }
     if (::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) != 0) {
-        GetLogger().Error("Cannot set SO_REUSEADDR: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set SO_REUSEADDR: {}", Error::FromErrno());
         ::close(fd);
         return std::nullopt;
     }
@@ -177,7 +177,7 @@ std::optional<TcpSocket> TcpSocket::Listen(const Interface& iface, IpAddress::Fa
     const socklen_t len = bind.ToSockaddr(addr, iface.Index());
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), len) != 0
         || ::listen(fd, SOMAXCONN) != 0) {
-        GetLogger().Error("Cannot bind/listen on {}: {}", bind, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot bind/listen on {}: {}", bind, Error::FromErrno());
         ::close(fd);
         return std::nullopt;
     }
@@ -197,7 +197,7 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interfa
         const auto family = dst.addr.AddressFamily();
         const auto source = egress_if->SourceAddress(family);
         if (!source) {
-            GetLogger().Error("Cannot connect to {}: interface \"{}\" has no {} source address",
+            NFL_LOG_ERROR(GetLogger(), "Cannot connect to {}: interface \"{}\" has no {} source address",
                 dst, egress_if->Name(), family);
             return std::nullopt;
         }
@@ -206,7 +206,7 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interfa
     const int af = dst.addr.IsV6() ? AF_INET6 : AF_INET;
     const int fd = ::socket(af, SOCK_STREAM, 0);
     if (fd < 0) {
-        GetLogger().Error("Cannot create connect socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot create connect socket: {}", Error::FromErrno());
         return std::nullopt;
     }
     const unsigned scope_id = egress_if != nullptr ? egress_if->Index() : 0;
@@ -218,7 +218,7 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interfa
         sockaddr_storage src{};
         const socklen_t src_len = bind->ToSockaddr(src, scope_id);
         if (::bind(fd, reinterpret_cast<sockaddr*>(&src), src_len) != 0) {
-            GetLogger().Error("Cannot bind connect source to {}: {}", *bind, Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot bind connect source to {}: {}", *bind, Error::FromErrno());
             ::close(fd);
             return std::nullopt;
         }
@@ -226,7 +226,7 @@ std::optional<TcpSocket> TcpSocket::Connect(const IpEndpoint& dst, const Interfa
     sockaddr_storage dest{};
     const socklen_t dest_len = dst.ToSockaddr(dest, scope_id);
     if (::connect(fd, reinterpret_cast<sockaddr*>(&dest), dest_len) != 0 && errno != EINPROGRESS) {
-        GetLogger().Error("Cannot connect to {}: {}", dst, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot connect to {}: {}", dst, Error::FromErrno());
         ::close(fd);
         return std::nullopt;
     }
@@ -251,7 +251,7 @@ std::optional<TcpSocket> TcpSocket::Accept() noexcept {
 #endif
     if (client < 0) {
         if (!IsWouldBlockErrno(errno)) {
-            GetLogger().Error("Cannot accept connection: {}", Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot accept connection: {}", Error::FromErrno());
         }
         return std::nullopt;
     }
@@ -282,11 +282,11 @@ bool TcpSocket::FinishConnect() noexcept {
     int so_error = 0;
     socklen_t len = sizeof(so_error);
     if (::getsockopt(fd_.Get(), SOL_SOCKET, SO_ERROR, &so_error, &len) != 0) {
-        logger_.Error("Cannot read SO_ERROR: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot read SO_ERROR: {}", Error::FromErrno());
         return false;
     }
     if (so_error != 0) {
-        logger_.Error("Connect failed: {}", Error::FromErrno(so_error));
+        NFL_LOG_ERROR(logger_, "Connect failed: {}", Error::FromErrno(so_error));
         return false;
     }
     connecting_ = false;
@@ -310,7 +310,7 @@ IoResult TcpSocket::Read(std::span<std::byte> out) noexcept {
     if (IsWouldBlockErrno(errno)) {
         return {IoStatus::WouldBlock, 0};
     }
-    logger_.Error("Receive failed: {}", Error::FromErrno());
+    NFL_LOG_ERROR(logger_, "Receive failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -338,7 +338,7 @@ IoResult TcpSocket::WriteSome(std::span<const std::byte> data) noexcept {
         return {IoStatus::WouldBlock, 0};
     }
 #endif
-    logger_.Error("Send failed: {}", Error::FromErrno());
+    NFL_LOG_ERROR(logger_, "Send failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -380,7 +380,7 @@ IoResult TcpSocket::WriteSomeV(std::span<const std::span<const std::byte>> chunk
         return {IoStatus::WouldBlock, 0};
     }
 #endif
-    logger_.Error("Send failed: {}", Error::FromErrno());
+    NFL_LOG_ERROR(logger_, "Send failed: {}", Error::FromErrno());
     return {IoStatus::Error, 0};
 }
 
@@ -399,12 +399,12 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         }
     }
     if (!send_buffer_.Append(data)) {
-        logger_.Error("Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
+        NFL_LOG_ERROR(logger_, "Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
             send_buffer_.Size(), data.size(), MAX_SEND_BUFFER);
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering) {
-        logger_.Debug("Started buffering, {} bytes queued", send_buffer_.Size());
+        NFL_LOG_DEBUG(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -414,7 +414,7 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
     // buffers and flushes on later writable edges — but a caller only ever passes a header + body (2 chunks),
     // so a scatter this large is unexpected: warn and carry on.
     if (chunks.size() > MAX_SEND_CHUNKS) {
-        logger_.Warn("Scatter-send of {} chunks exceeds the {}-chunk sendmsg cap; the overflow "
+        NFL_LOG_WARN(logger_, "Scatter-send of {} chunks exceeds the {}-chunk sendmsg cap; the overflow "
             "buffers and flushes on later writable edges", chunks.size(), MAX_SEND_CHUNKS);
     }
     // Write through only when nothing is already queued; otherwise the chunks follow the backlog in order
@@ -434,12 +434,12 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
         for (const std::span<const std::byte> chunk : chunks) {
             total += chunk.size();
         }
-        logger_.Error("Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
+        NFL_LOG_ERROR(logger_, "Send buffer overflow: {} queued + {}-byte tail exceeds the {}-byte cap",
             backlog, total - already_sent, MAX_SEND_BUFFER);
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering && !send_buffer_.Empty()) {
-        logger_.Debug("Started buffering, {} bytes queued", send_buffer_.Size());
+        NFL_LOG_DEBUG(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -474,7 +474,7 @@ bool TcpSocket::Flush() noexcept {
         send_buffer_.Consume(wrote.bytes);
     }
     if (was_buffering && send_buffer_.Empty()) {
-        logger_.Debug("Send buffer drained, resumed direct writes");
+        NFL_LOG_DEBUG(logger_, "Send buffer drained, resumed direct writes");
     }
     return true;
 }

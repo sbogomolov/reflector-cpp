@@ -46,37 +46,37 @@ EventLoopDispatcher::EventLoopDispatcher() {
 #endif
 
     if (!event_fd_) {
-        GetLogger().Error("Cannot create dispatcher event queue: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot create dispatcher event queue: {}", Error::FromErrno());
     } else {
-        GetLogger().Debug("Created dispatcher event queue fd {}", event_fd_.Get());
+        NFL_LOG_DEBUG(GetLogger(), "Created dispatcher event queue fd {}", event_fd_.Get());
     }
 }
 
 EventLoopDispatcher::~EventLoopDispatcher() noexcept {
     if (!callbacks_.empty()) {
-        GetLogger().Error("Destroying dispatcher with {} fd callback registration(s) still active", callbacks_.size());
+        NFL_LOG_ERROR(GetLogger(), "Destroying dispatcher with {} fd callback registration(s) still active", callbacks_.size());
     }
     if (!timers_.empty()) {
-        GetLogger().Error("Destroying dispatcher with {} timer registration(s) still active", timers_.size());
+        NFL_LOG_ERROR(GetLogger(), "Destroying dispatcher with {} timer registration(s) still active", timers_.size());
     }
 
     if (event_fd_) {
-        GetLogger().Debug("Closing dispatcher event queue fd {}", event_fd_.Get());
+        NFL_LOG_DEBUG(GetLogger(), "Closing dispatcher event queue fd {}", event_fd_.Get());
         event_fd_.Reset();
     }
 }
 
 Dispatcher::Registration EventLoopDispatcher::Register(int fd, FdCallbacks callbacks) {
     if (fd < 0) {
-        GetLogger().Error("Cannot register fd callback: fd is invalid");
+        NFL_LOG_ERROR(GetLogger(), "Cannot register fd callback: fd is invalid");
         return {};
     }
     if (!callbacks.read.IsValid()) {
-        GetLogger().Error("Cannot register fd callback: a read handler is required for fd {}", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot register fd callback: a read handler is required for fd {}", fd);
         return {};
     }
     if (callbacks_.contains(fd)) {
-        GetLogger().Error("Cannot register fd callback: a callback for fd {} is already registered", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot register fd callback: a callback for fd {} is already registered", fd);
         return {};
     }
     // Insert first so SetEvents reads the requested initial write arm state from the entry, then
@@ -86,18 +86,18 @@ Dispatcher::Registration EventLoopDispatcher::Register(int fd, FdCallbacks callb
     if (!SetEvents(fd, it->second.write_armed)) {
         RemoveEvents(fd);
         callbacks_.erase(it);
-        GetLogger().Error("Cannot register fd callback: event registration failed for fd {}", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot register fd callback: event registration failed for fd {}", fd);
         return {};
     }
 
-    GetLogger().Debug("Registered fd callback for fd {}", fd);
+    NFL_LOG_DEBUG(GetLogger(), "Registered fd callback for fd {}", fd);
     return MakeRegistration(fd);
 }
 
 bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warn("Cannot set write interest for fd {}: not registered", fd);
+        NFL_LOG_WARN(GetLogger(), "Cannot set write interest for fd {}: not registered", fd);
         return false;
     }
     if (it->second.write_armed == enabled) {
@@ -113,23 +113,23 @@ bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
 bool EventLoopDispatcher::Unregister(int fd) noexcept {
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warn("Cannot unregister fd callback for fd {}: not found", fd);
+        NFL_LOG_WARN(GetLogger(), "Cannot unregister fd callback for fd {}: not found", fd);
         return false;
     }
 
     callbacks_.erase(it);
     if (!RemoveEvents(fd)) {
-        GetLogger().Error("Cannot remove events for fd {} after unregistering its callback", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot remove events for fd {} after unregistering its callback", fd);
     }
 
-    GetLogger().Debug("Unregistered fd callback for fd {}", fd);
+    NFL_LOG_DEBUG(GetLogger(), "Unregistered fd callback for fd {}", fd);
     return true;
 }
 
 void EventLoopDispatcher::Run(const volatile std::sig_atomic_t& stop_requested) {
-    GetLogger().Info("Starting dispatcher event loop");
+    NFL_LOG_INFO(GetLogger(), "Starting dispatcher event loop");
     if (!event_fd_) {
-        GetLogger().Error("Cannot run dispatcher: event queue is invalid");
+        NFL_LOG_ERROR(GetLogger(), "Cannot run dispatcher: event queue is invalid");
         return;
     }
     while (stop_requested == 0) {
@@ -140,12 +140,12 @@ void EventLoopDispatcher::Run(const volatile std::sig_atomic_t& stop_requested) 
         FireDueTimers(now);
         PollOnce(NextTimeout(now));
     }
-    GetLogger().Info("Stopped dispatcher event loop");
+    NFL_LOG_INFO(GetLogger(), "Stopped dispatcher event loop");
 }
 
 bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (!event_fd_) {
-        GetLogger().Error("Cannot poll dispatcher: event queue is invalid");
+        NFL_LOG_ERROR(GetLogger(), "Cannot poll dispatcher: event queue is invalid");
         return false;
     }
 
@@ -157,7 +157,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
             return false;
         }
-        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot poll dispatcher read events: {}", Error::FromErrno());
         return false;
     }
     if (event_count == 0) {
@@ -174,7 +174,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
             return false;
         }
-        GetLogger().Error("Cannot poll dispatcher read events: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot poll dispatcher read events: {}", Error::FromErrno());
         return false;
     }
     if (event_count == 0) {
@@ -182,14 +182,14 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     }
     const auto fd = static_cast<int>(event.ident);
     if ((event.flags & EV_ERROR) != 0) {
-        GetLogger().Error("Dispatcher read event failed for fd {}: {}", fd, event.data);
+        NFL_LOG_ERROR(GetLogger(), "Dispatcher read event failed for fd {}: {}", fd, event.data);
         return false;
     }
 #endif
 
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warn("Dispatcher woke for unwatched fd {}", fd);
+        NFL_LOG_WARN(GetLogger(), "Dispatcher woke for unwatched fd {}", fd);
         return false;
     }
 
@@ -237,13 +237,13 @@ EventLoopDispatcher::TimerId EventLoopDispatcher::AllocateTimerId() noexcept {
 bool EventLoopDispatcher::RegisterTimer(
     TimerId id, std::chrono::milliseconds interval, const OnTimerCallback& callback) {
     if (static_cast<uint64_t>(id) >= next_timer_id_) {
-        GetLogger().Error("Cannot register timer: TimerId {} was not allocated by this dispatcher",
+        NFL_LOG_ERROR(GetLogger(), "Cannot register timer: TimerId {} was not allocated by this dispatcher",
             static_cast<uint64_t>(id));
         return false;
     }
     if (interval <= std::chrono::milliseconds{0} || !callback.IsValid()) {
         UnregisterTimer(id);  // an invalid (re-)registration leaves the timer stopped, like Start with bad args
-        GetLogger().Error("Cannot register timer: non-positive interval or invalid callback");
+        NFL_LOG_ERROR(GetLogger(), "Cannot register timer: non-positive interval or invalid callback");
         return false;
     }
     // Reuse the existing entry for this id rather than append: an appended entry sits past FireDueTimers'
@@ -261,7 +261,7 @@ bool EventLoopDispatcher::RegisterTimer(
     } else {
         timers_.push_back(registration);
     }
-    GetLogger().Debug("Registered timer {} (interval {}ms); {} active", static_cast<uint64_t>(id),
+    NFL_LOG_DEBUG(GetLogger(), "Registered timer {} (interval {}ms); {} active", static_cast<uint64_t>(id),
         interval.count(), std::ranges::count_if(timers_, [](const TimerEntry& entry) { return entry.enabled; }));
     return true;
 }
@@ -278,7 +278,7 @@ void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {
     } else {
         timers_.erase(it);  // no walk in progress; erase in place
     }
-    GetLogger().Debug("Unregistered timer {}; {} active", static_cast<uint64_t>(id),
+    NFL_LOG_DEBUG(GetLogger(), "Unregistered timer {}; {} active", static_cast<uint64_t>(id),
         std::ranges::count_if(timers_, [](const TimerEntry& t) { return t.enabled; }));
 }
 
@@ -316,18 +316,18 @@ std::chrono::milliseconds EventLoopDispatcher::NextTimeout(std::chrono::steady_c
 
 bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     if (!event_fd_) {
-        GetLogger().Error("Cannot set events for fd {}: event queue is invalid", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot set events for fd {}: event queue is invalid", fd);
         return false;
     }
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Error("Cannot set events for fd {}: not registered", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot set events for fd {}: not registered", fd);
         return false;
     }
     // Refuse to arm write with no write handler: a writable fd with nothing to invoke would busy-spin
     // the level-triggered loop. (Read is always armed; Register guarantees a read handler.)
     if (enable_write && !it->second.write.IsValid()) {
-        GetLogger().Error("Cannot arm write interest for fd {}: no write callback registered", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot arm write interest for fd {}: no write callback registered", fd);
         return false;
     }
 
@@ -340,7 +340,7 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     event.data.fd = fd;
     if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_MOD, fd, &event) != 0
         && (errno != ENOENT || epoll_ctl(event_fd_.Get(), EPOLL_CTL_ADD, fd, &event) != 0)) {
-        GetLogger().Error("Cannot set events for fd {}: {}", fd, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #else
@@ -350,24 +350,24 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     struct kevent change{};
     EV_SET(&change, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
     if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0) {
-        GetLogger().Error("Cannot arm read interest for fd {}: {}", fd, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot arm read interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
     const auto write_flags = static_cast<uint16_t>(enable_write ? (EV_ADD | EV_ENABLE) : EV_DISABLE);
     EV_SET(&change, fd, EVFILT_WRITE, write_flags, 0, 0, nullptr);
     if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0 && (enable_write || errno != ENOENT)) {
-        GetLogger().Error("Cannot set write interest for fd {}: {}", fd, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot set write interest for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #endif
 
-    GetLogger().Debug("Set events for fd {}: write {}", fd, enable_write);
+    NFL_LOG_DEBUG(GetLogger(), "Set events for fd {}: write {}", fd, enable_write);
     return true;
 }
 
 bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     if (!event_fd_) {
-        GetLogger().Error("Cannot remove events for fd {}: event queue is invalid", fd);
+        NFL_LOG_ERROR(GetLogger(), "Cannot remove events for fd {}: event queue is invalid", fd);
         return false;
     }
 
@@ -375,7 +375,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     // ENOENT is benign: the kernel auto-removes a closed fd, so a DEL issued after the owner already
     // closed it hits ENOENT (matching the kqueue branch below). Any other failure is a real error.
     if (epoll_ctl(event_fd_.Get(), EPOLL_CTL_DEL, fd, nullptr) != 0 && errno != ENOENT) {
-        GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot remove events for fd {}: {}", fd, Error::FromErrno());
         return false;
     }
 #else
@@ -387,7 +387,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
         struct kevent change{};
         EV_SET(&change, fd, static_cast<int16_t>(filter), EV_DELETE, 0, 0, nullptr);
         if (kevent(event_fd_.Get(), &change, 1, nullptr, 0, nullptr) != 0 && errno != ENOENT) {
-            GetLogger().Error("Cannot remove events for fd {}: {}", fd, Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot remove events for fd {}: {}", fd, Error::FromErrno());
             ok = false;
         }
     }
@@ -396,7 +396,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     }
 #endif
 
-    GetLogger().Debug("Removed events for fd {}", fd);
+    NFL_LOG_DEBUG(GetLogger(), "Removed events for fd {}", fd);
     return true;
 }
 

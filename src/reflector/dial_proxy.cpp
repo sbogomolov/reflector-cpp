@@ -48,7 +48,7 @@ void DialProxy::OnInterfaceChanged() noexcept {
             endpoints_.clear();
         }
         if (connections > 0 || listeners > 0) {
-            logger_.Info("{}_if was replaced; dropped {} connection(s) and {} listener(s)",
+            NFL_LOG_INFO(logger_, "{}_if was replaced; dropped {} connection(s) and {} listener(s)",
                 source_replaced ? "source" : "target", connections, listeners);
         }
     }
@@ -68,7 +68,7 @@ void DialProxy::OnInterfaceChanged() noexcept {
     const auto dropped = std::erase_if(endpoints_, [&](const auto& entry) { return is_stale(entry.second); });
 
     if (dropped > 0) {
-        logger_.Info("source_if V4 source is now {}; dropped {} stale DIAL listener(s) for re-mint",
+        NFL_LOG_INFO(logger_, "source_if V4 source is now {}; dropped {} stale DIAL listener(s) for re-mint",
             current ? current->ToString() : "none", dropped);
     }
     if (connections_.empty() && endpoints_.empty()) {
@@ -102,7 +102,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         // Over cap: refuse without demoting (close-don't-forward, as a fresh over-cap mint does).
         if (role == Endpoint::Role::Rest && endpoint.role == Endpoint::Role::Discovery) {
             if (CountInRole(Endpoint::Role::Rest) >= MAX_REST_LISTENERS) {
-                logger_.Error("Cannot promote {} to rest: rest listener cap reached", device);
+                NFL_LOG_ERROR(logger_, "Cannot promote {} to rest: rest listener cap reached", device);
                 return std::nullopt;
             }
             endpoint.role = Endpoint::Role::Rest;
@@ -114,14 +114,14 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         ? MAX_DISCOVERY_LISTENERS
         : MAX_REST_LISTENERS;
     if (CountInRole(role) >= role_cap) {
-        logger_.Error("Cannot proxy {}: {} listener cap reached", device,
+        NFL_LOG_ERROR(logger_, "Cannot proxy {}: {} listener cap reached", device,
             role == Endpoint::Role::Rest ? "rest" : "discovery");
         return std::nullopt;
     }
 
     auto listener = TcpSocket::Listen(*source_if_, IpAddress::Family::V4);
     if (!listener) {
-        logger_.Error("Cannot proxy {}: failed to open a listener", device);  // Listen logged the cause
+        NFL_LOG_ERROR(logger_, "Cannot proxy {}: failed to open a listener", device);  // Listen logged the cause
         return std::nullopt;
     }
     const auto authority = listener->LocalEndpoint();
@@ -134,7 +134,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
 
     auto registration = dispatcher_->Register(listener_fd, CreateDelegate<&DialProxy::OnAccept>(this));
     if (!registration.IsValid()) {
-        logger_.Error("Cannot proxy {}: failed to register the listener", device);
+        NFL_LOG_ERROR(logger_, "Cannot proxy {}: failed to register the listener", device);
         endpoints_.erase(it);  // drops the listener (registration was never valid)
         return std::nullopt;
     }
@@ -148,7 +148,7 @@ std::optional<IpEndpoint> DialProxy::EnsureListener(const IpEndpoint& device, En
         eviction_timer_.Start(EVICTION_INTERVAL, CreateDelegate<&DialProxy::EvictExpired>(this));
     }
 
-    logger_.Debug("Created {} listener {} for {}", role == Endpoint::Role::Rest ? "rest" : "discovery",
+    NFL_LOG_DEBUG(logger_, "Created {} listener {} for {}", role == Endpoint::Role::Rest ? "rest" : "discovery",
         authority, device);
     return authority;
 }
@@ -183,7 +183,7 @@ void DialProxy::Connection::Abort() noexcept {
 
 void DialProxy::Connection::Sync(TcpSocket& sock) noexcept {
     if (!owner->dispatcher_->SetWriteInterest(sock.Fd(), sock.WantsWrite())) {
-        owner->logger_.Error("Cannot set write interest for fd {} (device {}); aborting connection",
+        NFL_LOG_ERROR(owner->logger_, "Cannot set write interest for fd {} (device {}); aborting connection",
             sock.Fd(), endpoint->device);
         Abort();
     }
@@ -315,7 +315,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
 
     auto* ep = FindEndpointByListenerFd(listener_fd);
     if (ep == nullptr) {
-        logger_.Error("Accept on fd {} has no owning endpoint; ignoring", listener_fd);
+        NFL_LOG_ERROR(logger_, "Accept on fd {} has no owning endpoint; ignoring", listener_fd);
         return;
     }
     ep->last_active = now;
@@ -326,13 +326,13 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     }
 
     if (connections_.size() >= MAX_CONNECTIONS) {
-        logger_.Warn("Dropping accept for {}: connection cap reached", ep->device);
+        NFL_LOG_WARN(logger_, "Dropping accept for {}: connection cap reached", ep->device);
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 
     auto upstream = TcpSocket::Connect(ep->device, target_if_.Get());
     if (!upstream) {
-        logger_.Error("Dropping accept for {}: failed to start the upstream connect", ep->device);
+        NFL_LOG_ERROR(logger_, "Dropping accept for {}: failed to start the upstream connect", ep->device);
         return;
     }
 
@@ -363,13 +363,13 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
         client_reg = {};
         upstream_reg = {};
         connections_.erase(it);
-        logger_.Error("Dropping accept for {}: failed to register the connection fds", ep->device);
+        NFL_LOG_ERROR(logger_, "Dropping accept for {}: failed to register the connection fds", ep->device);
         return;
     }
 
     conn.client_reg = std::move(client_reg);
     conn.upstream_reg = std::move(upstream_reg);
-    logger_.Debug("Opened connection {} (client fd {}, upstream fd {}) for {}", id, client_fd, upstream_fd,
+    NFL_LOG_DEBUG(logger_, "Opened connection {} (client fd {}, upstream fd {}) for {}", id, client_fd, upstream_fd,
         ep->device);
 }
 
@@ -401,7 +401,7 @@ void DialProxy::EvictExpired(std::chrono::steady_clock::time_point now) noexcept
     });
 
     if (connections_reaped > 0 || endpoints_reaped > 0) {
-        logger_.Debug("Evicted {} connection(s) and {} listener(s); {} connection(s), {} listener(s) remain",
+        NFL_LOG_DEBUG(logger_, "Evicted {} connection(s) and {} listener(s); {} connection(s), {} listener(s) remain",
             connections_reaped, endpoints_reaped, connections_.size(), endpoints_.size());
     }
 

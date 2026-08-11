@@ -34,10 +34,10 @@ TEST(LoggerTest, MinLevelSuppressesLowerSeverityMessages) {
     Logger logger{"LoggerTest"};
 
     const std::string output = CaptureStdout([&] {
-        logger.Debug("hidden debug message");
-        logger.Info("hidden info message");
-        logger.Warn("visible warning message");
-        logger.Error("visible error message");
+        NFL_LOG_DEBUG(logger, "hidden debug message");
+        NFL_LOG_INFO(logger, "hidden info message");
+        NFL_LOG_WARN(logger, "visible warning message");
+        NFL_LOG_ERROR(logger, "visible error message");
     });
 
     EXPECT_EQ(output.find("hidden debug message"), std::string::npos) << output;
@@ -51,7 +51,7 @@ TEST(LoggerTest, NameAppearsInOutput) {
     Logger logger{"NamedLogger"};
 
     const std::string output = CaptureStdout([&] {
-        logger.Info("message from a named logger");
+        NFL_LOG_INFO(logger, "message from a named logger");
     });
 
     EXPECT_NE(output.find("[NamedLogger]"), std::string::npos) << output;
@@ -67,8 +67,8 @@ TEST(LoggerTest, NameSurvivesMoveConstructionAndAssignment) {
     move_assigned_target = std::move(assigned_from);
 
     const std::string output = CaptureStdout([&] {
-        move_constructed.Info("message from the move constructed logger");
-        move_assigned_target.Info("message from the move assigned logger");
+        NFL_LOG_INFO(move_constructed, "message from the move constructed logger");
+        NFL_LOG_INFO(move_assigned_target, "message from the move assigned logger");
     });
 
     EXPECT_NE(output.find("[MoveConstructedLogger]"), std::string::npos) << output;
@@ -86,8 +86,8 @@ TEST(LoggerTest, DynamicNameSurvivesMoveConstructionAndAssignment) {
     move_assigned_target = std::move(assigned_from);
 
     const std::string output = CaptureStdout([&] {
-        move_constructed.Info("message from move constructed dynamic logger");
-        move_assigned_target.Info("message from move assigned dynamic logger");
+        NFL_LOG_INFO(move_constructed, "message from move constructed dynamic logger");
+        NFL_LOG_INFO(move_assigned_target, "message from move assigned dynamic logger");
     });
 
     EXPECT_NE(output.find("[MoveConstructedDynamicLoggerName]"), std::string::npos) << output;
@@ -108,7 +108,7 @@ TEST(LoggerTest, LogLineIncludesSourceLocation) {
     Logger logger{"LoggerTest"};
 
     const std::string output = CaptureStdout([&] {
-        logger.Info("a message");
+        NFL_LOG_INFO(logger, "a message");
     });
 
     // The line carries the call site as basename:line; parse the number to prove a line follows.
@@ -130,7 +130,7 @@ TEST(LoggerTest, MarksAnOverlongMessageAndKeepsWhatFollowsIt) {
     // Longer than any record buffer, so the message is cut wherever that boundary sits.
     const std::string argument(8192, 'x');
     const std::string output = CaptureStdout([&] {
-        logger.Info("{}", argument);
+        NFL_LOG_INFO(logger, "{}", argument);
     });
 
     // The marker and the source location both land past the cut message, so the tail is what
@@ -156,9 +156,9 @@ TEST(LoggerTest, EmittingARecordDoesNotAllocate) {
 
     size_t allocated = 0;
     const std::string output = CaptureStdout([&] {
-        logger.Info("warm-up: the redirected stream buffers itself on its first write");
+        NFL_LOG_INFO(logger, "warm-up: the redirected stream buffers itself on its first write");
         const ScopedAllocationCounter counter;
-        logger.Info("group {} via {} port {}", address, mac, 1900);
+        NFL_LOG_INFO(logger, "group {} via {} port {}", address, mac, 1900);
         allocated = counter.Count();
     });
 
@@ -173,12 +173,28 @@ TEST(LoggerTest, EndsTheLineWhenEvenTheRecordIsTruncated) {
     Logger logger{std::string(8192, 'n')};  // the name alone overruns the record buffer
 
     const std::string output = CaptureStdout([&] {
-        logger.Info("a message");
+        NFL_LOG_INFO(logger, "a message");
     });
 
     // Exactly one newline, at the very end: the reserved slot held, and the record is a single line.
     ASSERT_FALSE(output.empty());
     EXPECT_EQ(output.find('\n'), output.size() - 1);
+}
+// The macro gates on the level before the arguments are formed, so a filtered record costs nothing
+// past the comparison. Calling Logger::Debug directly still builds every argument first.
+TEST(LoggerTest, AFilteredRecordDoesNotEvaluateItsArguments) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"GateLogger"};
+    int evaluated = 0;
+    const auto counted = [&evaluated] { return ++evaluated; };
+
+    NFL_LOG_DEBUG(logger, "suppressed {}", counted());
+    EXPECT_EQ(evaluated, 0);
+
+    const std::string output = CaptureStdout([&] { NFL_LOG_INFO(logger, "emitted {}", counted()); });
+
+    EXPECT_EQ(evaluated, 1);
+    EXPECT_NE(output.find("emitted 1"), std::string::npos) << output;
 }
 
 }  // namespace reflector

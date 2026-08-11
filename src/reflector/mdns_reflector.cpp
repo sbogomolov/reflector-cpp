@@ -36,7 +36,7 @@ MdnsReflector::MdnsReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
 
 bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
     if (const auto error = config.Verify()) {
-        logger_.Error("Cannot create mdns reflector \"{}\": invalid config: {}", config.name, *error);
+        NFL_LOG_ERROR(logger_, "Cannot create mdns reflector \"{}\": invalid config: {}", config.name, *error);
         return false;
     }
     return true;
@@ -44,7 +44,7 @@ bool MdnsReflector::ValidateConfig(const MdnsConfig& config) {
 
 void MdnsReflector::Initialize(const MdnsConfig& config) {
     if (config.mac && !target_socket_->LinkCarriesMacs()) {
-        logger_.Error("Cannot create mdns reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
+        NFL_LOG_ERROR(logger_, "Cannot create mdns reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
             config.name, config.target_if);
         return;
     }
@@ -52,12 +52,12 @@ void MdnsReflector::Initialize(const MdnsConfig& config) {
     // tracks the AND): the target re-emits relayed queries, the source re-emits relayed responses.
     // A required family must already be reflectable; an optional one comes up later if it ever is.
     if (config.RequiresIPv4() && !capability_.CanSend(IpAddress::Family::V4)) {
-        logger_.Error("Cannot create mdns reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
+        NFL_LOG_ERROR(logger_, "Cannot create mdns reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
     if (config.RequiresIPv6() && !capability_.CanSend(IpAddress::Family::V6)) {
-        logger_.Error("Cannot create mdns reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
+        NFL_LOG_ERROR(logger_, "Cannot create mdns reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
@@ -67,7 +67,7 @@ void MdnsReflector::Initialize(const MdnsConfig& config) {
     }
 
     valid_ = true;
-    logger_.Info("Created mdns reflector (IPv4: {}, IPv6: {})",
+    NFL_LOG_INFO(logger_, "Created mdns reflector (IPv4: {}, IPv6: {})",
         capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
         capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled");
 }
@@ -81,7 +81,7 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
     auto source_membership = source_socket_->JoinMulticastGroup(group);
     auto target_membership = target_socket_->JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
-        logger_.Error("Cannot reflect mdns {}: cannot join the group on both interfaces", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect mdns {}: cannot join the group on both interfaces", group);
         return false;
     }
 
@@ -90,7 +90,7 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
         PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT},
         CreateDelegate<&MdnsReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
-        logger_.Error("Cannot reflect mdns {}: registration failed (source)", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect mdns {}: registration failed (source)", group);
         return false;
     }
 
@@ -99,7 +99,7 @@ bool MdnsReflector::BringUpFamily(IpAddress::Family family) {
         PacketFilter{.dest_ip = group, .dest_port = MDNS_PORT, .source_mac = config_mac_},
         CreateDelegate<&MdnsReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
-        logger_.Error("Cannot reflect mdns {}: registration failed (target)", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect mdns {}: registration failed (target)", group);
         return false;
     }
 
@@ -130,7 +130,7 @@ bool MdnsReflector::ShouldRelay(const Packet& packet, MdnsMessageKind kind) noex
         // The group + port 5353 should carry only mDNS, so a payload too short to be a DNS message
         // is anomalous and worth surfacing — the dedicated group means this won't spam a healthy
         // network. A message of the other kind, by contrast, is normal and dropped silently.
-        logger_.Info("Ignoring non-mDNS packet on {} from {}: {}-byte payload too short for a DNS header",
+        NFL_LOG_INFO(logger_, "Ignoring non-mDNS packet on {} from {}: {}-byte payload too short for a DNS header",
             packet.header.dest, packet.header.source, packet.payload.size());
         return false;
     }
@@ -141,10 +141,10 @@ void MdnsReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
     // Re-emit to the same group it was sent to (the filter guarantees dest_ip is that group), from
     // the mDNS port, with the conventional 255 hop limit.
     if (!egress.SendUdpMulticastDatagram(packet.header.dest, MDNS_PORT, packet.payload, MDNS_TTL)) {
-        logger_.Error("Cannot reflect mdns packet from {} to {}", packet.header.source, packet.header.dest);
+        NFL_LOG_ERROR(logger_, "Cannot reflect mdns packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    logger_.Debug("Reflected mdns packet from {} to {}", packet.header.source, packet.header.dest);
+    NFL_LOG_DEBUG(logger_, "Reflected mdns packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 } // namespace reflector

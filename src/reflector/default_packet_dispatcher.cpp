@@ -25,14 +25,14 @@ DefaultPacketDispatcher::DefaultPacketDispatcher(Dispatcher& dispatcher)
 
 DefaultPacketDispatcher::~DefaultPacketDispatcher() noexcept {
     if (!registrations_.empty()) {
-        GetLogger().Error("Destroying packet dispatcher with {} registration(s) still active", registrations_.size());
+        NFL_LOG_ERROR(GetLogger(), "Destroying packet dispatcher with {} registration(s) still active", registrations_.size());
     }
 }
 
 PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     LinkSocket& socket, const PacketFilter& filter, const PacketCallback& callback) {
     if (!socket.IsValid()) {
-        GetLogger().Error("Cannot register packet callback: capture socket is invalid");
+        NFL_LOG_ERROR(GetLogger(), "Cannot register packet callback: capture socket is invalid");
         return {};
     }
 
@@ -42,7 +42,7 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
         // First subscriber for this socket: start watching its fd through the Dispatcher.
         auto dispatcher_reg = dispatcher_->Register(fd, CreateDelegate<&DefaultPacketDispatcher::OnReadable>(this));
         if (!dispatcher_reg.IsValid()) {
-            GetLogger().Error("Cannot register packet callback: dispatcher registration failed for fd {}", fd);
+            NFL_LOG_ERROR(GetLogger(), "Cannot register packet callback: dispatcher registration failed for fd {}", fd);
             return {};
         }
         source = capture_sources_.emplace(
@@ -53,7 +53,7 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     // capture source's count.
     const auto id = static_cast<RegistrationId>(next_registration_id_++);
     registrations_.emplace_back(id, &source->second, callback, filter);
-    GetLogger().Debug("Registered packet callback {} for fd {}", std::to_underlying(id), fd);
+    NFL_LOG_DEBUG(GetLogger(), "Registered packet callback {} for fd {}", std::to_underlying(id), fd);
     return MakeRegistration(id);
 }
 
@@ -62,10 +62,10 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         return r.id == id && r.enabled;
     });
     if (it == registrations_.end()) {
-        GetLogger().Warn("Cannot unregister packet callback {}: not found", std::to_underlying(id));
+        NFL_LOG_WARN(GetLogger(), "Cannot unregister packet callback {}: not found", std::to_underlying(id));
         return false;
     }
-    GetLogger().Debug("Unregistered packet callback {}", std::to_underlying(id));
+    NFL_LOG_DEBUG(GetLogger(), "Unregistered packet callback {}", std::to_underlying(id));
     if (dispatching_) {
         it->enabled = false;  // DrainReadableFd is walking; defer the erase + teardown to its sweep
         return true;
@@ -83,7 +83,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
 void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
     const auto it = capture_sources_.find(fd);
     if (it == capture_sources_.end()) {
-        GetLogger().Warn("Readable callback for unknown capture fd {}", fd);
+        NFL_LOG_WARN(GetLogger(), "Readable callback for unknown capture fd {}", fd);
         return;
     }
     // Reported after the drain, not from inside it: the sweep may have dropped this capture

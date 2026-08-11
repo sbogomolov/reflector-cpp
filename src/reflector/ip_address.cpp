@@ -150,7 +150,7 @@ std::optional<IpAddress> IpAddress::FromString(const std::string& address) {
         return IpAddress{Family::V6, bytes};
     }
 
-    GetLogger().Error("Cannot parse IP address \"{}\"", address);
+    NFL_LOG_ERROR(GetLogger(), "Cannot parse IP address \"{}\"", address);
     return std::nullopt;
 }
 
@@ -178,7 +178,7 @@ std::optional<IpAddress> IpAddress::FromSockaddr(const sockaddr* address) noexce
         return IpAddress{Family::V6, bytes};
     }
 
-    GetLogger().Error("Cannot convert sockaddr with address family {} to IpAddress",
+    NFL_LOG_ERROR(GetLogger(), "Cannot convert sockaddr with address family {} to IpAddress",
         static_cast<int>(address->sa_family));
     return std::nullopt;
 }
@@ -224,7 +224,7 @@ std::string_view IpAddress::ToChars(TextBuffer& buffer) const noexcept {
     const int address_family = family_ == Family::V6 ? AF_INET6 : AF_INET;
     if (inet_ntop(address_family, bytes_.data(), buffer.data(),
             narrow_cast<socklen_t>(buffer.size())) == nullptr) {
-        GetLogger().Error("Cannot convert IP address to string: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot convert IP address to string: {}", Error::FromErrno());
         return "<invalid_ip>";
     }
     return {buffer.data(), std::char_traits<char>::length(buffer.data())};

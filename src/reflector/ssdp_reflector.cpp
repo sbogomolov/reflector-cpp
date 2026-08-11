@@ -46,7 +46,7 @@ SsdpReflector::SsdpReflector(PacketDispatcher& packet_dispatcher, LinkSocket& so
 
 bool SsdpReflector::ValidateConfig(const SsdpConfig& config) {
     if (const auto error = config.Verify()) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": invalid config: {}", config.name, *error);
+        NFL_LOG_ERROR(logger_, "Cannot create ssdp reflector \"{}\": invalid config: {}", config.name, *error);
         return false;
     }
     return true;
@@ -54,7 +54,7 @@ bool SsdpReflector::ValidateConfig(const SsdpConfig& config) {
 
 void SsdpReflector::Initialize(const SsdpConfig& config) {
     if (config.mac && !target_socket_->LinkCarriesMacs()) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
+        NFL_LOG_ERROR(logger_, "Cannot create ssdp reflector \"{}\": mac cannot match on \"{}\" (the link carries no MAC addresses)",
             config.name, config.target_if);
         return;
     }
@@ -62,12 +62,12 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
     // tracks the AND): the target re-emits reflected searches, the source re-emits advertisements.
     // A required family must already be reflectable; an optional one comes up later if it ever is.
     if (config.RequiresIPv4() && !capability_.CanSend(IpAddress::Family::V4)) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
+        NFL_LOG_ERROR(logger_, "Cannot create ssdp reflector \"{}\": IPv4 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
     if (config.RequiresIPv6() && !capability_.CanSend(IpAddress::Family::V6)) {
-        logger_.Error("Cannot create ssdp reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
+        NFL_LOG_ERROR(logger_, "Cannot create ssdp reflector \"{}\": IPv6 requires a source address on both \"{}\" and \"{}\"",
             config.name, config.source_if, config.target_if);
         return;
     }
@@ -87,7 +87,7 @@ void SsdpReflector::Initialize(const SsdpConfig& config) {
     }
 
     valid_ = true;
-    logger_.Info("Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",
+    NFL_LOG_INFO(logger_, "Created ssdp reflector (IPv4: {}, IPv6: {}, DIAL: {})",
         capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
         capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled",
         config.dial ? "enabled" : "disabled");
@@ -123,7 +123,7 @@ bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
     auto source_membership = source_socket_->JoinMulticastGroup(group);
     auto target_membership = target_socket_->JoinMulticastGroup(group);
     if (!source_membership.IsValid() || !target_membership.IsValid()) {
-        logger_.Error("Cannot reflect ssdp {}: cannot join the group on both interfaces", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect ssdp {}: cannot join the group on both interfaces", group);
         return false;
     }
 
@@ -132,7 +132,7 @@ bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
         PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT},
         CreateDelegate<&SsdpReflector::OnSourcePacket>(this));
     if (!source_registration.IsValid()) {
-        logger_.Error("Cannot reflect ssdp {}: registration failed (source)", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect ssdp {}: registration failed (source)", group);
         return false;
     }
 
@@ -141,7 +141,7 @@ bool SsdpReflector::SetUpGroup(const IpAddress& group, FamilySetup& setup) {
         PacketFilter{.dest_ip = group, .dest_port = SSDP_PORT, .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnTargetPacket>(this));
     if (!target_registration.IsValid()) {
-        logger_.Error("Cannot reflect ssdp {}: registration failed (target)", group);
+        NFL_LOG_ERROR(logger_, "Cannot reflect ssdp {}: registration failed (target)", group);
         return false;
     }
 
@@ -162,7 +162,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     if (!parsed_mx) {
         // A multicast M-SEARCH must carry MX (UDA 2.0), but this fires on every search including
         // retransmits — one non-conformant client would flood any louder level.
-        logger_.Debug("M-SEARCH from {} has no/invalid MX; using the default {}s window",
+        NFL_LOG_DEBUG(logger_, "M-SEARCH from {} has no/invalid MX; using the default {}s window",
             packet.header.source, static_cast<unsigned>(mx));
     }
     const auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds{mx} + SESSION_GRACE;
@@ -186,10 +186,10 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
                                                   : existing_session->reservation.Port();
     if (!target_socket_->SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
+        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
         return;  // a new session's reservation + response registration RAII-drop here
     }
-    logger_.Debug("Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
+    NFL_LOG_DEBUG(logger_, "Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
         packet.header.source, port, static_cast<unsigned>(mx));
 
     if (!new_session) {
@@ -198,7 +198,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
 
     sessions_.push_back(std::move(*new_session));
-    logger_.Debug("Created session for searcher {} on reserved port {}; {} active",
+    NFL_LOG_DEBUG(logger_, "Created session for searcher {} on reserved port {}; {} active",
         packet.header.source, port, sessions_.size());
     // Start the eviction sweep on the first in-flight session; EvictExpired stops it once the table
     // empties, so the reactor isn't woken every interval while there's nothing to sweep.
@@ -210,7 +210,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& packet,
     std::chrono::steady_clock::time_point expiry) {
     if (sessions_.size() >= MAX_SESSIONS) {
-        logger_.Warn("Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
+        NFL_LOG_WARN(logger_, "Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
             packet.header.source, sessions_.size());
         return std::nullopt;
     }
@@ -219,7 +219,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
     // that re-emit — so responders' unicast 200-OKs land on the reserved address.
     const auto our_address = target_interface.SourceAddressFor(packet.header.dest.addr);
     if (!our_address) {
-        logger_.Error("Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
+        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
             packet.header.source, packet.header.dest.addr.AddressFamily());
         return std::nullopt;
     }
@@ -232,7 +232,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         PacketFilter{.dest_ip = our_address, .dest_port = reservation->Port(), .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnUnicastResponse>(this));
     if (!registration.IsValid()) {
-        logger_.Error("Cannot reflect M-SEARCH from {}: response registration failed",
+        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {}: response registration failed",
             packet.header.source);
         return std::nullopt;  // reservation RAII-drops here, freeing the port
     }
@@ -263,10 +263,10 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
         ? std::as_bytes(std::span<const char>{rewrite.payload})
         : packet.payload;
     if (!source_socket_->SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+        NFL_LOG_ERROR(logger_, "Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    logger_.Debug("Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+    NFL_LOG_DEBUG(logger_, "Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
@@ -296,10 +296,10 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
         : packet.payload;
     if (!source_socket_->SendUdpDatagram(session.searcher_mac, session.searcher,
             packet.header.source.port, payload, SSDP_TTL)) {
-        logger_.Error("Cannot reflect SSDP response to searcher {}", session.searcher);
+        NFL_LOG_ERROR(logger_, "Cannot reflect SSDP response to searcher {}", session.searcher);
         return;
     }
-    logger_.Debug("Reflected SSDP response from {} to searcher {}", packet.header.source,
+    NFL_LOG_DEBUG(logger_, "Reflected SSDP response from {} to searcher {}", packet.header.source,
         session.searcher);
 }
 
@@ -309,7 +309,7 @@ bool SsdpReflector::ShouldReflect(const Packet& packet, SsdpMessageKind kind) no
         // The group + port 1900 should carry only SSDP requests, so a payload that is neither an
         // M-SEARCH nor a NOTIFY (e.g. a stray unicast 200 OK, or junk) is anomalous and worth
         // surfacing. A message of the other kind, by contrast, is normal and dropped silently.
-        logger_.Info("Ignoring non-SSDP packet on {} from {}: not an M-SEARCH or NOTIFY",
+        NFL_LOG_INFO(logger_, "Ignoring non-SSDP packet on {} from {}: not an M-SEARCH or NOTIFY",
             packet.header.dest, packet.header.source);
         return false;
     }
@@ -328,7 +328,7 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
     const auto reflector_authority = dial_proxy_->EnsureDiscoveryListener(location->endpoint,
         max_age.transform([](uint32_t seconds) { return std::chrono::seconds{seconds}; }));
     if (!reflector_authority) {
-        logger_.Info("DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
+        NFL_LOG_INFO(logger_, "DIAL: no listener for device {} (cap/bind); forwarding its LOCATION unchanged",
             location->endpoint);
         return {};
     }
@@ -344,7 +344,7 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
     const std::string_view original{reinterpret_cast<const char*>(payload.data()), payload.size()};
     const size_t rewritten_size = original.size() - location->length + authority.size();
     if (rewritten_size > MAX_UDP_PAYLOAD_SIZE) {
-        logger_.Error("DIAL: rewritten LOCATION for {} overflows the {}-byte payload ceiling; dropping the datagram",
+        NFL_LOG_ERROR(logger_, "DIAL: rewritten LOCATION for {} overflows the {}-byte payload ceiling; dropping the datagram",
             location->endpoint, MAX_UDP_PAYLOAD_SIZE);
         return {.action = DialRewrite::Action::Drop};
     }
@@ -356,7 +356,7 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
     rewrite_scratch_ += authority;
     rewrite_scratch_ += original.substr(location->offset + location->length);
 
-    logger_.Debug("DIAL: rewrote device {} LOCATION to reflector listener {}",
+    NFL_LOG_DEBUG(logger_, "DIAL: rewrote device {} LOCATION to reflector listener {}",
         location->endpoint, *reflector_authority);
     return {.action = DialRewrite::Action::ForwardRewritten, .payload = rewrite_scratch_};
 }
@@ -379,7 +379,7 @@ void SsdpReflector::EvictStaleSessions() noexcept {
     if (removed == 0) {
         return;
     }
-    logger_.Info("Dropped {} search session(s) whose reserved address on the target is gone", removed);
+    NFL_LOG_INFO(logger_, "Dropped {} search session(s) whose reserved address on the target is gone", removed);
     if (sessions_.empty()) {
         eviction_timer_.Stop();  // nothing left to sweep
     }
@@ -389,13 +389,13 @@ void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noex
     const auto removed = std::erase_if(sessions_, [this, now](const Session& session) {
         const bool expired = session.expiry <= now;
         if (expired) {
-            logger_.Debug("Removing session for searcher {} on reserved port {}",
+            NFL_LOG_DEBUG(logger_, "Removing session for searcher {} on reserved port {}",
                 session.searcher, session.reservation.Port());
         }
         return expired;
     });
     if (removed > 0) {
-        logger_.Debug("Evicted {} session(s); {} still active", removed, sessions_.size());
+        NFL_LOG_DEBUG(logger_, "Evicted {} session(s); {} still active", removed, sessions_.size());
     }
     if (sessions_.empty()) {
         // Nothing left to sweep: stop. Safe self-unregister — the dispatcher defers a mid-fire

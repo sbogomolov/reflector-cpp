@@ -156,7 +156,7 @@ std::optional<Authority> ParseDialLocationAuthority(std::span<const std::byte> p
             if (!found) {
                 // A DIAL message carrying a LOCATION we cannot rewrite (an https URL, a hostname rather than
                 // an IPv4 literal, or a malformed port). The caller forwards it unchanged, so surface why.
-                GetLogger().Info("DIAL LOCATION \"{}\" is not a rewritable http://ip:port URL", url);
+                NFL_LOG_INFO(GetLogger(), "DIAL LOCATION \"{}\" is not a rewritable http://ip:port URL", url);
                 return std::nullopt;
             }
             // Map the authority's offset within the URL back to an offset within the whole payload.
