@@ -80,9 +80,10 @@ Logger& GetLogger() noexcept {
     // the source-address bind the caller performs before connect() (and, for link-local IPv6, the scope
     // id in the destination sockaddr). Correct when the peer is on a directly-connected subnet of
     // egress_if — the route to it then leaves via egress_if anyway; otherwise the routing table decides.
-    NFL_LOG_DEBUG(GetLogger(), "No egress-pin primitive; relying on source-address bind to reach via \"{}\"",
+    NFL_LOG_TRACE(GetLogger(), "No egress-pin primitive; relying on source-address bind to reach via \"{}\"",
         egress_if.Name());
 #endif
+    NFL_LOG_TRACE(GetLogger(), "Egress pinned to \"{}\"", egress_if.Name());
     return true;
 }
 
@@ -143,7 +144,7 @@ void TcpSocket::Shutdown() noexcept {
 
 void TcpSocket::Close() noexcept {
     if (fd_) {
-        NFL_LOG_DEBUG(logger_, "Closing socket");
+        NFL_LOG_TRACE(logger_, "Closing socket");
         fd_.Reset();
     }
 }
@@ -404,7 +405,7 @@ SendStatus TcpSocket::Send(std::span<const std::byte> data) noexcept {
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering) {
-        NFL_LOG_DEBUG(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
+        NFL_LOG_TRACE(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -439,7 +440,7 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
         return SendStatus::Overflow;  // tail would exceed the cap — owner aborts the connection (drop-and-close)
     }
     if (!was_buffering && !send_buffer_.Empty()) {
-        NFL_LOG_DEBUG(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
+        NFL_LOG_TRACE(logger_, "Started buffering, {} bytes queued", send_buffer_.Size());
     }
     return SendStatus::Ok;
 }
@@ -474,7 +475,7 @@ bool TcpSocket::Flush() noexcept {
         send_buffer_.Consume(wrote.bytes);
     }
     if (was_buffering && send_buffer_.Empty()) {
-        NFL_LOG_DEBUG(logger_, "Send buffer drained, resumed direct writes");
+        NFL_LOG_TRACE(logger_, "Send buffer drained, resumed direct writes");
     }
     return true;
 }

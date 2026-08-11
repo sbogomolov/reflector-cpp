@@ -48,7 +48,7 @@ EventLoopDispatcher::EventLoopDispatcher() {
     if (!event_fd_) {
         NFL_LOG_ERROR(GetLogger(), "Cannot create dispatcher event queue: {}", Error::FromErrno());
     } else {
-        NFL_LOG_DEBUG(GetLogger(), "Created dispatcher event queue fd {}", event_fd_.Get());
+        NFL_LOG_TRACE(GetLogger(), "Created dispatcher event queue fd {}", event_fd_.Get());
     }
 }
 
@@ -61,7 +61,7 @@ EventLoopDispatcher::~EventLoopDispatcher() noexcept {
     }
 
     if (event_fd_) {
-        NFL_LOG_DEBUG(GetLogger(), "Closing dispatcher event queue fd {}", event_fd_.Get());
+        NFL_LOG_TRACE(GetLogger(), "Closing dispatcher event queue fd {}", event_fd_.Get());
         event_fd_.Reset();
     }
 }
@@ -90,7 +90,7 @@ Dispatcher::Registration EventLoopDispatcher::Register(int fd, FdCallbacks callb
         return {};
     }
 
-    NFL_LOG_DEBUG(GetLogger(), "Registered fd callback for fd {}", fd);
+    NFL_LOG_TRACE(GetLogger(), "Registered fd callback for fd {}", fd);
     return MakeRegistration(fd);
 }
 
@@ -122,7 +122,7 @@ bool EventLoopDispatcher::Unregister(int fd) noexcept {
         NFL_LOG_ERROR(GetLogger(), "Cannot remove events for fd {} after unregistering its callback", fd);
     }
 
-    NFL_LOG_DEBUG(GetLogger(), "Unregistered fd callback for fd {}", fd);
+    NFL_LOG_TRACE(GetLogger(), "Unregistered fd callback for fd {}", fd);
     return true;
 }
 
@@ -155,6 +155,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count < 0) {
         if (errno == EINTR) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
+            NFL_LOG_TRACE(GetLogger(), "Poll interrupted by a signal");
             return false;
         }
         NFL_LOG_ERROR(GetLogger(), "Cannot poll dispatcher read events: {}", Error::FromErrno());
@@ -172,6 +173,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
     if (event_count < 0) {
         if (errno == EINTR) {
             // Expected when a signal interrupts polling; callers decide whether to retry or shut down.
+            NFL_LOG_TRACE(GetLogger(), "Poll interrupted by a signal");
             return false;
         }
         NFL_LOG_ERROR(GetLogger(), "Cannot poll dispatcher read events: {}", Error::FromErrno());
@@ -261,7 +263,7 @@ bool EventLoopDispatcher::RegisterTimer(
     } else {
         timers_.push_back(registration);
     }
-    NFL_LOG_DEBUG(GetLogger(), "Registered timer {} (interval {}ms); {} active", static_cast<uint64_t>(id),
+    NFL_LOG_TRACE(GetLogger(), "Registered timer {} (interval {}ms); {} active", static_cast<uint64_t>(id),
         interval.count(), std::ranges::count_if(timers_, [](const TimerEntry& entry) { return entry.enabled; }));
     return true;
 }
@@ -278,7 +280,7 @@ void EventLoopDispatcher::UnregisterTimer(TimerId id) noexcept {
     } else {
         timers_.erase(it);  // no walk in progress; erase in place
     }
-    NFL_LOG_DEBUG(GetLogger(), "Unregistered timer {}; {} active", static_cast<uint64_t>(id),
+    NFL_LOG_TRACE(GetLogger(), "Unregistered timer {}; {} active", static_cast<uint64_t>(id),
         std::ranges::count_if(timers_, [](const TimerEntry& t) { return t.enabled; }));
 }
 
@@ -361,7 +363,7 @@ bool EventLoopDispatcher::SetEvents(int fd, bool enable_write) noexcept {
     }
 #endif
 
-    NFL_LOG_DEBUG(GetLogger(), "Set events for fd {}: write {}", fd, enable_write);
+    NFL_LOG_TRACE(GetLogger(), "Set events for fd {}: write {}", fd, enable_write);
     return true;
 }
 
@@ -396,7 +398,7 @@ bool EventLoopDispatcher::RemoveEvents(int fd) noexcept {
     }
 #endif
 
-    NFL_LOG_DEBUG(GetLogger(), "Removed events for fd {}", fd);
+    NFL_LOG_TRACE(GetLogger(), "Removed events for fd {}", fd);
     return true;
 }
 

@@ -162,7 +162,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     if (!parsed_mx) {
         // A multicast M-SEARCH must carry MX (UDA 2.0), but this fires on every search including
         // retransmits — one non-conformant client would flood any louder level.
-        NFL_LOG_DEBUG(logger_, "M-SEARCH from {} has no/invalid MX; using the default {}s window",
+        NFL_LOG_TRACE(logger_, "M-SEARCH from {} has no/invalid MX; using the default {}s window",
             packet.header.source, static_cast<unsigned>(mx));
     }
     const auto expiry = std::chrono::steady_clock::now() + std::chrono::seconds{mx} + SESSION_GRACE;
@@ -190,7 +190,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
             "Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
         return;  // a new session's reservation + response registration RAII-drop here
     }
-    NFL_LOG_DEBUG(logger_, "Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
+    NFL_LOG_TRACE(logger_, "Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
         packet.header.source, port, static_cast<unsigned>(mx));
 
     if (!new_session) {
@@ -199,7 +199,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
     }
 
     sessions_.push_back(std::move(*new_session));
-    NFL_LOG_DEBUG(logger_, "Created session for searcher {} on reserved port {}; {} active",
+    NFL_LOG_TRACE(logger_, "Created session for searcher {} on reserved port {}; {} active",
         packet.header.source, port, sessions_.size());
     // Start the eviction sweep on the first in-flight session; EvictExpired stops it once the table
     // empties, so the reactor isn't woken every interval while there's nothing to sweep.
@@ -269,7 +269,7 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
             "Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    NFL_LOG_DEBUG(logger_, "Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+    NFL_LOG_TRACE(logger_, "Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
@@ -302,7 +302,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
         NFL_LOG_ERROR_RATE(logger_, 60, "Cannot reflect SSDP response to searcher {}", session.searcher);
         return;
     }
-    NFL_LOG_DEBUG(logger_, "Reflected SSDP response from {} to searcher {}", packet.header.source,
+    NFL_LOG_TRACE(logger_, "Reflected SSDP response from {} to searcher {}", packet.header.source,
         session.searcher);
 }
 
@@ -359,7 +359,7 @@ SsdpReflector::DialRewrite SsdpReflector::RewriteDialLocation(std::span<const st
     rewrite_scratch_ += authority;
     rewrite_scratch_ += original.substr(location->offset + location->length);
 
-    NFL_LOG_DEBUG(logger_, "DIAL: rewrote device {} LOCATION to reflector listener {}",
+    NFL_LOG_TRACE(logger_, "DIAL: rewrote device {} LOCATION to reflector listener {}",
         location->endpoint, *reflector_authority);
     return {.action = DialRewrite::Action::ForwardRewritten, .payload = rewrite_scratch_};
 }
@@ -392,7 +392,7 @@ void SsdpReflector::EvictExpired(std::chrono::steady_clock::time_point now) noex
     const auto removed = std::erase_if(sessions_, [this, now](const Session& session) {
         const bool expired = session.expiry <= now;
         if (expired) {
-            NFL_LOG_DEBUG(logger_, "Removing session for searcher {} on reserved port {}",
+            NFL_LOG_TRACE(logger_, "Removing session for searcher {} on reserved port {}",
                 session.searcher, session.reservation.Port());
         }
         return expired;

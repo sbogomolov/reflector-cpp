@@ -86,25 +86,25 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
 // single memcmp and narrows what this reflector will re-broadcast onto target_if.
 bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
     if (payload.size() < MAGIC_PACKET_SIZE) {
-        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: payload is too short: {} bytes", payload.size());
+        NFL_LOG_TRACE(logger_, "Ignoring wol packet: payload is too short: {} bytes", payload.size());
         return false;
     }
 
     if (target_mac_) {
         if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
-            NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet does not match expected MAC");
+            NFL_LOG_TRACE(logger_, "Ignoring wol packet: magic packet does not match expected MAC");
             return false;
         }
         return true;
     }
 
     if (!HasMagicPacketPrefix(payload)) {
-        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet prefix is invalid");
+        NFL_LOG_TRACE(logger_, "Ignoring wol packet: magic packet prefix is invalid");
         return false;
     }
 
     if (!HasRepeatedMac(payload)) {
-        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet MAC repetitions are inconsistent");
+        NFL_LOG_TRACE(logger_, "Ignoring wol packet: magic packet MAC repetitions are inconsistent");
         return false;
     }
 
@@ -146,7 +146,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
 
     const auto family = packet.header.source.addr.AddressFamily();
     if (!target_capability_.CanSend(family)) {
-        NFL_LOG_DEBUG(logger_, "Ignoring wol packet from {}: {} not handled",
+        NFL_LOG_TRACE(logger_, "Ignoring wol packet from {}: {} not handled",
             packet.header.source, family);
         return;
     }

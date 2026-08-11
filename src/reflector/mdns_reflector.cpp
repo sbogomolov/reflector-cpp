@@ -145,7 +145,7 @@ void MdnsReflector::Relay(LinkSocket& egress, const Packet& packet) noexcept {
             "Cannot reflect mdns packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
-    NFL_LOG_DEBUG(logger_, "Reflected mdns packet from {} to {}", packet.header.source, packet.header.dest);
+    NFL_LOG_TRACE(logger_, "Reflected mdns packet from {} to {}", packet.header.source, packet.header.dest);
 }
 
 } // namespace reflector
