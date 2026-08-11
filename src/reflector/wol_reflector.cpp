@@ -163,7 +163,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
         : target_socket_->SendUdpMulticastDatagram(
               {destination, port}, packet.header.source.port, packet.payload, packet.header.ttl);
     if (!sent) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect wol packet from {} to {}:{}",
+        NFL_LOG_ERROR_RATE(logger_, 60, "Cannot reflect wol packet from {} to {}:{}",
             packet.header.source, destination, port);
         return;
     }

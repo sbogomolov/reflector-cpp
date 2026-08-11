@@ -242,6 +242,8 @@ TEST(LoggerTest, ADisclosureOutlivesAnOverlongMessage) {
     EXPECT_NE(output.find("(7 suppressed)"), std::string::npos) << tail;
 }
 
+// Wants a gate that has never emitted, so it does not survive --gtest_repeat: the static below holds
+// its window across iterations. Every lane runs each test once.
 TEST(LoggerTest, ARateLimitedCallSiteEmitsOncePerWindow) {
     const ScopedMinLogLevel level{LogLevel::Info};
     Logger logger{"RateLogger"};

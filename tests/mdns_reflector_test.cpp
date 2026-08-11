@@ -488,17 +488,16 @@ TEST_F(MdnsReflectorTest, DropsWrongDirectionSilently) {
     EXPECT_EQ(output.find("non-mDNS"), std::string::npos) << output;
 }
 
-TEST_F(MdnsReflectorTest, LogsErrorWhenSendFails) {
+TEST_F(MdnsReflectorTest, DoesNotReflectWhenSendFails) {
     const MdnsReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
     target.fail_send = true;
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeQuery(), IpAddress::Family::V4));
     });
 
     EXPECT_TRUE(target.sent.empty());
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(MdnsReflectorTest, JoinFailureMakesInvalid) {

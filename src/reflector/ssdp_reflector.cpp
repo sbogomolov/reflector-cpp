@@ -186,7 +186,8 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
                                                   : existing_session->reservation.Port();
     if (!target_socket_->SendUdpMulticastDatagram(packet.header.dest, port,
             packet.payload, SSDP_TTL)) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
+        NFL_LOG_ERROR_RATE(logger_, 60,
+            "Cannot reflect M-SEARCH from {} to {}", packet.header.source, packet.header.dest);
         return;  // a new session's reservation + response registration RAII-drop here
     }
     NFL_LOG_DEBUG(logger_, "Reflected M-SEARCH from {} on reserved port {} (MX {}s)",
@@ -210,7 +211,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& packet,
     std::chrono::steady_clock::time_point expiry) {
     if (sessions_.size() >= MAX_SESSIONS) {
-        NFL_LOG_WARN(logger_, "Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
+        NFL_LOG_WARN_RATE(logger_, 60, "Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
             packet.header.source, sessions_.size());
         return std::nullopt;
     }
@@ -219,7 +220,8 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
     // that re-emit — so responders' unicast 200-OKs land on the reserved address.
     const auto our_address = target_interface.SourceAddressFor(packet.header.dest.addr);
     if (!our_address) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
+        NFL_LOG_ERROR_RATE(logger_, 60,
+            "Cannot reflect M-SEARCH from {}: target interface has no source address for {}",
             packet.header.source, packet.header.dest.addr.AddressFamily());
         return std::nullopt;
     }
@@ -232,7 +234,7 @@ std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& p
         PacketFilter{.dest_ip = our_address, .dest_port = reservation->Port(), .source_mac = config_mac_},
         CreateDelegate<&SsdpReflector::OnUnicastResponse>(this));
     if (!registration.IsValid()) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect M-SEARCH from {}: response registration failed",
+        NFL_LOG_ERROR_RATE(logger_, 60, "Cannot reflect M-SEARCH from {}: response registration failed",
             packet.header.source);
         return std::nullopt;  // reservation RAII-drops here, freeing the port
     }
@@ -263,7 +265,8 @@ void SsdpReflector::OnTargetPacket(const Packet& packet) noexcept {
         ? std::as_bytes(std::span<const char>{rewrite.payload})
         : packet.payload;
     if (!source_socket_->SendUdpMulticastDatagram(packet.header.dest, SSDP_PORT, payload, SSDP_TTL)) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
+        NFL_LOG_ERROR_RATE(logger_, 60,
+            "Cannot reflect ssdp packet from {} to {}", packet.header.source, packet.header.dest);
         return;
     }
     NFL_LOG_DEBUG(logger_, "Reflected ssdp packet from {} to {}", packet.header.source, packet.header.dest);
@@ -296,7 +299,7 @@ void SsdpReflector::OnUnicastResponse(const Packet& packet) noexcept {
         : packet.payload;
     if (!source_socket_->SendUdpDatagram(session.searcher_mac, session.searcher,
             packet.header.source.port, payload, SSDP_TTL)) {
-        NFL_LOG_ERROR(logger_, "Cannot reflect SSDP response to searcher {}", session.searcher);
+        NFL_LOG_ERROR_RATE(logger_, 60, "Cannot reflect SSDP response to searcher {}", session.searcher);
         return;
     }
     NFL_LOG_DEBUG(logger_, "Reflected SSDP response from {} to searcher {}", packet.header.source,

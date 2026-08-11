@@ -636,7 +636,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
         return std::unexpected(ReceiveError::Failed);
     }
     if (static_cast<size_t>(bytes) > receive_buffer_.size()) {
-        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        NFL_LOG_WARN_RATE(logger_, 60, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             bytes, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -685,7 +685,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // BPF captured fewer bytes than the frame's real length, so it didn't fit the buffer; drop it
     // rather than parse a truncated frame. (Offset already advanced to the next record above.)
     if (header.bh_datalen > header.bh_caplen) {
-        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        NFL_LOG_WARN_RATE(logger_, 60, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             header.bh_datalen, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -694,7 +694,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // batch buffer admits frames the MAX_FRAME_SIZE-sized Linux scratch would have refused, so
     // enforce the same ceiling here at capture.
     if (header.bh_caplen > MAX_FRAME_SIZE) {
-        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
+        NFL_LOG_WARN_RATE(logger_, 60, "Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
             header.bh_caplen, MAX_FRAME_SIZE);
         return std::unexpected(ReceiveError::Dropped);
     }

@@ -586,19 +586,18 @@ TEST_F(SsdpReflectorTest, DropsWrongDirectionSilently) {
     EXPECT_EQ(output.find("non-SSDP"), std::string::npos) << output;
 }
 
-TEST_F(SsdpReflectorTest, LogsErrorWhenSendFails) {
+TEST_F(SsdpReflectorTest, DoesNotReflectWhenSendFails) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
     const size_t base = RegistrationCount();
     target.fail_send = true;
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
     });
 
     EXPECT_TRUE(target.sent.empty());
     EXPECT_EQ(RegistrationCount(), base);  // the response registration is rolled back on the failed reflect
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, JoinFailureMakesInvalid) {
@@ -720,13 +719,12 @@ TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenTargetHasNoSourceAddress) {
     const size_t base = RegistrationCount();
     target.iface.SetV4(std::nullopt);  // e.g. the interface's v4 address vanished after construction
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
     });
 
     EXPECT_TRUE(target.sent.empty());
     EXPECT_EQ(RegistrationCount(), base);  // no session / capture created
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenResponseRegistrationFails) {
@@ -735,13 +733,12 @@ TEST_F(SsdpReflectorTest, DoesNotReflectMSearchWhenResponseRegistrationFails) {
     const size_t base = RegistrationCount();             // the two multicast registrations
     packet_dispatcher.fail_register_on_call = base + 1;  // fail the session's response registration
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(source, MakePacket(MakeSearch(), IpAddress::SsdpGroupV4()));
     });
 
     EXPECT_TRUE(target.sent.empty());      // capture failed before the reflect, so nothing is sent
     EXPECT_EQ(RegistrationCount(), base);  // no session; the reservation was rolled back
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, ReflectsUnicastResponseBackToSearcher) {
@@ -778,7 +775,7 @@ TEST_F(SsdpReflectorTest, ReflectsUnicastResponseBackToSearcher) {
     EXPECT_EQ(out.ttl, 2);
 }
 
-TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingResponseFails) {
+TEST_F(SsdpReflectorTest, DoesNotReflectAResponseWhenSendFails) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
 
@@ -796,12 +793,11 @@ TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingResponseFails) {
         },
         .payload = response,
     };
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(target, reply);
     });
 
     EXPECT_TRUE(source.sent.empty());  // nothing reflected to the searcher
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, IgnoresUnicastResponseWithNoMatchingSession) {
@@ -901,10 +897,9 @@ TEST_F(SsdpReflectorTest, SessionCapIsGlobalAcrossGroups) {
     // The overflow searcher targets v6 site-local, which so far holds only about a third of the table.
     Packet overflow = MakePacket(search_payload, IpAddress::SsdpGroupV6SiteLocal());
     overflow.header.source.port = static_cast<uint16_t>(20000 + SsdpReflector::MAX_SESSIONS);
-    const std::string output = CaptureStdout([&] { packet_dispatcher.Deliver(source, overflow); });
+    CaptureStdout([&] { packet_dispatcher.Deliver(source, overflow); });
 
     EXPECT_EQ(target.sent.size(), SsdpReflector::MAX_SESSIONS);  // not reflected: MakeSession returned nullopt before the reflect
-    EXPECT_NE(output.find("cap reached"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, RetransmittedMSearchReusesOneSessionAndReflectsEach) {
@@ -1331,17 +1326,16 @@ TEST_F(SsdpReflectorTest, DialForwardsResponseLocationUnchangedWhenListenerMintF
     EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
 }
 
-TEST_F(SsdpReflectorTest, LogsErrorWhenReflectingAdvertisementFails) {
+TEST_F(SsdpReflectorTest, DoesNotReflectAnAdvertisementWhenSendFails) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
     source.fail_send = true;  // re-emitting the advertisement to source will fail
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(target, MakePacket(MakeAdvertisement(), IpAddress::SsdpGroupV4()));
     });
 
     EXPECT_TRUE(source.sent.empty());  // nothing reflected
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, DoesNotRewriteDialContentInAnMSearch) {
