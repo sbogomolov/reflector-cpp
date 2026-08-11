@@ -345,6 +345,18 @@ wol = true
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Info);
 }
 
+TEST(ConfigTest, ParsesLogLevelTrace) {
+    const auto config = Config::FromString(TomlWithLogLevel("trace"));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Trace);
+}
+
+TEST(ConfigTest, ParsesLogLevelOff) {
+    const auto config = Config::FromString(TomlWithLogLevel("off"));
+    ASSERT_TRUE(config.has_value()) << config.error().Message();
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Off);
+}
+
 TEST(ConfigTest, ParsesLogLevelDebug) {
     const auto config = Config::FromString(TomlWithLogLevel("debug"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();

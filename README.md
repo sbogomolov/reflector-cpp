@@ -202,7 +202,7 @@ On RouterOS, setting the container's environment variables is usually easier tha
 `config.toml` contains optional top-level settings plus at least one reflector entry. Entries are tables under `reflectors`, keyed by name (`[reflectors.<name>]`) — the name is the label used in logs — each describing one `source_if` → `target_if` bridge that enables any combination of the protocols. The top-level settings are `log_level` and `debug_memory`:
 
 ```toml
-log_level = "info"               # optional; one of debug | info | warn | error (default: info)
+log_level = "info"               # optional; one of trace | debug | info | warn | error | off (default: info)
 debug_memory = false             # optional; periodically log RSS + heap arena stats for footprint debugging (default false)
 
 [reflectors.tv]

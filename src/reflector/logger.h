@@ -13,12 +13,25 @@
 
 namespace reflector {
 
+// Ordered by severity, so filtering is a plain comparison. Off is above Error and no record carries
+// it, so selecting it admits nothing.
 enum class LogLevel : uint8_t {
+    Trace,
     Debug,
     Info,
     Warn,
     Error,
+    Off,
 };
+
+// Trace costs nothing in a release build: the macros discard the statement rather than testing a
+// level for it. The arguments are still compiled and type-checked, so a Trace line cannot rot
+// unnoticed in the configuration that omits it.
+#if defined(NDEBUG)
+inline constexpr LogLevel STATIC_MIN_LOG_LEVEL = LogLevel::Debug;
+#else
+inline constexpr LogLevel STATIC_MIN_LOG_LEVEL = LogLevel::Trace;
+#endif
 
 namespace detail {
 
@@ -130,10 +143,13 @@ struct std::formatter<reflector::LogLevel>
     FmtContext::iterator format(const reflector::LogLevel& l, FmtContext& ctx) const {
         switch (l) {
         using enum reflector::LogLevel;
+        case Trace: return std::format_to(ctx.out(), "TRACE");
         case Debug: return std::format_to(ctx.out(), "DEBUG");
         case Info: return std::format_to(ctx.out(), "INFO");
         case Warn: return std::format_to(ctx.out(), "WARN");
         case Error: return std::format_to(ctx.out(), "ERROR");
+        // Never reaches a record, but it is a level a config can name.
+        case Off: return std::format_to(ctx.out(), "OFF");
         }
 
         std::unreachable();
@@ -143,13 +159,16 @@ struct std::formatter<reflector::LogLevel>
 // The only level gate. A filtered record never reaches Emit, so it never evaluates its arguments:
 // a suppressed Debug line would otherwise still build every Error::FromErrno() and ToString() it
 // passes. NFL_ rather than a bare LOG_, which syslog.h already defines.
-#define NFL_LOG(logger, level, ...)                                             \
-    do {                                                                        \
-        if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {  \
-            (logger).Emit(::reflector::LogLevel::level, __VA_ARGS__);           \
-        }                                                                       \
+#define NFL_LOG(logger, level, ...)                                                        \
+    do {                                                                                   \
+        if constexpr (::reflector::LogLevel::level >= ::reflector::STATIC_MIN_LOG_LEVEL) { \
+            if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {         \
+                (logger).Emit(::reflector::LogLevel::level, __VA_ARGS__);                  \
+            }                                                                              \
+        }                                                                                  \
     } while (false)
 
+#define NFL_LOG_TRACE(logger, ...) NFL_LOG(logger, Trace, __VA_ARGS__)
 #define NFL_LOG_DEBUG(logger, ...) NFL_LOG(logger, Debug, __VA_ARGS__)
 #define NFL_LOG_INFO(logger, ...) NFL_LOG(logger, Info, __VA_ARGS__)
 #define NFL_LOG_WARN(logger, ...) NFL_LOG(logger, Warn, __VA_ARGS__)
@@ -157,16 +176,18 @@ struct std::formatter<reflector::LogLevel>
 
 // Emits at most once per window per call site. A call landing inside a closed window is counted
 // instead, and the next line that does emit discloses the count.
-#define NFL_LOG_RATE(logger, level, window_secs, ...)                                       \
-    do {                                                                                    \
-        if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {              \
-            static ::reflector::detail::RateGate nfl_rate_gate{(window_secs)};              \
-            const auto nfl_suppressed =                                                     \
-                nfl_rate_gate.Admit(::reflector::detail::MonotonicSecs());                  \
-            if (nfl_suppressed) {                                                           \
-                (logger).EmitRated(::reflector::LogLevel::level, *nfl_suppressed, __VA_ARGS__); \
-            }                                                                               \
-        }                                                                                   \
+#define NFL_LOG_RATE(logger, level, window_secs, ...)                                               \
+    do {                                                                                            \
+        if constexpr (::reflector::LogLevel::level >= ::reflector::STATIC_MIN_LOG_LEVEL) {          \
+            if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {                  \
+                static ::reflector::detail::RateGate nfl_rate_gate{(window_secs)};                  \
+                const auto nfl_suppressed =                                                         \
+                    nfl_rate_gate.Admit(::reflector::detail::MonotonicSecs());                      \
+                if (nfl_suppressed) {                                                               \
+                    (logger).EmitRated(::reflector::LogLevel::level, *nfl_suppressed, __VA_ARGS__); \
+                }                                                                                   \
+            }                                                                                       \
+        }                                                                                           \
     } while (false)
 
 #define NFL_LOG_WARN_RATE(logger, window_secs, ...) \

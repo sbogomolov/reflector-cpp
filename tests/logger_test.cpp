@@ -97,10 +97,45 @@ TEST(LoggerTest, DynamicNameSurvivesMoveConstructionAndAssignment) {
 }
 
 TEST(LoggerTest, FormatsLogLevelNames) {
+    EXPECT_EQ(std::format("{}", LogLevel::Trace), "TRACE");
     EXPECT_EQ(std::format("{}", LogLevel::Debug), "DEBUG");
     EXPECT_EQ(std::format("{}", LogLevel::Info), "INFO");
     EXPECT_EQ(std::format("{}", LogLevel::Warn), "WARN");
     EXPECT_EQ(std::format("{}", LogLevel::Error), "ERROR");
+    EXPECT_EQ(std::format("{}", LogLevel::Off), "OFF");
+}
+
+// The contract differs by build, so the test does too: a release build has no Trace statement left
+// to run, and every other build emits one when the level allows it.
+TEST(LoggerTest, ReleaseBuildsCarryNoTraceStatement) {
+    const ScopedMinLogLevel level{LogLevel::Trace};
+    Logger logger{"TraceLogger"};
+
+    const std::string output = CaptureStdout([&] {
+        NFL_LOG_TRACE(logger, "a trace message");
+    });
+
+#if defined(NDEBUG)
+    EXPECT_EQ(output.find("a trace message"), std::string::npos) << output;
+#else
+    EXPECT_NE(output.find("a trace message"), std::string::npos) << output;
+    EXPECT_NE(output.find("TRACE"), std::string::npos) << output;
+#endif
+}
+
+TEST(LoggerTest, OffSuppressesEveryLevel) {
+    const ScopedMinLogLevel level{LogLevel::Off};
+    Logger logger{"OffLogger"};
+
+    const std::string output = CaptureStdout([&] {
+        NFL_LOG_TRACE(logger, "trace record");
+        NFL_LOG_DEBUG(logger, "debug record");
+        NFL_LOG_INFO(logger, "info record");
+        NFL_LOG_WARN(logger, "warn record");
+        NFL_LOG_ERROR(logger, "error record");
+    });
+
+    EXPECT_TRUE(output.empty()) << output;
 }
 
 TEST(LoggerTest, LogLineIncludesSourceLocation) {
