@@ -271,7 +271,7 @@ bool IsUsableIpv6(int inet6_fd, const char* interface, const sockaddr_in6& sin6)
     std::strncpy(request.ifr_name, interface, sizeof(request.ifr_name) - 1);
     request.ifr_ifru.ifru_addr = sin6;
     if (ioctl(inet6_fd, SIOCGIFAFLAG_IN6, &request) != 0) {
-        GetLogger().Warning("Cannot query IPv6 address flags on interface \"{}\": {}", interface, Error::FromErrno());
+        GetLogger().Warn("Cannot query IPv6 address flags on interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
     return detail::Ipv6SourceFlagsUsable(request.ifr_ifru.ifru_flags6);

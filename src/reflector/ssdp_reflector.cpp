@@ -210,7 +210,7 @@ void SsdpReflector::OnSourcePacket(const Packet& packet) noexcept {
 std::optional<SsdpReflector::Session> SsdpReflector::MakeSession(const Packet& packet,
     std::chrono::steady_clock::time_point expiry) {
     if (sessions_.size() >= MAX_SESSIONS) {
-        logger_.Warning("Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
+        logger_.Warn("Dropping M-SEARCH from {}: {} sessions in flight (cap reached)",
             packet.header.source, sessions_.size());
         return std::nullopt;
     }

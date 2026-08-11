@@ -76,7 +76,7 @@ void Application::StartMonitor() {
     // Address-change refresh is best-effort: if the monitor can't start (it logs the cause),
     // carry on without it rather than failing the daemon.
     if (!address_monitor_->Start(CreateDelegate<&Application::OnInterfacesChanged>(this))) {
-        GetLogger().Warning("Address monitor unavailable; source addresses will not refresh on interface changes");
+        GetLogger().Warn("Address monitor unavailable; source addresses will not refresh on interface changes");
     }
 }
 
@@ -246,7 +246,7 @@ void Application::NotifyReflectors() noexcept {
 int Application::PrepareSignalWakeup() {
     int fds[2];
     if (::pipe(fds) != 0) {
-        GetLogger().Warning("Cannot create signal wakeup pipe: {}; shutdown bounded by the poll interval",
+        GetLogger().Warn("Cannot create signal wakeup pipe: {}; shutdown bounded by the poll interval",
             Error::FromErrno());
         return -1;
     }
@@ -258,7 +258,7 @@ int Application::PrepareSignalWakeup() {
     // the daemon never execs (like every other fd here), so there is nothing to leak across an exec.
     for (const int fd : {wakeup_read_.Get(), wakeup_write_.Get()}) {
         if (!SetNonBlocking(fd)) {
-            GetLogger().Warning("Cannot configure signal wakeup pipe: {}; shutdown bounded by the poll interval",
+            GetLogger().Warn("Cannot configure signal wakeup pipe: {}; shutdown bounded by the poll interval",
                 Error::FromErrno());
             wakeup_read_.Reset();
             wakeup_write_.Reset();
@@ -268,7 +268,7 @@ int Application::PrepareSignalWakeup() {
 
     wakeup_reg_ = dispatcher_->Register(wakeup_read_.Get(), CreateDelegate<&Application::OnWakeup>(this));
     if (!wakeup_reg_.IsValid()) {
-        GetLogger().Warning("Cannot register the signal wakeup pipe; shutdown bounded by the poll interval");
+        GetLogger().Warn("Cannot register the signal wakeup pipe; shutdown bounded by the poll interval");
         wakeup_read_.Reset();
         wakeup_write_.Reset();
         return -1;

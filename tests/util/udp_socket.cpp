@@ -17,7 +17,7 @@ UdpSocket::UdpSocket(IpAddress::Family family) : family_{family} {
     fd_.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, IPPROTO_UDP));
     if (!fd_) {
         if (errno == EAFNOSUPPORT || errno == EPROTONOSUPPORT) {
-            logger_.Warning("Cannot create socket: address family not supported: {}", Error::FromErrno());
+            logger_.Warn("Cannot create socket: address family not supported: {}", Error::FromErrno());
         } else {
             logger_.Error("Cannot create socket: {}", Error::FromErrno());
         }

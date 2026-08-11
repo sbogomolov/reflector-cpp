@@ -414,7 +414,7 @@ SendStatus TcpSocket::Send(std::span<const std::span<const std::byte>> chunks) n
     // buffers and flushes on later writable edges — but a caller only ever passes a header + body (2 chunks),
     // so a scatter this large is unexpected: warn and carry on.
     if (chunks.size() > MAX_SEND_CHUNKS) {
-        logger_.Warning("Scatter-send of {} chunks exceeds the {}-chunk sendmsg cap; the overflow "
+        logger_.Warn("Scatter-send of {} chunks exceeds the {}-chunk sendmsg cap; the overflow "
             "buffers and flushes on later writable edges", chunks.size(), MAX_SEND_CHUNKS);
     }
     // Write through only when nothing is already queued; otherwise the chunks follow the backlog in order

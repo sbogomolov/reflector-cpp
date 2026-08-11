@@ -636,7 +636,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
         return std::unexpected(ReceiveError::Failed);
     }
     if (static_cast<size_t>(bytes) > receive_buffer_.size()) {
-        logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        logger_.Warn("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             bytes, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -685,7 +685,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // BPF captured fewer bytes than the frame's real length, so it didn't fit the buffer; drop it
     // rather than parse a truncated frame. (Offset already advanced to the next record above.)
     if (header.bh_datalen > header.bh_caplen) {
-        logger_.Warning("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        logger_.Warn("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             header.bh_datalen, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -694,7 +694,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // batch buffer admits frames the MAX_FRAME_SIZE-sized Linux scratch would have refused, so
     // enforce the same ceiling here at capture.
     if (header.bh_caplen > MAX_FRAME_SIZE) {
-        logger_.Warning("Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
+        logger_.Warn("Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
             header.bh_caplen, MAX_FRAME_SIZE);
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -838,7 +838,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
     const auto dest_port = ReadU16Be(l4.subspan<2, 2>());
     const auto udp_length = ReadU16Be(l4.subspan<4, 2>());
     if (udp_length < UDP_HEADER_SIZE || udp_length > l4.size()) {
-        logger_.Warning("UDP length {} invalid (header min {}, l4 size {})",
+        logger_.Warn("UDP length {} invalid (header min {}, l4 size {})",
             udp_length, UDP_HEADER_SIZE, l4.size());
         return std::nullopt;
     }
