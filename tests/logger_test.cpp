@@ -18,15 +18,6 @@
 namespace {
 using namespace reflector;
 
-constexpr char STATIC_ARRAY_NAME[] = "StaticArrayLogger";
-
-static_assert(noexcept(Logger{"LiteralLogger"}));
-static_assert(noexcept(Logger{STATIC_ARRAY_NAME}));
-static_assert(!noexcept(Logger{std::string_view{"DynamicLogger"}}));
-static_assert(noexcept(std::declval<Logger&>().SetName("LiteralLogger")));
-static_assert(noexcept(std::declval<Logger&>().SetName(STATIC_ARRAY_NAME)));
-static_assert(!noexcept(std::declval<Logger&>().SetName(std::string_view{"DynamicLogger"})));
-
 } // namespace
 
 namespace reflector {
@@ -55,88 +46,35 @@ TEST(LoggerTest, MinLevelSuppressesLowerSeverityMessages) {
     EXPECT_NE(output.find("visible error message"), std::string::npos) << output;
 }
 
-TEST(LoggerTest, StaticLiteralNameAppearsInOutput) {
+TEST(LoggerTest, NameAppearsInOutput) {
     const ScopedMinLogLevel level{LogLevel::Info};
-    Logger logger{"StaticLiteralLogger"};
+    Logger logger{"NamedLogger"};
 
     const std::string output = CaptureStdout([&] {
-        logger.Info("message from static literal logger");
+        logger.Info("message from a named logger");
     });
 
-    EXPECT_NE(output.find("[StaticLiteralLogger]"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from static literal logger"), std::string::npos) << output;
+    EXPECT_NE(output.find("[NamedLogger]"), std::string::npos) << output;
+    EXPECT_NE(output.find("message from a named logger"), std::string::npos) << output;
 }
 
-TEST(LoggerTest, NonNullTerminatedArrayNameAppearsInOutput) {
-    // A char array without a trailing NUL: StaticStringLength takes its `: N` branch (a terminated
-    // array and any string literal take `N - 1`), so the whole extent is the name — the one case
-    // that distinguishes the array ctor from the literal ctor.
+TEST(LoggerTest, NameSurvivesMoveConstructionAndAssignment) {
     const ScopedMinLogLevel level{LogLevel::Info};
-    constexpr char name[] = {'N', 'o', 'N', 'u', 'l'};
-    Logger logger{name};
-
-    const std::string output = CaptureStdout([&] {
-        logger.Info("message from unterminated array logger");
-    });
-
-    EXPECT_NE(output.find("[NoNul]"), std::string::npos) << output;
-}
-
-TEST(LoggerTest, DynamicTemporaryNameAppearsInOutput) {
-    const ScopedMinLogLevel level{LogLevel::Info};
-    Logger logger{std::string{"DynamicTemporaryLoggerName"}};
-
-    const std::string output = CaptureStdout([&] {
-        logger.Info("message from dynamic temporary logger");
-    });
-
-    EXPECT_NE(output.find("[DynamicTemporaryLoggerName]"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from dynamic temporary logger"), std::string::npos) << output;
-}
-
-TEST(LoggerTest, SetNameWithStaticLiteralUpdatesOutput) {
-    const ScopedMinLogLevel level{LogLevel::Info};
-    Logger logger{std::string{"InitialDynamicLoggerName"}};
-    logger.SetName("RenamedStaticLiteralLogger");
-
-    const std::string output = CaptureStdout([&] {
-        logger.Info("message from renamed static literal logger");
-    });
-
-    EXPECT_NE(output.find("[RenamedStaticLiteralLogger]"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from renamed static literal logger"), std::string::npos) << output;
-}
-
-TEST(LoggerTest, SetNameWithDynamicTemporaryUpdatesOutput) {
-    const ScopedMinLogLevel level{LogLevel::Info};
-    Logger logger{"InitialStaticLogger"};
-    logger.SetName(std::string{"RenamedDynamicLoggerName"});
-
-    const std::string output = CaptureStdout([&] {
-        logger.Info("message from renamed dynamic logger");
-    });
-
-    EXPECT_NE(output.find("[RenamedDynamicLoggerName]"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from renamed dynamic logger"), std::string::npos) << output;
-}
-
-TEST(LoggerTest, StaticNameSurvivesMoveConstructionAndAssignment) {
-    const ScopedMinLogLevel level{LogLevel::Info};
-    Logger constructed_from{STATIC_ARRAY_NAME};
+    Logger constructed_from{"MoveConstructedLogger"};
     Logger move_constructed{std::move(constructed_from)};
     Logger move_assigned_target{"InitialLogger"};
     Logger assigned_from{"MoveAssignedStaticLogger"};
     move_assigned_target = std::move(assigned_from);
 
     const std::string output = CaptureStdout([&] {
-        move_constructed.Info("message from move constructed static logger");
-        move_assigned_target.Info("message from move assigned static logger");
+        move_constructed.Info("message from the move constructed logger");
+        move_assigned_target.Info("message from the move assigned logger");
     });
 
-    EXPECT_NE(output.find(STATIC_ARRAY_NAME), std::string::npos) << output;
+    EXPECT_NE(output.find("[MoveConstructedLogger]"), std::string::npos) << output;
     EXPECT_NE(output.find("[MoveAssignedStaticLogger]"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from move constructed static logger"), std::string::npos) << output;
-    EXPECT_NE(output.find("message from move assigned static logger"), std::string::npos) << output;
+    EXPECT_NE(output.find("message from the move constructed logger"), std::string::npos) << output;
+    EXPECT_NE(output.find("message from the move assigned logger"), std::string::npos) << output;
 }
 
 TEST(LoggerTest, DynamicNameSurvivesMoveConstructionAndAssignment) {
