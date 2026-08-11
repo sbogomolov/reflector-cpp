@@ -2,11 +2,7 @@
 
 #include "reflector/util/no_copy.h"
 
-#include <array>
-#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <ctime>
 #include <format>
 #include <source_location>
 #include <string>
@@ -24,16 +20,6 @@ enum class LogLevel : uint8_t {
 };
 
 namespace detail {
-
-constexpr const char* Basename(const char* path) noexcept {
-    const char* base = path;
-    for (const char* p = path; *p != '\0'; ++p) {
-        if (*p == '/') {
-            base = p + 1;
-        }
-    }
-    return base;
-}
 
 template <typename... Args>
 struct LogFmt {
@@ -59,46 +45,17 @@ public:
     static void SetMinLevel(LogLevel level) noexcept { min_level_ = level; }
     [[nodiscard]] static LogLevel MinLevel() noexcept { return min_level_; }
 
-    // Ungated: the NFL_LOG macros check the level before they reach here.
+    // Ungated: the NFL_LOG macros check the level before they reach here. Type-erasing the
+    // arguments keeps the record builder to one instantiation rather than one per combination of
+    // argument types across every call site.
     template <typename... Args>
     void Emit(LogLevel level, detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        try {
-            // Clang 17 does not support std::chrono::current_zone(). Maybe next time.
-            const auto time = std::time({});
-            std::tm tm_buf{};
-            localtime_r(&time, &tm_buf);
-            char time_str[sizeof("yyyy-mm-dd hh:mm:ss")];
-            std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
-
-            // Two buffers, so an over-long message loses its own tail rather than the source
-            // location after it. std::format plus std::println would allocate twice per record.
-            std::array<char, MAX_MESSAGE_SIZE> message_buffer;
-            const auto formatted = std::format_to_n(message_buffer.data(), message_buffer.size(),
-                std::move(fmt.fmt), std::forward<Args>(args)...);
-            const std::string_view message{message_buffer.data(),
-                static_cast<size_t>(formatted.out - message_buffer.data())};
-            // formatted.size is the length the message needed, not what fit, so this catches a cut.
-            const std::string_view elision =
-                static_cast<size_t>(formatted.size) > message_buffer.size() ? "[...]" : "";
-
-            // One slot is held back for the newline, so it lands even on a truncated record and the
-            // whole line still goes out in a single write.
-            std::array<char, MAX_RECORD_SIZE> record;
-            const auto emitted = std::format_to_n(record.data(), record.size() - 1, "{} {} [{}] {}{} ({}:{})",
-                time_str, level, name_, message, elision,
-                detail::Basename(fmt.loc.file_name()), fmt.loc.line());
-            const auto length = static_cast<size_t>(emitted.out - record.data());
-            record[length] = '\n';
-            std::fwrite(record.data(), 1, length + 1, stdout);
-        } catch (...) {
-            std::fputs("logger: failed to emit message\n", stderr);
-        }
+        EmitRecord(level, fmt.fmt.get(), std::make_format_args(args...), fmt.loc);
     }
 
 private:
-    static constexpr size_t MAX_MESSAGE_SIZE = 1024;
-    // Plus the timestamp, level, logger name and source location wrapped around it.
-    static constexpr size_t MAX_RECORD_SIZE = MAX_MESSAGE_SIZE + 512;
+    void EmitRecord(LogLevel level, std::string_view fmt, std::format_args args,
+        const std::source_location& loc) noexcept;
 
     inline static LogLevel min_level_ = LogLevel::Info;
 

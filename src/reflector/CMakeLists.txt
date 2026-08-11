@@ -12,6 +12,7 @@ add_library(reflector STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/interface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/interface_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ip_address.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/logger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mac_address.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mdns_message.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_report.cpp
