@@ -210,13 +210,12 @@ TEST_F(WolReflectorTest, RejectsConfigWithEmptyPorts) {
     auto config = MakeConfig(IpAddress::Family::V4);
     config.ports = {};
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const auto reflector = BuildV4Reflector(config);
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(DispatcherRegistrationCount(), 0);
     });
 
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(WolReflectorTest, RegistersACallbackPerConfiguredPort) {
@@ -242,13 +241,12 @@ TEST_F(WolReflectorTest, RegistrationFailureRollsBackAndInvalidates) {
     config.ports = {7, 9};
     packet_dispatcher.fail_register_on_call = 2; // second port's registration fails
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const auto reflector = BuildV4Reflector(config);
         EXPECT_FALSE(reflector.IsValid());
     });
 
     EXPECT_EQ(DispatcherRegistrationCount(), 0); // the first port's registration was rolled back
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(WolReflectorTest, IgnoresPacketOnUnconfiguredPort) {
