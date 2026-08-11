@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <format>
+#include <optional>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -31,6 +32,43 @@ struct LogFmt {
             : fmt{s}, loc{l} {}
 };
 
+// One-based, so a reading is never 0 and RateGate can spend 0 on "never emitted". Whole seconds, so
+// a window under a second lets every call through.
+constexpr uint32_t MonotonicSecsFrom(int64_t nanos) noexcept {
+    return 1 + static_cast<uint32_t>(nanos / 1'000'000'000);
+}
+
+// MonotonicSecsFrom applied to the steady clock, which counts from boot.
+uint32_t MonotonicSecs() noexcept;
+
+// The emit-or-count decision for one call site. The NFL_LOG_*_RATE macros keep one of these in a
+// static, so a window covers a statement rather than an interface or a peer. The caller passes the
+// time in, which is what makes the arithmetic testable without waiting on a clock. Plain integers
+// rather than atomics: the loop is single-threaded and no log runs from a signal handler.
+class RateGate {
+public:
+    // consteval, so a site cannot hand over a window that varies between calls, and the gate is
+    // constant-initialized rather than carrying a thread-safe init guard into every call.
+    consteval explicit RateGate(uint32_t window_secs) noexcept : window_secs_{window_secs} {}
+
+    // How many records were suppressed since the last emission, or nullopt to suppress this one.
+    // Takes readings from MonotonicSecs, which never decrease and are never 0, so the subtraction
+    // cannot underflow and last_emit_ of 0 can only mean nothing has been emitted yet.
+    constexpr std::optional<uint32_t> Admit(uint32_t now_secs) noexcept {
+        if (last_emit_ == 0 || now_secs - last_emit_ >= window_secs_) {
+            last_emit_ = now_secs;
+            return std::exchange(suppressed_, 0);
+        }
+        ++suppressed_;
+        return std::nullopt;
+    }
+
+private:
+    uint32_t window_secs_;
+    uint32_t last_emit_ = 0;
+    uint32_t suppressed_ = 0;
+};
+
 } // namespace detail
 
 class Logger : NoCopy {
@@ -50,12 +88,23 @@ public:
     // argument types across every call site.
     template <typename... Args>
     void Emit(LogLevel level, detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        EmitRecord(level, fmt.fmt.get(), std::make_format_args(args...), fmt.loc);
+        EmitRecord(level, {}, fmt.fmt.get(), std::make_format_args(args...), fmt.loc);
+    }
+
+    // For the NFL_LOG_*_RATE macros, which have a count of what the window swallowed to disclose.
+    template <typename... Args>
+    void EmitRated(LogLevel level, uint32_t suppressed,
+        detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
+        EmitRatedRecord(level, suppressed, fmt.fmt.get(), std::make_format_args(args...), fmt.loc);
     }
 
 private:
-    void EmitRecord(LogLevel level, std::string_view fmt, std::format_args args,
+    // note is interpolated as it stands, so the rate-limited path owns the decision of whether
+    // there is anything to disclose and the ordinary path never tests for it.
+    void EmitRecord(LogLevel level, std::string_view note, std::string_view fmt, std::format_args args,
         const std::source_location& loc) noexcept;
+    void EmitRatedRecord(LogLevel level, uint32_t suppressed, std::string_view fmt,
+        std::format_args args, const std::source_location& loc) noexcept;
 
     inline static LogLevel min_level_ = LogLevel::Info;
 
@@ -105,3 +154,22 @@ struct std::formatter<reflector::LogLevel>
 #define NFL_LOG_INFO(logger, ...) NFL_LOG(logger, Info, __VA_ARGS__)
 #define NFL_LOG_WARN(logger, ...) NFL_LOG(logger, Warn, __VA_ARGS__)
 #define NFL_LOG_ERROR(logger, ...) NFL_LOG(logger, Error, __VA_ARGS__)
+
+// Emits at most once per window per call site. A call landing inside a closed window is counted
+// instead, and the next line that does emit discloses the count.
+#define NFL_LOG_RATE(logger, level, window_secs, ...)                                       \
+    do {                                                                                    \
+        if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {              \
+            static ::reflector::detail::RateGate nfl_rate_gate{(window_secs)};              \
+            const auto nfl_suppressed =                                                     \
+                nfl_rate_gate.Admit(::reflector::detail::MonotonicSecs());                  \
+            if (nfl_suppressed) {                                                           \
+                (logger).EmitRated(::reflector::LogLevel::level, *nfl_suppressed, __VA_ARGS__); \
+            }                                                                               \
+        }                                                                                   \
+    } while (false)
+
+#define NFL_LOG_WARN_RATE(logger, window_secs, ...) \
+    NFL_LOG_RATE(logger, Warn, window_secs, __VA_ARGS__)
+#define NFL_LOG_ERROR_RATE(logger, window_secs, ...) \
+    NFL_LOG_RATE(logger, Error, window_secs, __VA_ARGS__)

@@ -180,8 +180,87 @@ TEST(LoggerTest, EndsTheLineWhenEvenTheRecordIsTruncated) {
     ASSERT_FALSE(output.empty());
     EXPECT_EQ(output.find('\n'), output.size() - 1);
 }
+// Times are MonotonicSecs readings, which are one-based: 1 is the first second of uptime.
+TEST(RateGateTest, EmitsFirstThenSuppressesWithinTheWindow) {
+    detail::RateGate gate{60};
+
+    EXPECT_EQ(gate.Admit(1), 0U);
+    EXPECT_EQ(gate.Admit(2), std::nullopt);
+    EXPECT_EQ(gate.Admit(60), std::nullopt);
+    // A full 60 seconds after the emission at 1, disclosing the two it swallowed.
+    EXPECT_EQ(gate.Admit(61), 2U);
+    EXPECT_EQ(gate.Admit(200), 0U);
+}
+
+TEST(RateGateTest, RepeatedCallsInTheFirstSecondEmitOnlyOnce) {
+    detail::RateGate gate{60};
+
+    EXPECT_EQ(gate.Admit(1), 0U);
+    EXPECT_EQ(gate.Admit(1), std::nullopt);
+    EXPECT_EQ(gate.Admit(1), std::nullopt);
+}
+
+TEST(RateGateTest, AZeroWindowAdmitsEveryCall) {
+    detail::RateGate gate{0};
+
+    EXPECT_EQ(gate.Admit(1), 0U);
+    EXPECT_EQ(gate.Admit(1), 0U);
+    EXPECT_EQ(gate.Admit(2), 0U);
+}
+
+// RateGate spends 0 on "never emitted", which only works because a reading can never be 0. The
+// first second of uptime is the case that would otherwise collide with it.
+TEST(RateGateTest, TheClockIsOneBased) {
+    EXPECT_EQ(detail::MonotonicSecsFrom(0), 1U);
+    EXPECT_EQ(detail::MonotonicSecsFrom(999'999'999), 1U);
+    EXPECT_EQ(detail::MonotonicSecsFrom(1'000'000'000), 2U);
+}
+
+TEST(LoggerTest, ASuppressedCountRidesOnTheNextRecord) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"RateLogger"};
+
+    const std::string output = CaptureStdout([&] {
+        logger.EmitRated(LogLevel::Warn, 5, "a message");
+    });
+
+    EXPECT_NE(output.find("(5 suppressed)"), std::string::npos) << output;
+}
+
+TEST(LoggerTest, ADisclosureOutlivesAnOverlongMessage) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"RateLogger"};
+
+    const std::string argument(8192, 'x');
+    const std::string output = CaptureStdout([&] {
+        logger.EmitRated(LogLevel::Warn, 7, "{}", argument);
+    });
+
+    ASSERT_GT(output.size(), 100u);
+    const std::string tail = output.substr(output.size() - 100);
+    EXPECT_NE(output.find("[...]"), std::string::npos) << tail;
+    EXPECT_NE(output.find("(7 suppressed)"), std::string::npos) << tail;
+}
+
+TEST(LoggerTest, ARateLimitedCallSiteEmitsOncePerWindow) {
+    const ScopedMinLogLevel level{LogLevel::Info};
+    Logger logger{"RateLogger"};
+
+    const std::string output = CaptureStdout([&] {
+        for (int i = 0; i < 3; ++i) {
+            NFL_LOG_WARN_RATE(logger, 60, "flooding {}", i);
+        }
+    });
+
+    EXPECT_NE(output.find("flooding 0"), std::string::npos) << output;
+    EXPECT_EQ(output.find("flooding 1"), std::string::npos) << output;
+    EXPECT_EQ(output.find("flooding 2"), std::string::npos) << output;
+    // Nothing was suppressed before the one that emitted, so it carries no disclosure.
+    EXPECT_EQ(output.find("suppressed"), std::string::npos) << output;
+}
+
 // The macro gates on the level before the arguments are formed, so a filtered record costs nothing
-// past the comparison. Calling Logger::Debug directly still builds every argument first.
+// past the comparison. Calling Logger::Emit directly still builds every argument first.
 TEST(LoggerTest, AFilteredRecordDoesNotEvaluateItsArguments) {
     const ScopedMinLogLevel level{LogLevel::Info};
     Logger logger{"GateLogger"};
