@@ -326,7 +326,7 @@ void DialProxy::OnAccept(int listener_fd) noexcept {
     }
 
     if (connections_.size() >= MAX_CONNECTIONS) {
-        NFL_LOG_WARN(logger_, "Dropping accept for {}: connection cap reached", ep->device);
+        NFL_LOG_WARN_RATE(logger_, 60, "Dropping accept for {}: connection cap reached", ep->device);
         return;  // the accepted client TcpSocket drops here -> RAII close
     }
 

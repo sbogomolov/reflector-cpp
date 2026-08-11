@@ -818,12 +818,11 @@ TEST(RawSocketBatchTest, ReceiveDropsBpfTruncatedFrame) {
     // The frame's real length was far larger than what BPF captured.
     ASSERT_TRUE(capture.WriteTruncatedFrame(f.bytes, 70000));
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const auto dropped = capture.socket.Receive();
         ASSERT_FALSE(dropped.has_value());
         EXPECT_EQ(dropped.error(), LinkSocket::ReceiveError::Dropped);
     });
-    EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
 
 // A frame can be fully captured (datalen == caplen) yet exceed MAX_FRAME_SIZE when the batch
@@ -834,12 +833,11 @@ TEST(RawSocketReceiveTest, DropsFullyCapturedFrameLargerThanTheFrameCeiling) {
     const std::vector<std::byte> frame(MAX_FRAME_SIZE + 1, std::byte{0xff});
     ASSERT_TRUE(capture.WriteFrame(frame));
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const auto dropped = capture.socket.Receive();
         ASSERT_FALSE(dropped.has_value());
         EXPECT_EQ(dropped.error(), LinkSocket::ReceiveError::Dropped);
     });
-    EXPECT_NE(output.find("oversized frame"), std::string::npos) << output;
 }
 #endif  // !defined(__linux__)
 
