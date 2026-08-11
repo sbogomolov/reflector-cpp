@@ -31,7 +31,7 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
     const bool v6 = source_ip.IsV6();
     const int fd = socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        GetLogger().Error("Cannot open port reservation socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot open port reservation socket: {}", Error::FromErrno());
         return std::nullopt;
     }
 
@@ -41,7 +41,7 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
     sock_filter drop_all[] = {{0x06, 0, 0, 0x00000000}};  // BPF_RET | BPF_K, 0
     sock_fprog program{.len = 1, .filter = drop_all};
     if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
-        GetLogger().Error("Cannot attach drop-all filter to port reservation socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot attach drop-all filter to port reservation socket: {}", Error::FromErrno());
         close(fd);
         return std::nullopt;
     }
@@ -50,7 +50,7 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
     sockaddr_storage storage{};
     const socklen_t length = source_ip.ToSockaddr(storage, /*port=*/0, scope_id);
     if (bind(fd, reinterpret_cast<const sockaddr*>(&storage), length) != 0) {
-        GetLogger().Error("Cannot bind port reservation socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot bind port reservation socket: {}", Error::FromErrno());
         close(fd);
         return std::nullopt;
     }
@@ -58,7 +58,7 @@ std::optional<PortReservation> PortReservation::Create(const IpAddress& source_i
     sockaddr_storage bound{};
     socklen_t bound_length = sizeof(bound);
     if (getsockname(fd, reinterpret_cast<sockaddr*>(&bound), &bound_length) != 0) {
-        GetLogger().Error("Cannot query the reserved port: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot query the reserved port: {}", Error::FromErrno());
         close(fd);
         return std::nullopt;
     }

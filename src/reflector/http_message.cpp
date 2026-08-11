@@ -101,7 +101,7 @@ bool HttpFraming::ScanAndRewriteHeader() {
     // real body without correlating the request method across the two framers: refuse HEAD at the
     // request side instead. DIAL clients never issue it.
     if (type_ == MessageType::Request && std::string_view{header_}.starts_with("HEAD ")) {
-        GetLogger().Error("refusing a HEAD request: its response cannot be framed");
+        NFL_LOG_ERROR(GetLogger(), "refusing a HEAD request: its response cannot be framed");
         return false;
     }
     size_t pos = 0;
@@ -119,13 +119,13 @@ bool HttpFraming::ScanAndRewriteHeader() {
             // at the first non-digit and reports success, so "12abc" would otherwise frame a body of 12 and
             // mis-parse the rest. Trailing OWS (RFC 7230 §3.2.4) is tolerated; any other trailing byte rejects.
             if (result.ec != std::errc{} || !TrimLeadingSpace({result.ptr, v.data() + v.size()}).empty()) {
-                GetLogger().Error("malformed Content-Length value \"{}\"", v);
+                NFL_LOG_ERROR(GetLogger(), "malformed Content-Length value \"{}\"", v);
                 return false;
             }
             // A second, differing Content-Length is a request-smuggling vector (RFC 9112 §6.3): refuse
             // the message rather than pick a winner. Identical repeats agree on the framing, so they pass.
             if (has_content_length && parsed != content_length) {
-                GetLogger().Error("conflicting Content-Length values {} and {}", content_length, parsed);
+                NFL_LOG_ERROR(GetLogger(), "conflicting Content-Length values {} and {}", content_length, parsed);
                 return false;
             }
             content_length = parsed;
@@ -147,7 +147,7 @@ bool HttpFraming::ScanAndRewriteHeader() {
             if (const auto found = ParseAuthority(value, /*bare=*/is_host)) {
                 if (const auto repl = rewrite_(found->endpoint)) {
                     // Log before the splice: `line` views into header_, which the replace may reallocate.
-                    GetLogger().Debug("rewrote {} authority {} -> {}", line.substr(0, colon),
+                    NFL_LOG_DEBUG(GetLogger(), "rewrote {} authority {} -> {}", line.substr(0, colon),
                         found->endpoint, *repl);
                     const std::string repl_text = std::format("{}", *repl);
                     const size_t auth_off =
@@ -190,7 +190,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
         const size_t term = input.find(HEADER_TERMINATOR);
         if (term == std::string_view::npos) {
             if (input.size() > MAX_HEADER_BYTES) {
-                GetLogger().Error("header block exceeds the {}-byte cap with no terminator", MAX_HEADER_BYTES);
+                NFL_LOG_ERROR(GetLogger(), "header block exceeds the {}-byte cap with no terminator", MAX_HEADER_BYTES);
                 return std::nullopt;
             }
             return Output{};  // incomplete header: nothing forwardable yet, read more and feed again
@@ -200,7 +200,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
         // header past it that a segmented one could not (the unterminated check above never fires
         // when the terminator is already in the buffer).
         if (header_len > MAX_HEADER_BYTES) {
-            GetLogger().Error("header block exceeds the {}-byte cap", MAX_HEADER_BYTES);
+            NFL_LOG_ERROR(GetLogger(), "header block exceeds the {}-byte cap", MAX_HEADER_BYTES);
             return std::nullopt;
         }
         header_.assign(input.data(), header_len);  // copy only the header, to rewrite it
@@ -244,7 +244,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             const size_t eol = input.find(CRLF, pos);
             if (eol == std::string_view::npos) {
                 if (input.size() - pos > MAX_CHUNK_LINE_BYTES) {
-                    GetLogger().Error("chunk-size line exceeds the {}-byte cap with no terminator",
+                    NFL_LOG_ERROR(GetLogger(), "chunk-size line exceeds the {}-byte cap with no terminator",
                                       MAX_CHUNK_LINE_BYTES);
                     return std::nullopt;
                 }
@@ -258,7 +258,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             size_t chunk_size = 0;
             if (std::from_chars(size_field.data(), size_field.data() + size_field.size(),
                                 chunk_size, 16).ec != std::errc{}) {
-                GetLogger().Error("malformed chunk size \"{}\"", size_field);
+                NFL_LOG_ERROR(GetLogger(), "malformed chunk size \"{}\"", size_field);
                 return std::nullopt;
             }
             pos = eol + CRLF.size();
@@ -266,7 +266,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
                 phase_ = BodyChunkedDone;  // an optional trailer section + the closing CRLF remain
             } else if (chunk_size > std::numeric_limits<size_t>::max() - CRLF.size()) {
                 // A near-SIZE_MAX size (hostile/buggy device) would wrap the addition below and misframe.
-                GetLogger().Error("chunk size {:#x} too large to frame", chunk_size);
+                NFL_LOG_ERROR(GetLogger(), "chunk size {:#x} too large to frame", chunk_size);
                 return std::nullopt;
             } else {
                 chunk_remaining_ = chunk_size + CRLF.size();  // chunk DATA + its terminating CRLF
@@ -281,7 +281,7 @@ std::optional<HttpFraming::Output> HttpFraming::Feed(std::string_view input) {
             const size_t eol = input.find(CRLF, pos);
             if (eol == std::string_view::npos) {
                 if (input.size() - pos > MAX_TRAILER_LINE_BYTES) {
-                    GetLogger().Error("chunked trailer line exceeds the {}-byte cap with no terminator",
+                    NFL_LOG_ERROR(GetLogger(), "chunked trailer line exceeds the {}-byte cap with no terminator",
                                       MAX_TRAILER_LINE_BYTES);
                     return std::nullopt;
                 }

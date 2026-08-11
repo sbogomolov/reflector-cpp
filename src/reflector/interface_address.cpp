@@ -120,7 +120,7 @@ template <typename Handler>
     // body left zero: ifi_family / ifa_family = AF_UNSPEC dumps every family.
 
     if (send(fd, &request, request.header.nlmsg_len, 0) < 0) {
-        GetLogger().Error("Cannot send netlink dump request: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot send netlink dump request: {}", Error::FromErrno());
         return false;
     }
 
@@ -134,7 +134,7 @@ template <typename Handler>
     while (true) {
         const auto needed = recv(fd, buffer.data(), buffer.size(), MSG_PEEK | MSG_TRUNC);
         if (needed < 0) {
-            GetLogger().Error("Cannot read netlink dump reply: {}", Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot read netlink dump reply: {}", Error::FromErrno());
             return false;
         }
         if (static_cast<size_t>(needed) > buffer.size()) {
@@ -146,13 +146,13 @@ template <typename Handler>
         const auto received = recvfrom(fd, buffer.data(), buffer.size(), 0,
             reinterpret_cast<sockaddr*>(&src), &addrlen);
         if (received < 0) {
-            GetLogger().Error("Cannot read netlink dump reply: {}", Error::FromErrno());
+            NFL_LOG_ERROR(GetLogger(), "Cannot read netlink dump reply: {}", Error::FromErrno());
             return false;
         }
         // Only the kernel (nl_pid 0) may answer the dump; a local process could unicast a spoofed
         // reply to inject a bogus address. Discard anything else and read the next datagram.
         if (addrlen < sizeof(src) || src.nl_pid != 0) {
-            GetLogger().Debug("Ignoring a netlink dump reply from a non-kernel sender (pid {})", src.nl_pid);
+            NFL_LOG_DEBUG(GetLogger(), "Ignoring a netlink dump reply from a non-kernel sender (pid {})", src.nl_pid);
             continue;
         }
 
@@ -169,7 +169,7 @@ template <typename Handler>
                 // nlmsgerr.error is a negative errno (0 is an ACK, not a failure).
                 const auto* error = start_lifetime_as<nlmsgerr>(NLMSG_DATA(header));
                 if (error->error != 0) {
-                    GetLogger().Error("Netlink dump returned an error: {}", Error::FromErrno(-error->error));
+                    NFL_LOG_ERROR(GetLogger(), "Netlink dump returned an error: {}", Error::FromErrno(-error->error));
                     return false;
                 }
                 return true;
@@ -182,7 +182,7 @@ template <typename Handler>
 bool ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
     const int fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (fd < 0) {
-        GetLogger().Error("Cannot open netlink socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot open netlink socket: {}", Error::FromErrno());
         return false;
     }
 
@@ -271,7 +271,7 @@ bool IsUsableIpv6(int inet6_fd, const char* interface, const sockaddr_in6& sin6)
     std::strncpy(request.ifr_name, interface, sizeof(request.ifr_name) - 1);
     request.ifr_ifru.ifru_addr = sin6;
     if (ioctl(inet6_fd, SIOCGIFAFLAG_IN6, &request) != 0) {
-        GetLogger().Warn("Cannot query IPv6 address flags on interface \"{}\": {}", interface, Error::FromErrno());
+        NFL_LOG_WARN(GetLogger(), "Cannot query IPv6 address flags on interface \"{}\": {}", interface, Error::FromErrno());
         return false;
     }
     return detail::Ipv6SourceFlagsUsable(request.ifr_ifru.ifru_flags6);
@@ -283,13 +283,13 @@ bool ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
     // can't verify any IPv6 source, so fail early rather than guess.
     const int inet6_fd = socket(AF_INET6, SOCK_DGRAM, 0);
     if (inet6_fd < 0) {
-        GetLogger().Error("Cannot open IPv6 socket to query address flags: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot open IPv6 socket to query address flags: {}", Error::FromErrno());
         return false;
     }
 
     ifaddrs* head = nullptr;
     if (getifaddrs(&head) != 0) {
-        GetLogger().Error("Cannot enumerate interface addresses: {}", Error::FromErrno());
+        NFL_LOG_ERROR(GetLogger(), "Cannot enumerate interface addresses: {}", Error::FromErrno());
         close(inet6_fd);
         return false;
     }

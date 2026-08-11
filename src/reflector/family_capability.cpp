@@ -34,11 +34,11 @@ void FamilyCapability::ObserveFamily() noexcept {
     // An unused family's CanSend is always false, so it never reaches a transition here — it stays
     // silent without a separate guard.
     if (can_send) {
-        logger_->Info("Starting {} reflection: a source address is available", family);
+        NFL_LOG_INFO(*logger_, "Starting {} reflection: a source address is available", family);
     } else if (policy_.required.Get<family>()) {
-        logger_->Error("Cannot reflect {} packets: a source address is no longer available", family);
+        NFL_LOG_ERROR(*logger_, "Cannot reflect {} packets: a source address is no longer available", family);
     } else {
-        logger_->Info("Stopping {} reflection: a source address is no longer available", family);
+        NFL_LOG_INFO(*logger_, "Stopping {} reflection: a source address is no longer available", family);
     }
 }
 

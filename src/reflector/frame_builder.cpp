@@ -38,12 +38,12 @@ size_t CheckedFrameSize(size_t l2_size, bool v4, size_t payload_size, size_t out
     const size_t ip_size = v4 ? IPV4_HEADER_SIZE : IPV6_HEADER_SIZE;
     const size_t udp_length = UDP_HEADER_SIZE + payload_size;
     if (udp_length > MAX_UDP_LENGTH || (v4 && ip_size + udp_length > MAX_UDP_LENGTH)) {
-        GetLogger().Error("Cannot build UDP frame: {}-byte payload overflows the UDP length field", payload_size);
+        NFL_LOG_ERROR(GetLogger(), "Cannot build UDP frame: {}-byte payload overflows the UDP length field", payload_size);
         return 0;
     }
     const size_t frame_size = l2_size + ip_size + udp_length;
     if (out_size < frame_size) {
-        GetLogger().Error("Cannot build UDP frame: {}-byte buffer too small for {}-byte frame", out_size, frame_size);
+        NFL_LOG_ERROR(GetLogger(), "Cannot build UDP frame: {}-byte buffer too small for {}-byte frame", out_size, frame_size);
         return 0;
     }
     return frame_size;

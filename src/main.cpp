@@ -92,7 +92,7 @@ int Run(int argc, char* argv[]) {
 
     reflector::Logger logger("main");
     if (argc > 2) {
-        logger.Error("Usage: {} [config.toml]", argv[0]);
+        NFL_LOG_ERROR(logger, "Usage: {} [config.toml]", argv[0]);
         return 2;
     }
 
@@ -102,7 +102,7 @@ int Run(int argc, char* argv[]) {
     if (argc == 2) {
         auto contents = reflector::Config::ReadFileToString(argv[1]);
         if (!contents) {
-            logger.Error("Cannot read configuration file: {}", contents.error());
+            NFL_LOG_ERROR(logger, "Cannot read configuration file: {}", contents.error());
             return 1;
         }
         file_contents = *std::move(contents);
@@ -113,14 +113,14 @@ int Run(int argc, char* argv[]) {
         file_contents ? std::optional<std::string_view>{*file_contents} : std::nullopt;
     auto config = reflector::Config::Load(toml_text, env_vars);
     if (!config) {
-        logger.Error("Invalid configuration: {}", config.error());
+        NFL_LOG_ERROR(logger, "Invalid configuration: {}", config.error());
         return 1;
     }
 
-    logger.Info("Setting minimum log level to {}", config->MinLogLevel());
+    NFL_LOG_INFO(logger, "Setting minimum log level to {}", config->MinLogLevel());
     reflector::Logger::SetMinLevel(config->MinLogLevel());
 
-    logger.Debug("Config: {}", *config);
+    NFL_LOG_DEBUG(logger, "Config: {}", *config);
 
     reflector::Application app;
     if (!app.Configure(*config)) {

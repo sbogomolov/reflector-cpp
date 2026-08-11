@@ -34,7 +34,7 @@ WolReflector::WolReflector(PacketDispatcher& packet_dispatcher, LinkSocket& sour
 
 bool WolReflector::ValidateConfig(const WolConfig& config) {
     if (const auto error = config.Verify()) {
-        logger_.Error("Cannot create wol reflector \"{}\": invalid config: {}", config.name, *error);
+        NFL_LOG_ERROR(logger_, "Cannot create wol reflector \"{}\": invalid config: {}", config.name, *error);
         return false;
     }
     return true;
@@ -43,12 +43,12 @@ bool WolReflector::ValidateConfig(const WolConfig& config) {
 void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& source_socket, const WolConfig& config) {
     const auto& target_interface = target_socket_->GetInterface();
     if (config.RequiresIPv4() && !target_interface.CanSend(IpAddress::Family::V4)) {
-        logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv4",
+        NFL_LOG_ERROR(logger_, "Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv4",
             config.name, config.target_if);
         return;
     }
     if (config.RequiresIPv6() && !target_interface.CanSend(IpAddress::Family::V6)) {
-        logger_.Error("Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv6",
+        NFL_LOG_ERROR(logger_, "Cannot create wol reflector \"{}\": target_if \"{}\" cannot send IPv6",
             config.name, config.target_if);
         return;
     }
@@ -65,7 +65,7 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
         auto registration = packet_dispatcher.Register(source_socket, PacketFilter{.dest_port = port},
             CreateDelegate<&WolReflector::OnPacket>(this));
         if (!registration.IsValid()) {
-            logger_.Error("Cannot create wol reflector \"{}\": registration failed for port {}",
+            NFL_LOG_ERROR(logger_, "Cannot create wol reflector \"{}\": registration failed for port {}",
                 config.name, port);
             registrations_.clear();
             return;
@@ -74,7 +74,7 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
     }
 
     valid_ = true;
-    logger_.Info("Created wol reflector (IPv4: {}, IPv6: {})",
+    NFL_LOG_INFO(logger_, "Created wol reflector (IPv4: {}, IPv6: {})",
         target_capability_.CanSend(IpAddress::Family::V4) ? "enabled" : "disabled",
         target_capability_.CanSend(IpAddress::Family::V6) ? "enabled" : "disabled");
 }
@@ -86,25 +86,25 @@ void WolReflector::Initialize(PacketDispatcher& packet_dispatcher, LinkSocket& s
 // single memcmp and narrows what this reflector will re-broadcast onto target_if.
 bool WolReflector::IsMagicPacket(std::span<const std::byte> payload) noexcept {
     if (payload.size() < MAGIC_PACKET_SIZE) {
-        logger_.Debug("Ignoring wol packet: payload is too short: {} bytes", payload.size());
+        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: payload is too short: {} bytes", payload.size());
         return false;
     }
 
     if (target_mac_) {
         if (std::memcmp(payload.data(), expected_magic_packet_.data(), expected_magic_packet_.size()) != 0) {
-            logger_.Debug("Ignoring wol packet: magic packet does not match expected MAC");
+            NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet does not match expected MAC");
             return false;
         }
         return true;
     }
 
     if (!HasMagicPacketPrefix(payload)) {
-        logger_.Debug("Ignoring wol packet: magic packet prefix is invalid");
+        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet prefix is invalid");
         return false;
     }
 
     if (!HasRepeatedMac(payload)) {
-        logger_.Debug("Ignoring wol packet: magic packet MAC repetitions are inconsistent");
+        NFL_LOG_DEBUG(logger_, "Ignoring wol packet: magic packet MAC repetitions are inconsistent");
         return false;
     }
 
@@ -146,7 +146,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
 
     const auto family = packet.header.source.addr.AddressFamily();
     if (!target_capability_.CanSend(family)) {
-        logger_.Debug("Ignoring wol packet from {}: {} not handled",
+        NFL_LOG_DEBUG(logger_, "Ignoring wol packet from {}: {} not handled",
             packet.header.source, family);
         return;
     }
@@ -163,7 +163,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
         : target_socket_->SendUdpMulticastDatagram(
               {destination, port}, packet.header.source.port, packet.payload, packet.header.ttl);
     if (!sent) {
-        logger_.Error("Cannot reflect wol packet from {} to {}:{}",
+        NFL_LOG_ERROR(logger_, "Cannot reflect wol packet from {} to {}:{}",
             packet.header.source, destination, port);
         return;
     }
@@ -171,7 +171,7 @@ void WolReflector::OnPacket(const Packet& packet) noexcept {
     // The MAC comes from the payload, not the frame's L2 header: it names the device that
     // will wake, and IsMagicPacket has already validated the payload is long enough.
     const auto target = MacAddress::FromBytes(packet.payload.subspan<PREFIX_SIZE, MAC_SIZE>());
-    logger_.Info("Reflected WoL packet for {} from {} to {}:{}",
+    NFL_LOG_INFO(logger_, "Reflected WoL packet for {} from {} to {}:{}",
         target, packet.header.source, destination, port);
 }
 

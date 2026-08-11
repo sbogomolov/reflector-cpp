@@ -23,12 +23,12 @@ Interface::Interface(std::string_view name)
         : logger_{std::format("Interface:{}", name)}
         , name_{name} {
     if (name_.size() >= IFNAMSIZ) {
-        logger_.Error("Interface name \"{}\" is too long (max {} characters)", name_, IFNAMSIZ - 1);
+        NFL_LOG_ERROR(logger_, "Interface name \"{}\" is too long (max {} characters)", name_, IFNAMSIZ - 1);
         return;
     }
     index_ = ResolveIndex().value_or(0);
     if (index_ == 0) {
-        logger_.Error("Cannot resolve interface index: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot resolve interface index: {}", Error::FromErrno());
         return;
     }
     // In-constructor dispatch resolves to Interface::Refresh — intended: construction always
@@ -56,7 +56,7 @@ std::optional<unsigned> Interface::ResolveIndex() const noexcept {
 Interface::IdentityChange Interface::Reidentify() noexcept {
     const auto resolved = ResolveIndex();
     if (!resolved) {
-        logger_.Error("Cannot resolve interface index: {}; keeping index {}", Error::FromErrno(), index_);
+        NFL_LOG_ERROR(logger_, "Cannot resolve interface index: {}; keeping index {}", Error::FromErrno(), index_);
         return IdentityChange::Unresolved;
     }
     if (*resolved == index_) {
@@ -66,12 +66,12 @@ Interface::IdentityChange Interface::Reidentify() noexcept {
     const unsigned previous = std::exchange(index_, *resolved);
     if (index_ == 0) {
         addresses_ = {};  // nothing may send or join against an identity that is gone
-        logger_.Info("Interface is gone (was index {}); parked until it returns", previous);
+        NFL_LOG_INFO(logger_, "Interface is gone (was index {}); parked until it returns", previous);
         return IdentityChange::Parked;
     }
 
     Refresh();
-    logger_.Info("Interface reappeared as index {} (was {})", index_, previous);
+    NFL_LOG_INFO(logger_, "Interface reappeared as index {} (was {})", index_, previous);
     return IdentityChange::Repointed;
 }
 
@@ -112,7 +112,7 @@ void Interface::Refresh() noexcept {
         return;
     }
     addresses_ = *resolved;
-    logger_.Debug("Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}, IPv6 routable {}", index_,
+    NFL_LOG_DEBUG(logger_, "Resolved addresses (index {}): MAC {}, IPv4 {}, IPv6 {}, IPv6 routable {}", index_,
         addresses_.mac, addresses_.v4 ? addresses_.v4->ToString() : "none",
         addresses_.v6 ? addresses_.v6->ToString() : "none",
         addresses_.v6_routable ? addresses_.v6_routable->ToString() : "none");

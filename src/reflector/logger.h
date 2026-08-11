@@ -59,11 +59,9 @@ public:
     static void SetMinLevel(LogLevel level) noexcept { min_level_ = level; }
     [[nodiscard]] static LogLevel MinLevel() noexcept { return min_level_; }
 
+    // Ungated: the NFL_LOG macros check the level before they reach here.
     template <typename... Args>
-    void Log(LogLevel level, detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        if (level < min_level_) {
-            return;
-        }
+    void Emit(LogLevel level, detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
         try {
             // Clang 17 does not support std::chrono::current_zone(). Maybe next time.
             const auto time = std::time({});
@@ -95,26 +93,6 @@ public:
         } catch (...) {
             std::fputs("logger: failed to emit message\n", stderr);
         }
-    }
-
-    template <typename... Args>
-    void Debug(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        Log(LogLevel::Debug, std::move(fmt), std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-    void Info(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        Log(LogLevel::Info, std::move(fmt), std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-    void Warn(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        Log(LogLevel::Warn, std::move(fmt), std::forward<Args>(args)...);
-    }
-
-    template <typename... Args>
-    void Error(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        Log(LogLevel::Error, std::move(fmt), std::forward<Args>(args)...);
     }
 
 private:
@@ -155,3 +133,18 @@ struct std::formatter<reflector::LogLevel>
         std::unreachable();
     }
 };
+
+// The only level gate. A filtered record never reaches Emit, so it never evaluates its arguments:
+// a suppressed Debug line would otherwise still build every Error::FromErrno() and ToString() it
+// passes. NFL_ rather than a bare LOG_, which syslog.h already defines.
+#define NFL_LOG(logger, level, ...)                                             \
+    do {                                                                        \
+        if (::reflector::LogLevel::level >= ::reflector::Logger::MinLevel()) {  \
+            (logger).Emit(::reflector::LogLevel::level, __VA_ARGS__);           \
+        }                                                                       \
+    } while (false)
+
+#define NFL_LOG_DEBUG(logger, ...) NFL_LOG(logger, Debug, __VA_ARGS__)
+#define NFL_LOG_INFO(logger, ...) NFL_LOG(logger, Info, __VA_ARGS__)
+#define NFL_LOG_WARN(logger, ...) NFL_LOG(logger, Warn, __VA_ARGS__)
+#define NFL_LOG_ERROR(logger, ...) NFL_LOG(logger, Error, __VA_ARGS__)

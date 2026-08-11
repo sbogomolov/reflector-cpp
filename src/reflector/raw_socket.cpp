@@ -154,7 +154,7 @@ RawSocket::RawSocket(const Interface& interface)
         : logger_{std::format("RawSocket:{}", interface.Name())}
         , interface_{&interface} {
     if (!interface_->IsValid()) {
-        logger_.Error("Cannot open capture socket: interface is invalid");
+        NFL_LOG_ERROR(logger_, "Cannot open capture socket: interface is invalid");
         return;
     }
 
@@ -164,7 +164,7 @@ RawSocket::RawSocket(const Interface& interface)
     // unfiltered frames (e.g. IGMP from multicast joins) would otherwise queue and reach the parser.
     fd_.Reset(socket(AF_PACKET, SOCK_RAW | SOCK_NONBLOCK, 0));
     if (!fd_) {
-        logger_.Error("Cannot open AF_PACKET socket: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot open AF_PACKET socket: {}", Error::FromErrno());
         return;
     }
 
@@ -183,14 +183,14 @@ RawSocket::RawSocket(const Interface& interface)
         program = sock_fprog{.len = ETHERNET_UDP_FILTER.size(),
             .filter = reinterpret_cast<sock_filter*>(ETHERNET_UDP_FILTER.data())};
     } else {
-        logger_.Info("PACKET_IGNORE_OUTGOING unavailable ({}); dropping our own frames in the BPF filter",
+        NFL_LOG_INFO(logger_, "PACKET_IGNORE_OUTGOING unavailable ({}); dropping our own frames in the BPF filter",
             Error::FromErrno());
         std::ranges::copy(ETHERNET_UDP_FILTER, std::ranges::copy(DROP_OUTGOING_PROLOGUE, amended.begin()).out);
         program = sock_fprog{.len = amended.size(),
             .filter = reinterpret_cast<sock_filter*>(amended.data())};
     }
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_ATTACH_FILTER, &program, sizeof(program)) != 0) {
-        logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot attach BPF UDP filter: {}", Error::FromErrno());
         Close();
         return;
     }
@@ -204,19 +204,19 @@ RawSocket::RawSocket(const Interface& interface)
 
     receive_buffer_.resize(MAX_FRAME_SIZE);
 
-    logger_.Debug("Opened AF_PACKET socket fd {} on interface", fd_.Get());
+    NFL_LOG_DEBUG(logger_, "Opened AF_PACKET socket fd {} on interface", fd_.Get());
 
 #else
     for (int n = 0; n < 256 && !fd_; ++n) {
         const auto path = std::format("/dev/bpf{}", n);
         fd_.Reset(open(path.c_str(), O_RDWR));
         if (!fd_ && errno != EBUSY) {
-            logger_.Error("Cannot open {}: {}", path, Error::FromErrno());
+            NFL_LOG_ERROR(logger_, "Cannot open {}: {}", path, Error::FromErrno());
             return;
         }
     }
     if (!fd_) {
-        logger_.Error("Cannot open any /dev/bpfN device");
+        NFL_LOG_ERROR(logger_, "Cannot open any /dev/bpfN device");
         return;
     }
 
@@ -227,19 +227,19 @@ RawSocket::RawSocket(const Interface& interface)
 
     u_int blen = 0;
     if (ioctl(fd_.Get(), BIOCGBLEN, &blen) != 0) {
-        logger_.Error("Cannot query BPF buffer length: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot query BPF buffer length: {}", Error::FromErrno());
         Close();
         return;
     }
     receive_buffer_.resize(blen);
 
     if (!SetNonBlocking(fd_.Get())) {
-        logger_.Error("Cannot set BPF socket non-blocking: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set BPF socket non-blocking: {}", Error::FromErrno());
         Close();
         return;
     }
 
-    logger_.Debug("Opened BPF fd {} on interface (buffer {} bytes)", fd_.Get(), blen);
+    NFL_LOG_DEBUG(logger_, "Opened BPF fd {} on interface (buffer {} bytes)", fd_.Get(), blen);
 #endif
 }
 
@@ -252,7 +252,7 @@ bool RawSocket::AttachToInterface() noexcept {
     addr.sll_protocol = htons(ETH_P_ALL);
     addr.sll_ifindex = static_cast<int>(interface_->Index());
     if (bind(fd_.Get(), reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) != 0) {
-        logger_.Error("Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot bind AF_PACKET socket to interface: {}", Error::FromErrno());
         return false;
     }
     return true;
@@ -261,7 +261,7 @@ bool RawSocket::AttachToInterface() noexcept {
     // ifr is zero-initialized and Interface guarantees Name().size() < IFNAMSIZ.
     std::memcpy(ifr.ifr_name, interface_->Name().data(), interface_->Name().size());
     if (ioctl(fd_.Get(), BIOCSETIF, &ifr) != 0) {
-        logger_.Error("Cannot bind BPF to interface: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot bind BPF to interface: {}", Error::FromErrno());
         return false;
     }
 
@@ -269,7 +269,7 @@ bool RawSocket::AttachToInterface() noexcept {
     // type, and the see-sent mode and filter below are both chosen from it.
     u_int dlt = 0;
     if (ioctl(fd_.Get(), BIOCGDLT, &dlt) != 0) {
-        logger_.Error("Cannot query BPF link type: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot query BPF link type: {}", Error::FromErrno());
         return false;
     }
     if (dlt == DLT_EN10MB) {
@@ -277,13 +277,13 @@ bool RawSocket::AttachToInterface() noexcept {
     } else if (dlt == DLT_NULL) {
         link_type_ = LinkType::Loopback;
     } else {
-        logger_.Error("BPF link type {} is not supported (need DLT_EN10MB or DLT_NULL)", dlt);
+        NFL_LOG_ERROR(logger_, "BPF link type {} is not supported (need DLT_EN10MB or DLT_NULL)", dlt);
         return false;
     }
 
     u_int immediate = 1;
     if (ioctl(fd_.Get(), BIOCIMMEDIATE, &immediate) != 0) {
-        logger_.Error("Cannot set BIOCIMMEDIATE: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set BIOCIMMEDIATE: {}", Error::FromErrno());
         return false;
     }
 
@@ -302,7 +302,7 @@ bool RawSocket::AttachToInterface() noexcept {
     // copy. Set both ways, so a re-attach onto different framing restores the right mode.
     u_int see_sent = link_type_ == LinkType::Ethernet ? 0 : 1;
     if (ioctl(fd_.Get(), BIOCSSEESENT, &see_sent) != 0) {
-        logger_.Error("Cannot set BIOCSSEESENT: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot set BIOCSSEESENT: {}", Error::FromErrno());
         return false;
     }
 
@@ -315,7 +315,7 @@ bool RawSocket::AttachToInterface() noexcept {
         .bf_insns = reinterpret_cast<bpf_insn*>(filter.data()),
     };
     if (ioctl(fd_.Get(), BIOCSETF, &program) != 0) {
-        logger_.Error("Cannot attach BPF UDP filter: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot attach BPF UDP filter: {}", Error::FromErrno());
         return false;
     }
     return true;
@@ -356,7 +356,7 @@ bool RawSocket::Rebind() noexcept {
     int pending = 0;
     socklen_t length = sizeof(pending);
     if (getsockopt(fd_.Get(), SOL_SOCKET, SO_ERROR, &pending, &length) == 0 && pending != 0) {
-        logger_.Debug("Cleared a pending error on the re-bound capture: {}", Error::FromErrno(pending));
+        NFL_LOG_DEBUG(logger_, "Cleared a pending error on the re-bound capture: {}", Error::FromErrno(pending));
     }
 #else
     // BPF reset its buffer at the re-attach, so drop the drained-batch cursor to match rather
@@ -364,7 +364,7 @@ bool RawSocket::Rebind() noexcept {
     receive_buffer_filled_ = 0;
     receive_buffer_offset_ = 0;
 #endif
-    logger_.Debug("Re-bound capture to interface index {}", interface_->Index());
+    NFL_LOG_DEBUG(logger_, "Re-bound capture to interface index {}", interface_->Index());
     // Nothing else re-joins them: a family that keeps its addresses across a recreation is no
     // transition, so the reflector's own bring-up never runs.
     return RejoinGroups();
@@ -411,7 +411,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
         std::span<const std::byte> payload, uint8_t ttl) noexcept {
     const auto source = interface_->SourceAddressFor(dst.addr);
     if (!source) {
-        logger_.Error("Cannot send to {}: interface has no source address for that family",
+        NFL_LOG_ERROR(logger_, "Cannot send to {}: interface has no source address for that family",
             dst.addr);
         return false;
     }
@@ -426,7 +426,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
         : BuildUdpFrame(dst_mac, interface_->Mac(), IpEndpoint{*source, src_port}, dst, payload, ttl, frame);
 #endif
     if (length == 0) {
-        logger_.Error("Cannot build egress frame for {} ({}-byte payload)", dst.addr,
+        NFL_LOG_ERROR(logger_, "Cannot build egress frame for {} ({}-byte payload)", dst.addr,
             payload.size());
         return false;
     }
@@ -443,7 +443,7 @@ bool RawSocket::SendFrame(MacAddress dst_mac, const IpEndpoint& dst, uint16_t sr
     const auto sent = write(fd_.Get(), frame.data(), length);
 #endif
     if (sent < 0 || static_cast<size_t>(sent) != length) {
-        logger_.Error("Cannot inject datagram to {}: {}", dst.addr, Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot inject datagram to {}: {}", dst.addr, Error::FromErrno());
         return false;
     }
     return true;
@@ -453,7 +453,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     // Index 0 is the kernel's "any interface" wildcard, so a parked interface would silently join
     // on whichever one the routing table picks.
     if (interface_->Index() == 0) {
-        logger_.Error("Cannot join multicast group {}: the interface is not resolvable", group);
+        NFL_LOG_ERROR(logger_, "Cannot join multicast group {}: the interface is not resolvable", group);
         return {};
     }
 
@@ -472,7 +472,7 @@ LinkSocket::MulticastMembership RawSocket::JoinMulticastGroup(const IpAddress& g
     if (opened_now) {
         join_fd.Reset(socket(v6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
         if (!join_fd.IsValid()) {
-            logger_.Error("Cannot open multicast-join socket for {}: {}", group, Error::FromErrno());
+            NFL_LOG_ERROR(logger_, "Cannot open multicast-join socket for {}: {}", group, Error::FromErrno());
             return {};
         }
     }
@@ -499,7 +499,7 @@ bool RawSocket::JoinInKernel(int join_fd, const IpAddress& group) noexcept {
 
     const int level = group.IsV6() ? IPPROTO_IPV6 : IPPROTO_IP;
     if (setsockopt(join_fd, level, MCAST_JOIN_GROUP, &request, sizeof(request)) == 0) {
-        logger_.Debug("Joined multicast group {} (interface index {})", group, interface_->Index());
+        NFL_LOG_DEBUG(logger_, "Joined multicast group {} (interface index {})", group, interface_->Index());
         return true;
     }
 
@@ -510,10 +510,10 @@ bool RawSocket::JoinInKernel(int join_fd, const IpAddress& group) noexcept {
     if (error == EADDRNOTAVAIL) {
         // No address of this group's family yet: the family's teardown drops the membership, or
         // the repair retry replays the join once one arrives. A wait, not a failure.
-        logger_.Debug("Join of multicast group {} deferred: {}", group, Error::FromErrno(error));
+        NFL_LOG_DEBUG(logger_, "Join of multicast group {} deferred: {}", group, Error::FromErrno(error));
         return false;
     }
-    logger_.Error("Cannot join multicast group {}: {}", group, Error::FromErrno(error));
+    NFL_LOG_ERROR(logger_, "Cannot join multicast group {}: {}", group, Error::FromErrno(error));
     return false;
 }
 
@@ -536,7 +536,7 @@ bool RawSocket::RejoinGroups() noexcept {
         join_fd.Reset();
         join_fd.Reset(socket(family == IpAddress::Family::V6 ? AF_INET6 : AF_INET, SOCK_DGRAM, 0));
         if (!join_fd.IsValid()) {
-            logger_.Error("Cannot reopen the multicast-join socket: {}", Error::FromErrno());
+            NFL_LOG_ERROR(logger_, "Cannot reopen the multicast-join socket: {}", Error::FromErrno());
             groups_joined_ = false;
             continue;
         }
@@ -563,7 +563,7 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
     if (!join_fd.IsValid()) {
         // The family's last group already left, or a rebind closed the socket and could not reopen
         // it. Closing is what drops the kernel membership, so the group is left either way.
-        logger_.Debug("Multicast group {} was already left with its join socket", group);
+        NFL_LOG_DEBUG(logger_, "Multicast group {} was already left with its join socket", group);
         return true;
     }
 
@@ -575,9 +575,9 @@ bool RawSocket::Unregister(const IpAddress& group) noexcept {
     // us, so a later leave fails with the group already gone — the intended end state (not joined)
     // is reached either way, so this is Debug, not Error.
     if (setsockopt(join_fd.Get(), level, MCAST_LEAVE_GROUP, &request, sizeof(request)) != 0) {
-        logger_.Debug("Leave of multicast group {} did not apply: {}", group, Error::FromErrno());
+        NFL_LOG_DEBUG(logger_, "Leave of multicast group {} did not apply: {}", group, Error::FromErrno());
     } else {
-        logger_.Debug("Left multicast group {}", group);
+        NFL_LOG_DEBUG(logger_, "Left multicast group {}", group);
     }
 
     // The family's last group is gone, so free its join fd instead of carrying it for the socket's
@@ -601,7 +601,7 @@ void RawSocket::ClearBuffer() noexcept {
 
 void RawSocket::Close() noexcept {
     if (fd_) {
-        logger_.Debug("Closing socket");
+        NFL_LOG_DEBUG(logger_, "Closing socket");
         fd_.Reset();
     }
     // Drop the join fds and their membership bookkeeping together, so the "fd open iff the family
@@ -632,11 +632,11 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
         }
         // Reported for any non-would-block errno rather than a guessed list: this only asks the
         // owner to re-examine the interface, and Attached() is what decides.
-        logger_.Error("Cannot receive frame: {}", Error::FromErrno());
+        NFL_LOG_ERROR(logger_, "Cannot receive frame: {}", Error::FromErrno());
         return std::unexpected(ReceiveError::Failed);
     }
     if (static_cast<size_t>(bytes) > receive_buffer_.size()) {
-        logger_.Warn("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             bytes, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -653,7 +653,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
             if (IsWouldBlockErrno(errno)) {
                 return std::unexpected(ReceiveError::WouldBlock);
             }
-            logger_.Error("Cannot receive frame: {}", Error::FromErrno());
+            NFL_LOG_ERROR(logger_, "Cannot receive frame: {}", Error::FromErrno());
             return std::unexpected(ReceiveError::Failed);
         }
         if (bytes == 0) {
@@ -664,7 +664,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     }
 
     if (receive_buffer_offset_ + sizeof(bpf_hdr) > receive_buffer_filled_) {
-        logger_.Error("BPF batch truncated: {} bytes remaining, need at least {} for header",
+        NFL_LOG_ERROR(logger_, "BPF batch truncated: {} bytes remaining, need at least {} for header",
             receive_buffer_filled_ - receive_buffer_offset_, sizeof(bpf_hdr));
         receive_buffer_offset_ = receive_buffer_filled_;
         return std::unexpected(ReceiveError::Dropped);
@@ -675,7 +675,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     const auto frame_offset = receive_buffer_offset_ + header.bh_hdrlen;
     const auto frame_end = frame_offset + header.bh_caplen;
     if (frame_end > receive_buffer_filled_) {
-        logger_.Error("BPF frame extends past batch end (frame_end {} > filled {})",
+        NFL_LOG_ERROR(logger_, "BPF frame extends past batch end (frame_end {} > filled {})",
             frame_end, receive_buffer_filled_);
         receive_buffer_offset_ = receive_buffer_filled_;
         return std::unexpected(ReceiveError::Dropped);
@@ -685,7 +685,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // BPF captured fewer bytes than the frame's real length, so it didn't fit the buffer; drop it
     // rather than parse a truncated frame. (Offset already advanced to the next record above.)
     if (header.bh_datalen > header.bh_caplen) {
-        logger_.Warn("Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
+        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds {}-byte receive buffer",
             header.bh_datalen, receive_buffer_.size());
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -694,7 +694,7 @@ std::expected<Packet, LinkSocket::ReceiveError> RawSocket::Receive() noexcept {
     // batch buffer admits frames the MAX_FRAME_SIZE-sized Linux scratch would have refused, so
     // enforce the same ceiling here at capture.
     if (header.bh_caplen > MAX_FRAME_SIZE) {
-        logger_.Warn("Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
+        NFL_LOG_WARN(logger_, "Dropping oversized frame: {} bytes exceeds the {}-byte frame ceiling",
             header.bh_caplen, MAX_FRAME_SIZE);
         return std::unexpected(ReceiveError::Dropped);
     }
@@ -718,7 +718,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
         // DLT_NULL: 4-byte address family in host byte order, then the IP packet. No L2,
         // so MACs stay default-constructed (all zeros) — same shape we see on Linux's lo.
         if (frame.size() < LOOPBACK_FAMILY_SIZE) {
-            logger_.Error("Frame too short for DLT_NULL header: {} bytes", frame.size());
+            NFL_LOG_ERROR(logger_, "Frame too short for DLT_NULL header: {} bytes", frame.size());
             return std::nullopt;
         }
         uint32_t family = 0;
@@ -728,7 +728,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
         } else if (family == AF_INET6) {
             ethertype = IPV6_ETHERTYPE;
         } else {
-            logger_.Error("DLT_NULL frame with unsupported address family {}", family);
+            NFL_LOG_ERROR(logger_, "DLT_NULL frame with unsupported address family {}", family);
             return std::nullopt;
         }
         l3 = frame.subspan(LOOPBACK_FAMILY_SIZE);
@@ -736,7 +736,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
 #endif
     {
         if (frame.size() < ETHERNET_HEADER_SIZE) {
-            logger_.Error("Frame too short for Ethernet header: {} bytes", frame.size());
+            NFL_LOG_ERROR(logger_, "Frame too short for Ethernet header: {} bytes", frame.size());
             return std::nullopt;
         }
         ethertype = ReadU16Be(frame.subspan<ETHERTYPE_OFFSET, 2>());
@@ -748,29 +748,29 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
     auto parse_l3 = [&]() -> std::optional<std::tuple<IpAddress, IpAddress, uint8_t, std::span<const std::byte>>> {
         if (ethertype == IPV4_ETHERTYPE) {
             if (l3.size() < IPV4_HEADER_SIZE) {
-                logger_.Error("IPv4 payload too short for header: {} bytes", l3.size());
+                NFL_LOG_ERROR(logger_, "IPv4 payload too short for header: {} bytes", l3.size());
                 return std::nullopt;
             }
             const auto version_ihl = std::to_integer<uint8_t>(l3[0]);
             if ((version_ihl >> 4) != 4) {
-                logger_.Error("IPv4 ethertype with version field {}", version_ihl >> 4);
+                NFL_LOG_ERROR(logger_, "IPv4 ethertype with version field {}", version_ihl >> 4);
                 return std::nullopt;
             }
             const auto ihl_words = version_ihl & 0x0f;
             const auto header_size = static_cast<size_t>(ihl_words) * 4;
             if (header_size < IPV4_HEADER_SIZE || l3.size() < header_size) {
-                logger_.Error("IPv4 IHL {} words yields header size {} (l3 size {})",
+                NFL_LOG_ERROR(logger_, "IPv4 IHL {} words yields header size {} (l3 size {})",
                     ihl_words, header_size, l3.size());
                 return std::nullopt;
             }
             const auto flags_fragment = ReadU16Be(l3.subspan<6, 2>());
             // MF set or fragment offset non-zero indicates a fragment; reassembly is out of scope.
             if ((flags_fragment & 0x3fff) != 0) {
-                logger_.Debug("Dropping IPv4 fragment (flags/offset {:#x})", flags_fragment);
+                NFL_LOG_DEBUG(logger_, "Dropping IPv4 fragment (flags/offset {:#x})", flags_fragment);
                 return std::nullopt;
             }
             if (std::to_integer<uint8_t>(l3[9]) != IP_PROTO_UDP) {
-                logger_.Error("IPv4 protocol {} reached parser; BPF filter should have dropped it",
+                NFL_LOG_ERROR(logger_, "IPv4 protocol {} reached parser; BPF filter should have dropped it",
                     std::to_integer<uint8_t>(l3[9]));
                 return std::nullopt;
             }
@@ -779,7 +779,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             // could pull padding into the payload.
             const auto total_length = ReadU16Be(l3.subspan<2, 2>());
             if (total_length < header_size || total_length > l3.size()) {
-                logger_.Error("IPv4 total_length {} invalid (header_size {}, l3 size {})",
+                NFL_LOG_ERROR(logger_, "IPv4 total_length {} invalid (header_size {}, l3 size {})",
                     total_length, header_size, l3.size());
                 return std::nullopt;
             }
@@ -792,24 +792,24 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
         }
         if (ethertype == IPV6_ETHERTYPE) {
             if (l3.size() < IPV6_HEADER_SIZE) {
-                logger_.Error("IPv6 payload too short for header: {} bytes", l3.size());
+                NFL_LOG_ERROR(logger_, "IPv6 payload too short for header: {} bytes", l3.size());
                 return std::nullopt;
             }
             const auto version = std::to_integer<uint8_t>(l3[0]) >> 4;
             if (version != 6) {
-                logger_.Error("IPv6 ethertype with version field {}", version);
+                NFL_LOG_ERROR(logger_, "IPv6 ethertype with version field {}", version);
                 return std::nullopt;
             }
             const auto next_header = std::to_integer<uint8_t>(l3[6]);
             // Extension headers (Fragment, Hop-by-Hop, Routing, ...) all fail this check.
             if (next_header != IP_PROTO_UDP) {
-                logger_.Debug("Dropping IPv6 packet with next-header {} (extension header or non-UDP)", next_header);
+                NFL_LOG_DEBUG(logger_, "Dropping IPv6 packet with next-header {} (extension header or non-UDP)", next_header);
                 return std::nullopt;
             }
             // Trim by payload_length for the same reason as IPv4 total_length above.
             const auto payload_length = ReadU16Be(l3.subspan<4, 2>());
             if (IPV6_HEADER_SIZE + payload_length > l3.size()) {
-                logger_.Error("IPv6 payload_length {} exceeds captured size (l3 size {})",
+                NFL_LOG_ERROR(logger_, "IPv6 payload_length {} exceeds captured size (l3 size {})",
                     payload_length, l3.size());
                 return std::nullopt;
             }
@@ -820,7 +820,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
                 l3.subspan(IPV6_HEADER_SIZE, payload_length),
             };
         }
-        logger_.Error("Frame ethertype {:#x} reached parser; BPF filter should have dropped it", ethertype);
+        NFL_LOG_ERROR(logger_, "Frame ethertype {:#x} reached parser; BPF filter should have dropped it", ethertype);
         return std::nullopt;
     };
 
@@ -831,14 +831,14 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
     const auto& [source_ip, dest_ip, ttl, l4] = *l3_parsed;
 
     if (l4.size() < UDP_HEADER_SIZE) {
-        logger_.Error("L4 payload too short for UDP header: {} bytes", l4.size());
+        NFL_LOG_ERROR(logger_, "L4 payload too short for UDP header: {} bytes", l4.size());
         return std::nullopt;
     }
     const auto source_port = ReadU16Be(l4.subspan<0, 2>());
     const auto dest_port = ReadU16Be(l4.subspan<2, 2>());
     const auto udp_length = ReadU16Be(l4.subspan<4, 2>());
     if (udp_length < UDP_HEADER_SIZE || udp_length > l4.size()) {
-        logger_.Warn("UDP length {} invalid (header min {}, l4 size {})",
+        NFL_LOG_WARN(logger_, "UDP length {} invalid (header min {}, l4 size {})",
             udp_length, UDP_HEADER_SIZE, l4.size());
         return std::nullopt;
     }
