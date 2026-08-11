@@ -15,6 +15,10 @@
 - Mixed signed/unsigned comparison: `static_cast` when non-negativity is evident at the call site (a length, a count); `std::cmp_*` only when a side can actually be negative (an error-signalling `-1`, a difference).
 - Log level by failure, not blame: failure of an intended operation → `Error`, even if externally caused; deliberate skips (traffic not handled by design) → `Debug`. If Error volume becomes a problem, rate-limit — don't downgrade.
 
+## Commits
+
+- Breaking changes get `!` in the type (`feat!:`, `refactor!:`): anything that makes an existing config file, command line, or deployment stop working as it did.
+
 ## Build
 
 ```sh
