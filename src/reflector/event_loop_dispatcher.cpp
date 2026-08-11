@@ -97,7 +97,7 @@ Dispatcher::Registration EventLoopDispatcher::Register(int fd, FdCallbacks callb
 bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warning("Cannot set write interest for fd {}: not registered", fd);
+        GetLogger().Warn("Cannot set write interest for fd {}: not registered", fd);
         return false;
     }
     if (it->second.write_armed == enabled) {
@@ -113,7 +113,7 @@ bool EventLoopDispatcher::SetWriteInterest(int fd, bool enabled) noexcept {
 bool EventLoopDispatcher::Unregister(int fd) noexcept {
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warning("Cannot unregister fd callback for fd {}: not found", fd);
+        GetLogger().Warn("Cannot unregister fd callback for fd {}: not found", fd);
         return false;
     }
 
@@ -189,7 +189,7 @@ bool EventLoopDispatcher::PollOnce(std::chrono::milliseconds timeout) {
 
     const auto it = callbacks_.find(fd);
     if (it == callbacks_.end()) {
-        GetLogger().Warning("Dispatcher woke for unwatched fd {}", fd);
+        GetLogger().Warn("Dispatcher woke for unwatched fd {}", fd);
         return false;
     }
 

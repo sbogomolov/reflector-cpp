@@ -126,7 +126,7 @@ bool DefaultAddressMonitor::Open() noexcept {
     // Kernel-clamped, and the default still works, so a failure only warns — it doesn't fail Open.
     if (setsockopt(fd_.Get(), SOL_SOCKET, SO_RCVBUF,
             &ROUTE_RECEIVE_BUFFER_BYTES, sizeof(ROUTE_RECEIVE_BUFFER_BYTES)) != 0) {
-        GetLogger().Warning("Cannot enlarge the route socket receive buffer: {}", Error::FromErrno());
+        GetLogger().Warn("Cannot enlarge the route socket receive buffer: {}", Error::FromErrno());
     }
 #if defined(__FreeBSD__)
     // Without SO_RERROR (FreeBSD 13+) a receive-buffer overflow is dropped silently, so the ENOBUFS
@@ -213,7 +213,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
     }
 
     if (overflowed) {
-        GetLogger().Warning("Address notifications overflowed; refreshing all interfaces");
+        GetLogger().Warn("Address notifications overflowed; refreshing all interfaces");
     } else if (changed.overflowed) {
         GetLogger().Debug("More than {} interfaces changed in one drain; refreshing all",
             MAX_CHANGED_INTERFACES);

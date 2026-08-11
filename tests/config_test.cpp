@@ -357,10 +357,10 @@ TEST(ConfigTest, ParsesLogLevelInfo) {
     EXPECT_EQ(config->MinLogLevel(), LogLevel::Info);
 }
 
-TEST(ConfigTest, ParsesLogLevelWarning) {
-    const auto config = Config::FromString(TomlWithLogLevel("warning"));
+TEST(ConfigTest, ParsesLogLevelWarn) {
+    const auto config = Config::FromString(TomlWithLogLevel("warn"));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warn);
 }
 
 TEST(ConfigTest, ParsesLogLevelError) {
@@ -1394,7 +1394,7 @@ TEST(ConfigTest, SsdpFormatterPrintsMacAndDialFalse) {
 
 TEST(ConfigTest, ConfigFormatterRendersAllSections) {
     const auto config = Config::FromString(R"(
-log_level = "warning"
+log_level = "warn"
 [reflectors.tv]
 source_if = "lan"
 target_if = "iot"
@@ -1674,13 +1674,13 @@ TEST(ConfigTest, EnvSetsLogLevel) {
 
 TEST(ConfigTest, EnvLogLevelIsCaseInsensitive) {
     const auto config = Config::Load(std::nullopt, Env({
-        {"REFLECTOR_LOG_LEVEL", "WARNING"},
+        {"REFLECTOR_LOG_LEVEL", "WARN"},
         {"REFLECTOR_1_SOURCE_IF", "eth0"},
         {"REFLECTOR_1_TARGET_IF", "eth1"},
         {"REFLECTOR_1_WOL", "true"},
     }));
     ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warn);
 }
 
 TEST(ConfigTest, EnvRejectsInvalidLogLevel) {
@@ -1857,14 +1857,14 @@ wol = true
 
 TEST(ConfigTest, FileLogLevelKeptWhenEnvUnset) {
     const auto config = Config::Load(R"(
-log_level = "warning"
+log_level = "warn"
 [reflectors.tv]
 source_if = "eth0"
 target_if = "eth1"
 wol = true
 )", std::span<const EnvVar>{});
     ASSERT_TRUE(config.has_value()) << config.error().Message();
-    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warning);
+    EXPECT_EQ(config->MinLogLevel(), LogLevel::Warn);
 }
 
 TEST(ConfigTest, EnvLogLevelSetsWhenFileOmitsIt) {

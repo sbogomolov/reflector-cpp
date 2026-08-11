@@ -31,9 +31,9 @@ std::expected<LogLevel, Error> LogLevelFromString(std::string_view s) {
     const auto lower = AsciiToLower(s);
     if (lower == "debug") return LogLevel::Debug;
     if (lower == "info") return LogLevel::Info;
-    if (lower == "warning") return LogLevel::Warning;
+    if (lower == "warn") return LogLevel::Warn;
     if (lower == "error") return LogLevel::Error;
-    return std::unexpected(Error{"log_level must be one of: debug, info, warning, error; got \"{}\"", s});
+    return std::unexpected(Error{"log_level must be one of: debug, info, warn, error; got \"{}\"", s});
 }
 
 std::expected<AddressFamily, Error> AddressFamilyFromString(std::string_view section, std::string_view s) {

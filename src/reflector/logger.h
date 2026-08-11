@@ -19,7 +19,7 @@ namespace reflector {
 enum class LogLevel : uint8_t {
     Debug,
     Info,
-    Warning,
+    Warn,
     Error,
 };
 
@@ -108,8 +108,8 @@ public:
     }
 
     template <typename... Args>
-    void Warning(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
-        Log(LogLevel::Warning, std::move(fmt), std::forward<Args>(args)...);
+    void Warn(detail::LogFmt<std::type_identity_t<Args>...> fmt, Args&& ...args) noexcept {
+        Log(LogLevel::Warn, std::move(fmt), std::forward<Args>(args)...);
     }
 
     template <typename... Args>
@@ -148,7 +148,7 @@ struct std::formatter<reflector::LogLevel>
         using enum reflector::LogLevel;
         case Debug: return std::format_to(ctx.out(), "DEBUG");
         case Info: return std::format_to(ctx.out(), "INFO");
-        case Warning: return std::format_to(ctx.out(), "WARNING");
+        case Warn: return std::format_to(ctx.out(), "WARN");
         case Error: return std::format_to(ctx.out(), "ERROR");
         }
 

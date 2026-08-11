@@ -1,4 +1,4 @@
-# log_level = "info"  # debug | info | warning | error
+# log_level = "info"  # debug | info | warn | error
 # debug_memory = false  # periodically log RSS + heap arena stats for footprint debugging
 
 # A single device: bridge its Wake-on-LAN, mDNS, and SSDP. The one mac is the device's NIC MAC —

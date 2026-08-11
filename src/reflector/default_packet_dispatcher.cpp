@@ -62,7 +62,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         return r.id == id && r.enabled;
     });
     if (it == registrations_.end()) {
-        GetLogger().Warning("Cannot unregister packet callback {}: not found", std::to_underlying(id));
+        GetLogger().Warn("Cannot unregister packet callback {}: not found", std::to_underlying(id));
         return false;
     }
     GetLogger().Debug("Unregistered packet callback {}", std::to_underlying(id));
@@ -83,7 +83,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
 void DefaultPacketDispatcher::OnReadable(int fd) noexcept {
     const auto it = capture_sources_.find(fd);
     if (it == capture_sources_.end()) {
-        GetLogger().Warning("Readable callback for unknown capture fd {}", fd);
+        GetLogger().Warn("Readable callback for unknown capture fd {}", fd);
         return;
     }
     // Reported after the drain, not from inside it: the sweep may have dropped this capture

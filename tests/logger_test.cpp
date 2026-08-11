@@ -30,13 +30,13 @@ TEST(LoggerTest, SetMinLevelUpdatesMinLevel) {
 }
 
 TEST(LoggerTest, MinLevelSuppressesLowerSeverityMessages) {
-    const ScopedMinLogLevel level{LogLevel::Warning};
+    const ScopedMinLogLevel level{LogLevel::Warn};
     Logger logger{"LoggerTest"};
 
     const std::string output = CaptureStdout([&] {
         logger.Debug("hidden debug message");
         logger.Info("hidden info message");
-        logger.Warning("visible warning message");
+        logger.Warn("visible warning message");
         logger.Error("visible error message");
     });
 
@@ -99,7 +99,7 @@ TEST(LoggerTest, DynamicNameSurvivesMoveConstructionAndAssignment) {
 TEST(LoggerTest, FormatsLogLevelNames) {
     EXPECT_EQ(std::format("{}", LogLevel::Debug), "DEBUG");
     EXPECT_EQ(std::format("{}", LogLevel::Info), "INFO");
-    EXPECT_EQ(std::format("{}", LogLevel::Warning), "WARNING");
+    EXPECT_EQ(std::format("{}", LogLevel::Warn), "WARN");
     EXPECT_EQ(std::format("{}", LogLevel::Error), "ERROR");
 }
 
