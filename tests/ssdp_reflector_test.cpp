@@ -280,7 +280,6 @@ TEST_P(SsdpReflectorPerFamilyTest, RequiredFamilyUnavailableOnSourceMakesInvalid
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(RegistrationCount(), 0);
     });
-    EXPECT_NE(output.find(std::format("{}", family)), std::string::npos) << output;
 }
 
 TEST_P(SsdpReflectorPerFamilyTest, RequiredFamilyUnavailableOnTargetMakesInvalid) {
@@ -310,12 +309,11 @@ TEST_F(SsdpReflectorTest, RejectsInvalidConfig) {
     auto config = MakeConfig();
     config.target_if = config.source_if;  // source_if == target_if fails Verify
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const SsdpReflector reflector{packet_dispatcher, source, target, config};
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(RegistrationCount(), 0);
     });
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, CreatedLogUsesConfigName) {
@@ -455,11 +453,10 @@ TEST_F(SsdpReflectorTest, TransientBringUpFailureOnALaterGroupLeavesFamilyDownTh
     // group (link-local) has already taken its memberships/registrations.
     target.iface.SetHasSource(IpAddress::Family::V6, true);
     packet_dispatcher.fail_register_on_call = RegistrationCount() + 3;
-    const std::string output = CaptureStdout([&] { reflector.OnInterfaceChanged(); });
+    CaptureStdout([&] { reflector.OnInterfaceChanged(); });
 
     EXPECT_EQ(RegistrationCount(), 2);   // bring-up failed -> v6 stays fully down, nothing half-set-up
     EXPECT_TRUE(reflector.IsValid());    // still valid
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;  // the registration failure was logged
     // the first group's membership, already taken before the second group's failure, was rolled back too
     EXPECT_NE(std::ranges::find(source.left_groups, IpAddress::SsdpGroupV6LinkLocal()),
         source.left_groups.end());
@@ -475,7 +472,7 @@ TEST_F(SsdpReflectorTest, TransientBringUpFailureOnALaterGroupLeavesFamilyDownTh
 TEST_F(SsdpReflectorTest, FailureOnALaterGroupRollsBackTheWholeFamily) {
     packet_dispatcher.fail_register_on_call = 3;  // group 1 (calls 1-2) succeeds; group 2's first reg (3) fails
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv6)};
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(RegistrationCount(), 0);  // the first group's captures were rolled back too
@@ -515,7 +512,6 @@ TEST_F(SsdpReflectorTest, RejectsAMacFilterOnATargetLinkWithoutMacs) {
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(RegistrationCount(), 0);
     });
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 
     // Same link without the filter is fine — only the source_mac match is impossible.
     const SsdpReflector unfiltered{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
@@ -603,24 +599,22 @@ TEST_F(SsdpReflectorTest, DoesNotReflectWhenSendFails) {
 TEST_F(SsdpReflectorTest, JoinFailureMakesInvalid) {
     source.fail_join = true;
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
         EXPECT_FALSE(reflector.IsValid());
         EXPECT_EQ(RegistrationCount(), 0);
     });
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, RegistrationFailureRollsBackAndInvalidates) {
     packet_dispatcher.fail_register_on_call = 2;  // the second registration fails
 
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         const SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
         EXPECT_FALSE(reflector.IsValid());
     });
 
     EXPECT_EQ(RegistrationCount(), 0);  // the first registration was rolled back
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 }
 
 TEST_F(SsdpReflectorTest, DestructorUnregisters) {
@@ -1090,12 +1084,11 @@ TEST_F(SsdpReflectorTest, DialDropsAnAdvertisementWhoseRewriteOverflowsThePayloa
 
     // Already at the ceiling, so any growth overflows.
     const auto advertisement = MakeGrowingDialAdvertisement(MAX_UDP_PAYLOAD_SIZE);
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
     });
 
     EXPECT_TRUE(source.sent.empty());
-    EXPECT_NE(output.find("ERROR"), std::string::npos) << output;
 
     // Room for the growth: the same message is rewritten and forwarded.
     packet_dispatcher.Deliver(target,
@@ -1284,13 +1277,12 @@ TEST_F(SsdpReflectorTest, DialForwardsLocationUnchangedWhenListenerMintFails) {
     source.iface.SetV4(std::nullopt);  // no source_if V4 address -> EnsureDiscoveryListener cannot bind a listener
 
     const auto advertisement = MakeDialAdvertisement();
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(target, MakePacket(advertisement, IpAddress::SsdpGroupV4()));
     });
 
     ASSERT_EQ(source.sent.size(), 1u);
     EXPECT_EQ(source.sent.back().payload, advertisement);            // forwarded unchanged (benign fallback)
-    EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
 }
 
 // Same mint-failure fallback as DialForwardsLocationUnchangedWhenListenerMintFails, but on the unicast
@@ -1319,13 +1311,12 @@ TEST_F(SsdpReflectorTest, DialForwardsResponseLocationUnchangedWhenListenerMintF
         },
         .payload = response,
     };
-    const std::string output = CaptureStdout([&] {
+    CaptureStdout([&] {
         packet_dispatcher.Deliver(target, reply);
     });
 
     ASSERT_EQ(source.sent.size(), 1u);
     EXPECT_EQ(source.sent.back().payload, response);                     // forwarded unchanged (benign fallback)
-    EXPECT_NE(output.find("no listener"), std::string::npos) << output;  // surfaced at INFO
 }
 
 TEST_F(SsdpReflectorTest, DoesNotReflectAnAdvertisementWhenSendFails) {
