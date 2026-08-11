@@ -147,7 +147,7 @@ bool HttpFraming::ScanAndRewriteHeader() {
             if (const auto found = ParseAuthority(value, /*bare=*/is_host)) {
                 if (const auto repl = rewrite_(found->endpoint)) {
                     // Log before the splice: `line` views into header_, which the replace may reallocate.
-                    NFL_LOG_DEBUG(GetLogger(), "rewrote {} authority {} -> {}", line.substr(0, colon),
+                    NFL_LOG_TRACE(GetLogger(), "rewrote {} authority {} -> {}", line.substr(0, colon),
                         found->endpoint, *repl);
                     const std::string repl_text = std::format("{}", *repl);
                     const size_t auth_off =

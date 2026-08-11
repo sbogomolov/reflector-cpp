@@ -976,7 +976,7 @@ TEST_F(SsdpReflectorTest, SameSearcherAndGroupReusesOneSession) {
     EXPECT_EQ(RegistrationCount(), base + 1);  // but one shared session
 }
 
-TEST_F(SsdpReflectorTest, LogsDefaultedMxAtDebugOnly) {
+TEST_F(SsdpReflectorTest, LogsDefaultedMxAtTraceOnly) {
     SsdpReflector reflector{packet_dispatcher, source, target, MakeConfig(AddressFamily::IPv4)};
     ASSERT_TRUE(reflector.IsValid());
 
@@ -992,12 +992,14 @@ TEST_F(SsdpReflectorTest, LogsDefaultedMxAtDebugOnly) {
         EXPECT_EQ(output.find("no/invalid MX"), std::string::npos) << output;
     }
     {
-        const ScopedMinLogLevel level{LogLevel::Debug};
+        const ScopedMinLogLevel level{LogLevel::Trace};
         const std::string output = CaptureStdout([&] {
             packet_dispatcher.Deliver(source, MakePacket(search_no_mx, IpAddress::SsdpGroupV4()));
         });
         EXPECT_EQ(target.sent.size(), 2u);
+#if !defined(NDEBUG)
         EXPECT_NE(output.find("no/invalid MX"), std::string::npos) << output;
+#endif
     }
 }
 

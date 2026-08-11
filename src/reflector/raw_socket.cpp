@@ -601,7 +601,7 @@ void RawSocket::ClearBuffer() noexcept {
 
 void RawSocket::Close() noexcept {
     if (fd_) {
-        NFL_LOG_DEBUG(logger_, "Closing socket");
+        NFL_LOG_TRACE(logger_, "Closing socket");
         fd_.Reset();
     }
     // Drop the join fds and their membership bookkeeping together, so the "fd open iff the family
@@ -766,7 +766,7 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             const auto flags_fragment = ReadU16Be(l3.subspan<6, 2>());
             // MF set or fragment offset non-zero indicates a fragment; reassembly is out of scope.
             if ((flags_fragment & 0x3fff) != 0) {
-                NFL_LOG_DEBUG(logger_, "Dropping IPv4 fragment (flags/offset {:#x})", flags_fragment);
+                NFL_LOG_TRACE(logger_, "Dropping IPv4 fragment (flags/offset {:#x})", flags_fragment);
                 return std::nullopt;
             }
             if (std::to_integer<uint8_t>(l3[9]) != IP_PROTO_UDP) {
@@ -803,7 +803,8 @@ std::optional<Packet> RawSocket::ParseFrame(std::span<const std::byte> frame) no
             const auto next_header = std::to_integer<uint8_t>(l3[6]);
             // Extension headers (Fragment, Hop-by-Hop, Routing, ...) all fail this check.
             if (next_header != IP_PROTO_UDP) {
-                NFL_LOG_DEBUG(logger_, "Dropping IPv6 packet with next-header {} (extension header or non-UDP)", next_header);
+                NFL_LOG_TRACE(logger_,
+                    "Dropping IPv6 packet with next-header {} (extension header or non-UDP)", next_header);
                 return std::nullopt;
             }
             // Trim by payload_length for the same reason as IPv4 total_length above.

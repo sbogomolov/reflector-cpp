@@ -67,17 +67,27 @@ void Consider(InterfaceAddresses& result, const IpAddress& address) noexcept {
     if (address.IsV4()) {
         if (!result.v4) {
             result.v4 = address;
+            NFL_LOG_TRACE(GetLogger(), "v4 {}", address);
+        } else {
+            NFL_LOG_TRACE(GetLogger(), "v4 {} ignored; already have {}", address, *result.v4);
         }
         return;
     }
 
-    if (!result.v6 || Ipv6Rank(address) < Ipv6Rank(*result.v6)) {
+    const bool took_v6 = !result.v6 || Ipv6Rank(address) < Ipv6Rank(*result.v6);
+    if (took_v6) {
         result.v6 = address;
     }
-    if (!address.IsLinkLocal()
-            && (!result.v6_routable || Ipv6Rank(address) < Ipv6Rank(*result.v6_routable))) {
+    const bool took_routable = !address.IsLinkLocal()
+        && (!result.v6_routable || Ipv6Rank(address) < Ipv6Rank(*result.v6_routable));
+    if (took_routable) {
         result.v6_routable = address;
     }
+    NFL_LOG_TRACE(GetLogger(), "v6 {} rank {} -> {}", address, Ipv6Rank(address),
+        took_v6 && took_routable ? "source and routable"
+            : took_v6            ? "source"
+            : took_routable      ? "routable"
+                                 : "not selected");
 }
 
 #if defined(__linux__)
@@ -152,7 +162,7 @@ template <typename Handler>
         // Only the kernel (nl_pid 0) may answer the dump; a local process could unicast a spoofed
         // reply to inject a bogus address. Discard anything else and read the next datagram.
         if (addrlen < sizeof(src) || src.nl_pid != 0) {
-            NFL_LOG_DEBUG(GetLogger(), "Ignoring a netlink dump reply from a non-kernel sender (pid {})", src.nl_pid);
+            NFL_LOG_TRACE(GetLogger(), "Ignoring a netlink dump reply from a non-kernel sender (pid {})", src.nl_pid);
             continue;
         }
 
@@ -197,6 +207,7 @@ bool ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
             if (attr->rta_type == IFLA_ADDRESS && RTA_PAYLOAD(attr) == MAC_SIZE) {
                 const auto* mac = static_cast<const std::byte*>(RTA_DATA(attr));
                 result.mac = MacAddress::FromBytes(std::span<const std::byte, MAC_SIZE>{mac, MAC_SIZE});
+                NFL_LOG_TRACE(GetLogger(), "mac {}", result.mac);
                 break;  // exactly one IFLA_ADDRESS per link message
             }
         }
@@ -233,6 +244,7 @@ bool ResolveViaNetlink(unsigned index, InterfaceAddresses& result) noexcept {
             }
         }
         if (!IsUsable(flags)) {
+            NFL_LOG_TRACE(GetLogger(), "address filtered: ifa_flags {:#06x}", flags);
             return;
         }
 
@@ -312,6 +324,7 @@ bool ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
             sockaddr_in6 sin6{};
             std::memcpy(&sin6, ifa->ifa_addr, sizeof(sin6));
             if (!IsUsableIpv6(inet6_fd, ifa->ifa_name, sin6)) {
+                NFL_LOG_TRACE(GetLogger(), "v6 address on \"{}\" filtered by its flags", ifa->ifa_name);
                 break;
             }
             if (auto address = IpAddress::FromSockaddr(ifa->ifa_addr); address) {
@@ -324,6 +337,7 @@ bool ResolveViaGetifaddrs(std::string_view interface, InterfaceAddresses& result
         }
         case AF_LINK:
             result.mac = detail::MacFromLinkSockaddr(*ifa->ifa_addr);
+            NFL_LOG_TRACE(GetLogger(), "mac {}", result.mac);
             break;
         default:
             break;

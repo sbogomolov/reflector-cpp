@@ -53,7 +53,7 @@ PacketDispatcher::Registration DefaultPacketDispatcher::Register(
     // capture source's count.
     const auto id = static_cast<RegistrationId>(next_registration_id_++);
     registrations_.emplace_back(id, &source->second, callback, filter);
-    NFL_LOG_DEBUG(GetLogger(), "Registered packet callback {} for fd {}", std::to_underlying(id), fd);
+    NFL_LOG_TRACE(GetLogger(), "Registered packet callback {} for fd {}", std::to_underlying(id), fd);
     return MakeRegistration(id);
 }
 
@@ -65,7 +65,7 @@ bool DefaultPacketDispatcher::Unregister(RegistrationId id) noexcept {
         NFL_LOG_WARN(GetLogger(), "Cannot unregister packet callback {}: not found", std::to_underlying(id));
         return false;
     }
-    NFL_LOG_DEBUG(GetLogger(), "Unregistered packet callback {}", std::to_underlying(id));
+    NFL_LOG_TRACE(GetLogger(), "Unregistered packet callback {}", std::to_underlying(id));
     if (dispatching_) {
         it->enabled = false;  // DrainReadableFd is walking; defer the erase + teardown to its sweep
         return true;
@@ -101,10 +101,11 @@ bool DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
     dispatching_ = true;
     bool failed = false;
 
+    size_t packet_count = 0;
 #if defined(__linux__)
-    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
+    for (; packet_count < MAX_PACKETS_PER_READ_EVENT; ++packet_count) {
 #else
-    for (size_t packet_count = 0; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
+    for (; packet_count < MAX_PACKETS_PER_READ_EVENT || socket.HasBufferedData(); ++packet_count) {
 #endif
         const auto packet = socket.Receive();
         if (!packet) {
@@ -126,6 +127,8 @@ bool DefaultPacketDispatcher::DrainReadableFd(LinkSocket& socket) noexcept {
         DispatchPacket(socket, *packet);
     }
 
+    NFL_LOG_TRACE(GetLogger(), "Drained {} frame(s)", packet_count);
+
     dispatching_ = false;
     Sweep();
     return !failed;
@@ -137,11 +140,17 @@ void DefaultPacketDispatcher::DispatchPacket(const LinkSocket& socket, const Pac
     // so index by position and re-fetch each iteration, never holding an iterator across the callback.
     // Removal is deferred to the sweep, so the walk never shifts and needs no restart. A callback that
     // Registers appends a higher entry this loop still reaches, dispatching it for the current packet.
+    size_t matched = 0;
     for (size_t idx = 0; idx < registrations_.size(); ++idx) {
         const auto& entry = registrations_[idx];
         if (entry.enabled && entry.capture_source->socket == &socket && entry.filter.Matches(packet)) {
+            ++matched;
             entry.callback(packet);
         }
+    }
+    if (matched == 0) {
+        NFL_LOG_TRACE(GetLogger(), "No registration matched {} -> {}", packet.header.source,
+            packet.header.dest);
     }
 }
 

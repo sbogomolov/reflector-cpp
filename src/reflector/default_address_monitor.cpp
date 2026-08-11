@@ -201,7 +201,7 @@ void DefaultAddressMonitor::OnReadable(int /*fd*/) noexcept {
         // A local process can unicast a netlink datagram to this socket (user-to-user needs no
         // privilege), spoofing an address change; drop anything whose source isn't the kernel.
         if (verify_sender_ && !detail::NetlinkSenderIsKernel(src, addrlen)) {
-            NFL_LOG_DEBUG(GetLogger(), "Dropping an address notification from a non-kernel sender");
+            NFL_LOG_TRACE(GetLogger(), "Dropping an address notification from a non-kernel sender");
             continue;
         }
         // Once overflowed we'll emit a single refresh-all, so keep draining the socket but stop
