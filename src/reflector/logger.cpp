@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <format>
@@ -66,7 +68,25 @@ private:
 
 namespace reflector {
 
-void Logger::EmitRecord(LogLevel level, std::string_view fmt, std::format_args args,
+uint32_t detail::MonotonicSecs() noexcept {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return detail::MonotonicSecsFrom(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+}
+
+void Logger::EmitRatedRecord(LogLevel level, uint32_t suppressed, std::string_view fmt,
+    std::format_args args, const std::source_location& loc) noexcept {
+    // The first emission in a window has swallowed nothing, which is the common case.
+    if (suppressed == 0) {
+        EmitRecord(level, {}, fmt, args, loc);
+        return;
+    }
+    std::array<char, sizeof(" (4294967295 suppressed)")> note;
+    const auto end = std::format_to_n(note.data(), note.size(), " ({} suppressed)", suppressed);
+    EmitRecord(level, std::string_view{note.data(), static_cast<size_t>(end.out - note.data())}, fmt,
+        args, loc);
+}
+
+void Logger::EmitRecord(LogLevel level, std::string_view note, std::string_view fmt, std::format_args args,
     const std::source_location& loc) noexcept {
     try {
         // Clang 17 does not support std::chrono::current_zone(). Maybe next time.
@@ -85,10 +105,11 @@ void Logger::EmitRecord(LogLevel level, std::string_view fmt, std::format_args a
         const std::string_view elision = state.written > state.capacity ? "[...]" : "";
 
         // One slot is held back for the newline, so it lands even on a truncated record and the
-        // whole line still goes out in a single write.
+        // whole line still goes out in a single write. note sits outside the message buffer, so a
+        // message long enough to be cut cannot swallow the disclosure with it.
         std::array<char, MAX_RECORD_SIZE> record;
-        const auto emitted = std::format_to_n(record.data(), record.size() - 1, "{} {} [{}] {}{} ({}:{})",
-            time_str, level, name_, message, elision, Basename(loc.file_name()), loc.line());
+        const auto emitted = std::format_to_n(record.data(), record.size() - 1, "{} {} [{}] {}{}{} ({}:{})",
+            time_str, level, name_, message, elision, note, Basename(loc.file_name()), loc.line());
         const auto length = static_cast<size_t>(emitted.out - record.data());
         record[length] = '\n';
         std::fwrite(record.data(), 1, length + 1, stdout);
