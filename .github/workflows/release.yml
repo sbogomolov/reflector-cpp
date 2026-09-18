@@ -16,7 +16,7 @@ jobs:
   # tag was pushed before CI finished).
   verify-ci:
     name: Verify CI + tag check
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     permissions:
       actions: read
@@ -165,7 +165,7 @@ jobs:
   binaries-freebsd:
     name: Binary (freebsd-${{ matrix.arch }})
     needs: verify-ci
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     strategy:
@@ -278,7 +278,7 @@ jobs:
   manifest:
     name: Image manifest -> GHCR
     needs: image
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -338,7 +338,7 @@ jobs:
   release:
     name: GitHub release
     needs: [binaries, binaries-freebsd, manifest]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write
