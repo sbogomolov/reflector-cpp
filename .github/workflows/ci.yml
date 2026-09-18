@@ -24,7 +24,7 @@ jobs:
   gate:
     name: Gate (skip if this tree already passed CI)
     if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       actions: read
@@ -188,7 +188,7 @@ jobs:
     name: Unit (freebsd-amd64 ${{ matrix.build_type }})
     needs: gate
     if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
 
     strategy:
@@ -236,7 +236,7 @@ jobs:
     name: Docker e2e
     needs: gate
     if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     steps:
@@ -262,7 +262,7 @@ jobs:
     name: Valgrind unit
     needs: gate
     if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
 
     steps:
@@ -311,7 +311,7 @@ jobs:
     name: Valgrind e2e
     needs: gate
     if: ${{ !cancelled() && (needs.gate.result != 'success' || needs.gate.outputs.run == 'true') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
 
     steps:
@@ -346,7 +346,7 @@ jobs:
     name: Success
     if: ${{ !cancelled() }}
     needs: [gate, unit, freebsd, docker-e2e, valgrind-unit, valgrind-e2e]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Report upstream results
