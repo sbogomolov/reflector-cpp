@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.26
 
-ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+ARG DEBIAN_TRIXIE_SLIM=docker.io/library/debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 # build-env runs on the BUILD host (so the arm/v7 and arm/v5 images cross-compile on an amd64/arm64
 # runner rather than under slow QEMU). For a native target (amd64 on amd64, arm64 on arm64) the
